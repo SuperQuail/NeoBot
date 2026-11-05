@@ -114,10 +114,7 @@ class EventPipeline(
 
         # 睡眠拦截:睡眠期间群聊不触发回复事件(消息已入队);
         # 被@时唤醒并注入唤醒提示词回复;私聊不睡眠,不走本函数。
-        if (
-            getattr(self, "_sleep_service", None) is not None
-            and self._sleep_service.is_sleeping()
-        ):
+        if getattr(self, "_sleep_service", None) is not None and self._sleep_service.is_sleeping():
             return await self._handle_sleeping_message(
                 message=message,
                 queue=queue,
@@ -132,13 +129,16 @@ class EventPipeline(
                 queue_key=queue_key,
             )
             if block_reason:
-                self._logger.info(
-                    "回复意愿",
-                    会话类型=chat_type,
-                    会话ID=queue_key,
-                    概率="0.000",
-                    决策="不回复",
-                    详情=f"原因: 已屏蔽: {block_reason}",
+                self._logger.debug(
+                    "回复意愿判定",
+                    event="reply.decided",
+                    chat_flow_id=f"{conversation_type}:{queue_key}",
+                    message_id=message.message_id,
+                    conversation_kind=conversation_type,
+                    conversation_id=queue_key,
+                    probability=0.0,
+                    should_reply=False,
+                    reasons=f"原因: 已屏蔽: {block_reason}",
                 )
                 return False
 
@@ -173,13 +173,16 @@ class EventPipeline(
                 should_reply=True,
                 reasons=("被@提及，直接触发回复",),
             )
-            self._logger.info(
-                "回复意愿",
-                会话类型=chat_type,
-                会话ID=queue_key,
-                概率="1.000",
-                决策="回复",
-                详情="原因: 被@提及，直接触发",
+            self._logger.debug(
+                "回复意愿判定",
+                event="reply.decided",
+                chat_flow_id=f"{conversation_type}:{queue_key}",
+                message_id=message.message_id,
+                conversation_kind=conversation_type,
+                conversation_id=queue_key,
+                probability=1.0,
+                should_reply=True,
+                reasons="原因: 被@提及，直接触发",
             )
             if self._reply_orchestrator is not None:
                 return self._start_reply_with_tracking(
@@ -195,25 +198,30 @@ class EventPipeline(
             )
         except Exception as exc:
             self._logger.warning(
-                "回复意愿计算失败",
-                会话类型=chat_type,
-                会话ID=queue_key,
-                错误=str(exc),
+                "回复意愿计算失败，本条消息未触发回复",
+                event="reply.decision_failed",
+                chat_flow_id=f"{conversation_type}:{queue_key}",
+                message_id=message.message_id,
+                error_type=type(exc).__name__,
+                conversation_kind=conversation_type,
+                conversation_id=queue_key,
+                error=str(exc),
             )
             return False
 
         detail = " | ".join(decision.reasons)
-        self._logger.info(
-            "回复意愿",
-            会话类型=chat_type,
-            会话ID=queue_key,
-            概率=f"{decision.probability:.3f}",
-            决策="回复" if decision.should_reply else "不回复",
-            详情=detail,
+        self._logger.debug(
+            "回复意愿判定",
+            event="reply.decided",
+            chat_flow_id=f"{conversation_type}:{queue_key}",
+            message_id=message.message_id,
+            conversation_kind=conversation_type,
+            conversation_id=queue_key,
+            probability=decision.probability,
+            should_reply=decision.should_reply,
+            reasons=detail,
         )
 
         if decision.should_reply and self._reply_orchestrator is not None:
-            return self._start_reply_with_tracking(
-                message=message, queue=queue, queue_key=queue_key, decision=decision
-            )
+            return self._start_reply_with_tracking(message=message, queue=queue, queue_key=queue_key, decision=decision)
         return False

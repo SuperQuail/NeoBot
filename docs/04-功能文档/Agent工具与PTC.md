@@ -155,6 +155,8 @@ language_id = "python"
 
 ## 敏感工具统一审查
 
+管理员本人发起的请求在 `agent.tools.admin_self_authorize=true` 时视为已授权，跳过凭据与自动审查。默认只信任与超管的私聊；群聊要放行须把会话（如 `group:12345`）列入 `agent.tools.admin_self_authorize_chats`，受信群里的其他成员可能通过 `wait` 插话搭上同一条管线，只应填可信群。该开关只覆盖 `ToolPermissions` 门控的动作（宿主执行、共享写、计划/目标/Ralph、sandbox_manager）；群管理、OneBot 动作与回复意愿仍各自走审查/凭据。其他人发起的请求仍需管理员签发凭据。
+
 除 OneBot 通用动作外，沙箱/宿主执行（agent_execute）、共享目录写（agent_shared_write）、计划/目标/Ralph、群管理（kick/quit_group）和回复意愿管理也默认先走 AI 自动审查（agent.tools.auto_review=true）：
 
 - 审查通过：直接执行，不再要求凭据。

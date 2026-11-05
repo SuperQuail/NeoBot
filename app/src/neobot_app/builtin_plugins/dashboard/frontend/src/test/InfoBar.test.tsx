@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { closeInfoBarDetails, infoBar, notify } from '../notifications/infoBar';
 import { InfoBarHost } from '../components/InfoBar';
+import Modal from '../components/Modal';
 import { MotionProvider } from '../components/ui/PageMotion';
 import { mockReducedEffects } from './mediaPreference';
 
@@ -17,9 +19,11 @@ afterEach(() => {
 
 function mountHost() {
   return render(
-    <MotionProvider>
-      <InfoBarHost />
-    </MotionProvider>,
+    <div className="app">
+      <MotionProvider>
+        <InfoBarHost />
+      </MotionProvider>
+    </div>,
   );
 }
 async function publish(options: Parameters<typeof infoBar>[0]) {
@@ -38,6 +42,48 @@ async function click(element: HTMLElement) {
 }
 
 describe('Global InfoBar', () => {
+  it('通知宿主挂载到 body，脱离应用容器的堆叠上下文，并随宿主卸载', async () => {
+    const { container, unmount } = mountHost();
+    await publish({ title: '弹窗内操作失败', tone: 'err' });
+    const host = screen.getByRole('status');
+    expect(host.parentElement).toBe(document.body);
+    expect(container.querySelector('.app')).not.toContainElement(host);
+    expect(document.querySelectorAll('.info-bar-host')).toHaveLength(1);
+    expect(within(host).getByRole('group', { name: '弹窗内操作失败' })).toBeInTheDocument();
+    unmount();
+    expect(document.querySelector('.info-bar-host')).toBeNull();
+  });
+
+  it('业务弹窗打开时可关闭通知和阅读详情，且不关闭业务弹窗或丢失草稿', async () => {
+    vi.useRealTimers();
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <div className="app">
+        <MotionProvider>
+          <InfoBarHost />
+          <Modal open title="插件工作区" onClose={onClose}>
+            <input aria-label="业务草稿" defaultValue="未保存链接" />
+          </Modal>
+        </MotionProvider>
+      </div>,
+    );
+    await publish({ title: '第一次失败', tone: 'err' });
+    await user.click(screen.getByRole('button', { name: '关闭通知' }));
+    expect(screen.queryByRole('group', { name: '第一次失败' })).not.toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+
+    await publish({ title: '需要查看详情', message: '完整诊断结果', tone: 'err' });
+    await user.click(screen.getByRole('button', { name: '查看详情' }));
+    const details = screen.getByRole('dialog', { name: '通知详情' });
+    expect(within(details).getByText('完整诊断结果')).toBeInTheDocument();
+    await user.click(within(details).getByRole('button', { name: '关闭对话框' }));
+    expect(screen.queryByRole('dialog', { name: '通知详情' })).not.toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: '插件工作区' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: '业务草稿' })).toHaveValue('未保存链接');
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('简单通知默认 4 秒时长，保留 polite 通知区和独立关闭按钮', async () => {
     mountHost();
     await act(async () => {

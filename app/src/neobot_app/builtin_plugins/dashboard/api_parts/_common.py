@@ -9,8 +9,15 @@ from typing import Any, Mapping
 from aiohttp import web
 
 
-def _pydantic_errors(exc: Any) -> list[dict[str, str]]:
+def _pydantic_errors(exc: Any, *, include_messages: bool = True, model: Any = None) -> list[dict[str, str]]:
     """把 pydantic 校验错误转换为面板统一的 {path, message} 列表。"""
+    if not include_messages:
+        from neobot_modloader.sdk.actions import validation_error_fields
+
+        return [
+            {"path": ".".join(str(part) for part in item["path"]) or "config", "message": "字段值不符合配置要求"}
+            for item in validation_error_fields(exc, model)
+        ] or [{"path": "config", "message": "配置校验失败"}]
     errors: list[dict[str, str]] = []
     raw = getattr(exc, "errors", None)
     if callable(raw):
@@ -39,9 +46,7 @@ def _as_text(value: Any) -> str:
     return "" if value is None else str(value).strip()
 
 
-def _append_model_reload_hint(
-    message: str, changes: Mapping[str, Any]
-) -> tuple[str, list[str]]:
+def _append_model_reload_hint(message: str, changes: Mapping[str, Any]) -> tuple[str, list[str]]:
     """模型 / 凭据变更后追加「仍需重启」提示；返回 (文案, 未覆盖部分)。
 
     为什么必须补这一句：`models` / `env` 在热重载分类表里被**整体**标成可热重载
@@ -123,14 +128,10 @@ def _json_error(message: str, *, status: int = 400, **extra: Any) -> web.Respons
 
 #: 保存 .env 后仍然必须重启才能生效的部分：这些模块在启动时构建并持有 provider，
 #: 没有注册热重载消费者（ProviderReloadConsumer 只覆盖 reply / image_parse / archive）。
-ENV_RESTART_HINT = (
-    "在启动时读取环境变量的其它模块（TTS、生图、联网搜索等）需重启进程后生效"
-)
+ENV_RESTART_HINT = "在启动时读取环境变量的其它模块（TTS、生图、联网搜索等）需重启进程后生效"
 
 
-def _env_reload_message(
-    reload_result: dict[str, Any], env_written: bool
-) -> tuple[str, bool]:
+def _env_reload_message(reload_result: dict[str, Any], env_written: bool) -> tuple[str, bool]:
     """组合「保存 .env 并重载」后的提示文案；返回 (文案, 是否仍需重启)。
 
     为什么要单独写文案：环境变量不进 config.toml 的配置快照，重载自身的分支是
@@ -145,15 +146,10 @@ def _env_reload_message(
     failed = list(report.get("failed") or [])
 
     if failed:
-        reasons = "；".join(
-            str(item.get("error") or item.get("name") or "未知原因") for item in failed
-        )
+        reasons = "；".join(str(item.get("error") or item.get("name") or "未知原因") for item in failed)
         head = f"环境变量已保存并重载，但部分组件重建失败（{reasons}），仍在用旧凭据。"
     elif "provider" in applied:
-        head = (
-            "环境变量已保存并重载：平台凭据变更已重建 provider"
-            "（覆盖 主对话 / 视觉 / 档案总结）。"
-        )
+        head = "环境变量已保存并重载：平台凭据变更已重建 provider（覆盖 主对话 / 视觉 / 档案总结）。"
     else:
         head = "环境变量已保存并重载。"
 

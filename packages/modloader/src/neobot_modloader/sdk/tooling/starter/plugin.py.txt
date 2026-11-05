@@ -1,0 +1,67 @@
+from pydantic import BaseModel, Field
+from neobot_modloader import Plugin, Reply
+
+
+class Config(BaseModel):
+    """同一份模型用于面板表单、保存校验和处理器注入。"""
+
+    greeting: str = Field(default="pong", title="回复内容", description="/ping 的回复文字")
+
+
+plugin = Plugin("__PLUGIN_NAME__", version="0.1.0", config=Config)
+
+
+@plugin.command("ping", permission=0, description="发送配置中的回复内容")
+async def ping(reply: Reply, config: Config) -> None:
+    await reply.send(config.greeting)
+
+
+# 每步使用独立样例；思索不会读取真实配置或执行聊天命令。
+plugin.guide(
+    "first-use",
+    title="从零配置并验证",
+    steps=[
+        {
+            "target": "config",
+            "form": "start",
+            "chapter": "打开配置",
+            "text": "在插件管理选择本插件，打开配置表单。这里从公开默认值开始演示，真实配置未被修改。",
+            "example": {"greeting": "pong"},
+        },
+        {
+            "target": "config.greeting",
+            "form": "edit",
+            "chapter": "填写回复",
+            "text": "把回复内容改成你好，NeoBot。普通配置由宿主生成表单，不需要另外编写页面。",
+            "example": {"greeting": "你好，NeoBot"},
+        },
+        {
+            "target": "config",
+            "form": "validate",
+            "chapter": "核对内容",
+            "text": "核对回复文字。这里演示检查过程；真实保存仍会由服务端校验，错误时请按字段提示修正。",
+            "example": {"greeting": "你好，NeoBot"},
+        },
+        {
+            "target": "config",
+            "form": "save",
+            "chapter": "保存配置",
+            "text": "填写完后使用底部保存并重载。这里仅演示保存位置，不会发送真实保存请求。",
+            "example": {"greeting": "你好，NeoBot"},
+        },
+        {
+            "target": "config",
+            "form": "saved",
+            "chapter": "查看生效结果",
+            "text": "返回配置后再填写和保存真实内容。保存后查看全局通知；这个入门插件可通过重载应用配置。",
+            "example": {"greeting": "你好，NeoBot"},
+        },
+        {
+            "target": "config.greeting",
+            "chapter": "发送命令验证",
+            "text": "在真实机器人私聊发送 /ping，核对回复。若命令重名，请在 /help 或插件详情中查实际名称。演示不会代发消息。",
+            "command": {"text": "/ping", "context": "在与机器人的私聊中发送", "reply": "你好，NeoBot"},
+        },
+    ],
+    demo={"config": {"greeting": "你好，NeoBot"}},
+)

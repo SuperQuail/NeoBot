@@ -152,7 +152,7 @@ class SleepService:
         if monotonic_seconds() >= self._sleep_deadline:
             self._wake_up_at = None
             self._logger.info(
-                "Bot 睡眠到期,自动醒来(控制台日志:睡眠完毕)",
+                "Bot 睡眠到期,自动醒来",
                 elapsed_text=self._sleep_elapsed_text(),
                 ended_at=epoch_seconds(),
             )
@@ -179,10 +179,10 @@ class SleepService:
             return ""
         return from_epoch_seconds(at).strftime("%H:%M")
 
-    # ── 睡眠剩余时间播报(每分钟,接入应用 background_coros) ──
+    # ── 睡眠到期检查(每分钟,接入应用 background_coros) ──
 
     def ticker(self) -> Any:
-        """返回睡眠状态播报协程:睡眠期间每分钟打印剩余时间。
+        """返回睡眠到期检查协程。
 
         接入 NeoBotApplication.background_coros,由应用生命周期统一启停。
         """
@@ -193,17 +193,11 @@ class SleepService:
     ) -> None:
         while True:
             await asyncio.sleep(interval_seconds)
-            self._log_remaining()
+            self._check_sleep_expiry()
 
-    def _log_remaining(self) -> None:
-        """睡眠中打印一条剩余时间日志(每分钟由 ticker 调用)。"""
-        if not self.is_sleeping():
-            return
-        remaining = self.remaining_seconds()
-        self._logger.info(
-            f"睡眠中,剩余睡眠时间{format_sleep_duration(remaining)}",
-            remaining_seconds=remaining,
-        )
+    def _check_sleep_expiry(self) -> None:
+        """推进到期状态，只在开始、到期和主动唤醒时记录日志。"""
+        self.is_sleeping()
 
     # ── 操作 ──
 
@@ -219,7 +213,7 @@ class SleepService:
         self._sleep_started_monotonic = monotonic_seconds()
         self._sleep_deadline = self._sleep_started_monotonic + seconds
         self._logger.info(
-            "Bot 开始睡眠(控制台日志)",
+            "Bot 开始睡眠",
             duration_seconds=int(seconds),
             duration_text=format_sleep_duration(seconds),
             sleep_started_at=self._sleep_started_at,
@@ -237,7 +231,7 @@ class SleepService:
         was_sleeping = self.is_sleeping()
         if was_sleeping:
             self._logger.info(
-                "Bot 被唤醒(控制台日志:睡眠完毕)",
+                "Bot 被唤醒",
                 reason=reason or "unknown",
                 elapsed_text=self._sleep_elapsed_text(),
                 ended_at=epoch_seconds(),

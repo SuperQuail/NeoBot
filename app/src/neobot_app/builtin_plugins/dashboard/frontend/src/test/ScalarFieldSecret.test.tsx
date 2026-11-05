@@ -47,6 +47,32 @@ describe('ScalarField 的密钥判定', () => {
     expect(container.querySelector('input[type="password"]')).not.toBeNull();
     expect(getByRole('button', { name: '显示' })).toBeTruthy();
   });
+
+  it.each(['cookie', 'session_cookie', 'authorization', 'access_key'])(
+    '%s 使用密码框，输入值不会作为普通文本展示',
+    (name) => {
+      const { container, getByRole } = render(
+        <ScalarField
+          descriptor={descriptor({ name, path: [name] })}
+          value=""
+          onChange={vi.fn()}
+        />,
+      );
+      expect(container.querySelector('input[type="password"]')).not.toBeNull();
+      expect(getByRole('button', { name: '显示' })).toBeTruthy();
+    },
+  );
+
+  it('遵循后端的 sensitive 描述，字段名不需要重复约定', () => {
+    const { container } = render(
+      <ScalarField
+        descriptor={descriptor({ name: 'session', path: ['session'], sensitive: true })}
+        value=""
+        onChange={vi.fn()}
+      />,
+    );
+    expect(container.querySelector('input[type="password"]')).not.toBeNull();
+  });
 });
 
 describe('defaultsFromFields 的掩码残留兜底', () => {

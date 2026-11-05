@@ -298,6 +298,28 @@ async def build(
     )
 
 
+async def test_lifecycle_load_uses_registered_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from neobot_app.builtin_plugins.minigame.parts.hooks import _minigame_load
+
+    runtime = minigame.MinigamePlugin()
+    monkeypatch.setattr(minigame, "_instance", runtime)
+    registrar = PluginCommandRegistrar(
+        plugin_name="minigame",
+        registry=CommandRegistry(),
+        record_cleanup=None,
+        logger=_NullLogger(),
+    )
+    ctx = FakePluginCtx(registrar=registrar, services=FakeServices())
+    await minigame.database.bind(tmp_path / "databases")
+    try:
+        await _minigame_load(ctx)
+        assert runtime.service is not None
+        assert await runtime.service._all("SELECT 1 AS value", {}) == [{"value": 1}]
+    finally:
+        await runtime.unload()
+        await minigame.database.close()
+
+
 TOOL_PACKAGES = {
     "bottle_write": "bottle",
     "bottle_pick": "bottle",

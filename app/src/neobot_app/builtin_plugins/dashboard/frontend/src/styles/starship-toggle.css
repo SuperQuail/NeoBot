@@ -77,7 +77,10 @@
 }
 .starship-setting-switch input:focus-visible + span {
   outline: 2px solid var(--brand);
-  outline-offset: 3px;
+  outline-offset: var(--focus-outline-offset);
+}
+.starship-setting-switch input:checked:focus-visible + span {
+  outline-color: var(--text-on-brand);
 }
 .starship-setting-switch input:disabled + span {
   opacity: 0.45;

@@ -1,5 +1,6 @@
 // 固定位置的统一通知宿主；发布 API 不依赖这个展示组件。
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { AnimatePresence, m, useAnimationControls, usePresence } from 'motion/react';
 import { CheckCircle2, Info, TriangleAlert, CircleAlert, X } from 'lucide-react';
 import { cn } from '../utils/cn';
@@ -191,7 +192,8 @@ export function InfoBarHost() {
     if (!statusRef.current?.contains(document.activeElement)) resume('focus');
   }, [item?.id, resume]);
 
-  return (
+  // 通知与弹窗同属 body，避免被应用容器的堆叠上下文遮挡。
+  return createPortal(
     <>
       <div
         ref={statusRef}
@@ -233,6 +235,7 @@ export function InfoBarHost() {
           </div>
         )}
       </Modal>
-    </>
+    </>,
+    document.body,
   );
 }

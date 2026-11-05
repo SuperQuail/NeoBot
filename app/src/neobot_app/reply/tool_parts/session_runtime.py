@@ -101,11 +101,13 @@ class _SessionRuntimeMixin:
                 f"请告知用户操作失败。\n"
                 f"</会话工具结果>"
             )
-            self._logger.error(
-                "会话工具任务异常",
+            self._logger.exception(
+                "会话工具执行失败",
                 tool=name,
                 pipeline_key=pipeline_key,
                 error_type=type(exc).__name__,
+                task_id=task_id,
+                error=str(exc),
             )
         finally:
             elapsed = monotonic_seconds() - started_at

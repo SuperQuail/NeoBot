@@ -619,8 +619,14 @@ class BilibiliRuntime:
                 await command_service.reply_to(
                     kind, conv_id, text, at_user_id=at_user_id
                 )
-            except Exception:
-                self._logger.warning("B站登录结果消息发送失败")
+            except Exception as exc:
+                self._logger.exception(
+                    "B站登录结果消息发送失败",
+                    kind=kind,
+                    conversation_id=conv_id,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
 
         async def _handler(ctx: Any) -> None:
             args = [str(a).lower() for a in (ctx.args or [])]

@@ -152,7 +152,6 @@ class UsageTracker:
         cost = fallback
         source = SOURCE_BUILTIN
         detail: str | None = None
-        elapsed_ms = 0.0
 
         # 唯一入队/求值入口（spec(4) §4.1-D4）：只在这里插一层「计费策略」。
         # ``enabled=false`` 时连 ctx 都不组装，保证零额外开销（A9）。
@@ -184,7 +183,6 @@ class UsageTracker:
             cost = outcome.cost_cny
             source = outcome.source
             detail = outcome.detail_json
-            elapsed_ms = outcome.elapsed_ms
 
         record_obj = ModelUsageRecord(
             module_name=module,
@@ -211,19 +209,6 @@ class UsageTracker:
 
             await retry_on_lock(_flush, on_retry=session.rollback)
 
-        self._logger.debug(
-            "用量已记录",
-            module=module,
-            model=model_name,
-            model_key=entry.key,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_hit_tokens=cache_hit_tokens,
-            cache_miss_tokens=cache_miss_tokens,
-            cost=f"¥{cost:.6f}",
-            cost_source=source,
-            billing_ms=round(elapsed_ms, 3),
-        )
 
 
 _tracker: UsageTracker | None = None

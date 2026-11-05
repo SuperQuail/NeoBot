@@ -174,7 +174,7 @@
 }
 .config-more-actions > summary:focus-visible {
   outline: 2px solid var(--brand);
-  outline-offset: 3px;
+  outline-offset: var(--focus-outline-offset);
 }
 .config-more-actions .config-disclosure-content {
   position: absolute;
@@ -545,7 +545,7 @@
   }
   .config-action-disclosure > summary:focus-visible {
     outline: 2px solid var(--brand);
-    outline-offset: 3px;
+    outline-offset: var(--focus-outline-offset);
   }
   .config-action-disclosure .config-disclosure-content {
     position: absolute;

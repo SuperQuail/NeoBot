@@ -260,7 +260,7 @@
 }
 .archive-item-heading:focus-visible {
   outline: 2px solid var(--brand);
-  outline-offset: 4px;
+  outline-offset: var(--focus-outline-offset);
 }
 .archive-item-heading h3 {
   flex: 1;

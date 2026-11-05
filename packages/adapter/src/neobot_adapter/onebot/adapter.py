@@ -188,7 +188,9 @@ class OneBotAdapter:
         self._dispatch_task = None
         try:
             deadline = time.monotonic() + self._STOP_TOTAL_GRACE_SECONDS
+            attempts = 0
             while not await asyncio.to_thread(self._core.stop, 8.0):
+                attempts += 1
                 # False 表示旧接收线程仍活着，不能向上层报告停止完成。
                 # 先按现场语义重试；但**必须有尽头**：否则运行时拆除会永远卡在这里。
                 if time.monotonic() >= deadline:
@@ -196,11 +198,14 @@ class OneBotAdapter:
                         "适配器接收器在宽限期内仍未停止，放弃继续等待；"
                         "监听端口已由 server.close() 释放，重建若失败会显式报错",
                         grace_seconds=self._STOP_TOTAL_GRACE_SECONDS,
+                        attempts=attempts,
                     )
                     break
-                self._logger.error(
-                    "适配器接收器停止尚未完成，仍在等待守护线程退出；不能启动新运行时"
-                )
+                if attempts == 1:
+                    self._logger.warning(
+                        "适配器接收器尚未停止，等待旧线程退出后重建",
+                        grace_seconds=self._STOP_TOTAL_GRACE_SECONDS,
+                    )
                 await asyncio.sleep(0.1)
         finally:
             unbind_core()

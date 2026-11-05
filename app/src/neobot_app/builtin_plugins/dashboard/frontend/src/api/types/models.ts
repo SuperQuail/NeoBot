@@ -86,7 +86,7 @@ export interface ModelsView {
 /** 模型库 /api/config/models */
 export interface ModelsPayload extends ModelsView {
   library?: ModelItem[];
-  revision?: number;
+  revision?: string;
   providers?: string[];
   /** 写配置成功后后端带回的最新**模型视图对象**（不是数组，取 .library 才是条目列表） */
   models?: ModelsView;

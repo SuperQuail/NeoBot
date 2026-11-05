@@ -6,6 +6,7 @@ import asyncio
 import base64
 import hashlib
 import math
+from contextvars import ContextVar
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -13,6 +14,9 @@ from typing import TYPE_CHECKING, Any
 from PIL import Image
 
 from neobot_contracts.ports.logging import Logger, NullLogger
+from neobot_contracts.models import ConversationRef
+from neobot_contracts.ports.speaking import SpeechBlocked
+from neobot_app.image.speaking import check_image_policy, message_conversation
 from neobot_app.image.source import IMAGE_FETCH_TIMEOUT_SECONDS
 from neobot_app.image.unavailable import (
     REGISTRY,
@@ -59,6 +63,7 @@ class ImageParseService:
         self._adapter = adapter
         self._logger = logger or NullLogger()
         self._pending: dict[str, set[asyncio.Task[None]]] = {}
+        self._conversation: ContextVar[ConversationRef | None] = ContextVar('image_parse_conversation', default=None)
 
     def install_providers(
         self,
@@ -82,6 +87,10 @@ class ImageParseService:
         queue_key: str,
     ) -> None:
         """原生视觉保留原图；否则异步解析并替换为描述文本。"""
+        try:
+            check_image_policy(self._adapter, message_conversation(message))
+        except SpeechBlocked:
+            return
         if getattr(self._native_vision_provider, "native_vision", False) is True:
             return
         segments = getattr(message, "message", None)
@@ -149,7 +158,10 @@ class ImageParseService:
             if seg_type not in ("image", "cardimage"):
                 return
             try:
+                check_image_policy(self._adapter, message_conversation(message))
                 description = await self._parse_single_image(seg)
+            except SpeechBlocked:
+                return  # Keep the original image; do not queue a later retry.
             except Exception as exc:
                 self._logger.error("图片解析失败", error=str(exc))
                 description = ""
@@ -158,10 +170,14 @@ class ImageParseService:
 
         # 一条消息里的多张图并发解析：串行时每张各自付一次下载超时（转发多条图片时
         # 会等比放大等待），并发后最坏只等一次超时。每张各写各的下标，互不干扰。
-        await asyncio.gather(
-            *(parse_one(index) for index in indices),
-            return_exceptions=True,
-        )
+        token = self._conversation.set(message_conversation(message))
+        try:
+            await asyncio.gather(
+                *(parse_one(index) for index in indices),
+                return_exceptions=True,
+            )
+        finally:
+            self._conversation.reset(token)
 
     async def _parse_single_image(self, segment) -> str:
         image_bytes, expired_key = await self._download_image_with_reason(segment)
@@ -170,12 +186,10 @@ class ImageParseService:
                 # 拉不到的图不再笼统报「解析失败」：说清是过期，并把以前留过的描述带上，
                 # 让模型知道这张图大概是什么内容（见 image/unavailable.py）。
                 return f"[图片：{expired_inline_text(await describe(expired_key))}]"
-            self._logger.warning("图片下载失败，跳过该图片")
             return ""
 
         image_bytes = _resize_image_if_too_small(image_bytes, logger=self._logger)
         if image_bytes is None:
-            self._logger.warning("图片尺寸异常，跳过该图片")
             return ""
 
         file_hash = hashlib.md5(image_bytes).hexdigest()
@@ -195,12 +209,10 @@ class ImageParseService:
 
         # 调用视觉模型
         if self._vision_provider is None:
-            self._logger.warning("视觉模型未配置，跳过图片解析（仅记录日志）")
             return ""
 
         description = await self._call_vision_model(image_bytes)
         if description is None:
-            self._logger.warning("视觉模型未返回描述，跳过该图片（仅记录日志）")
             return ""
 
         # 存入数据库
@@ -331,6 +343,7 @@ class ImageParseService:
             }
         ]
 
+        check_image_policy(self._adapter, self._conversation.get())
         try:
             response = await asyncio.wait_for(
                 self._vision_provider.chat(messages),
@@ -338,6 +351,12 @@ class ImageParseService:
             )
             content = response.get("content", "")
             text = content.strip() if isinstance(content, str) else str(content)
+            if not text:
+                self._logger.warning(
+                    "视觉模型返回空图片描述",
+                    image_hash=hashlib.md5(image_bytes).hexdigest()[:16],
+                    image_bytes_len=len(image_bytes),
+                )
             return text if text else None
         except asyncio.TimeoutError:
             self._logger.warning(

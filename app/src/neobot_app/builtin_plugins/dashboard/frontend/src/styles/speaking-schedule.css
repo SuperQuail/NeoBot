@@ -1,0 +1,115 @@
+.speaking-schedule {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.speaking-schedule > legend {
+  font-size: 16px;
+  font-weight: 600;
+}
+.speaking-schedule section {
+  margin-top: var(--space-6);
+}
+.speaking-schedule h3 {
+  margin-bottom: var(--space-3);
+}
+.schedule-window,
+.schedule-scope {
+  min-width: 0;
+  margin: var(--space-4) 0;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+.schedule-window legend,
+.schedule-scope legend {
+  padding: 0 var(--space-2);
+  font-weight: 600;
+}
+.schedule-weekdays,
+.schedule-actions,
+.schedule-window-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.speaking-schedule label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.speaking-schedule input[type='checkbox'],
+.speaking-schedule input[type='radio'] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--brand);
+}
+.schedule-weekdays label,
+.schedule-actions label,
+.schedule-window-footer label {
+  min-height: 44px;
+}
+.schedule-actions {
+  margin: var(--space-2) 0;
+}
+.schedule-track {
+  position: relative;
+  height: 8px;
+  background: var(--border);
+  border-radius: var(--radius-control);
+  margin: var(--space-4) 0;
+}
+.schedule-track-segment {
+  position: absolute;
+  height: 100%;
+  background: var(--brand);
+  border-radius: inherit;
+}
+.schedule-time-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+.schedule-time {
+  min-width: 0;
+}
+.schedule-time label {
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+.schedule-time input[type='time'] {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 44px;
+}
+.schedule-time input[type='range'] {
+  width: 100%;
+  min-height: 44px;
+  padding: 0;
+  accent-color: var(--brand);
+  touch-action: pan-y;
+}
+.schedule-window-footer {
+  justify-content: space-between;
+}
+.schedule-errors {
+  color: var(--err);
+  overflow-wrap: anywhere;
+}
+.speaking-schedule:disabled {
+  opacity: 0.7;
+}
+@media (max-width: 600px) {
+  .schedule-time-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .schedule-window,
+  .schedule-scope {
+    padding: var(--space-3);
+  }
+  .speaking-schedule .btn-sm {
+    min-height: 44px;
+  }
+}

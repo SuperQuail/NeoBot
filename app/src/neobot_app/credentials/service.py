@@ -58,6 +58,23 @@ class CredentialManager:
         # 按会话记录连续未命中的次数，超限后冷却，避免无限次尝试。
         self._issue_failures: dict[str, int] = {}
         self._issue_blocked_until: dict[str, float] = {}
+        # 冷却窗口内已提示过「太频繁」的会话：每窗口只提醒一次，避免任意成员
+        # 反复发像码的文本放大回执，也避免通过回执探测会话是否在冷却。
+        self._rate_limit_notified: set[str] = set()
+
+    def is_super_admin(self, user_id: Any) -> bool:
+        """该用户是否为超级管理员。
+
+        管理员本人直接发起的请求视为已授权：无需再申请凭据。其他人的请求
+        仍然需要管理员签发凭据，本方法只用于区分「谁在发起」。
+        """
+        permissions = getattr(self, "_permissions", None)
+        if permissions is None or user_id in (None, "", 0, "0"):
+            return False
+        try:
+            return bool(permissions.is_super_admin(int(user_id)))
+        except (TypeError, ValueError, AttributeError):
+            return False
 
     # ── 查询 ──
 
@@ -72,6 +89,35 @@ class CredentialManager:
         ]
         result.sort(key=lambda credential: credential.created_at)
         return result
+
+    def has_pending_or_active(self, *, chat_flow: str) -> bool:
+        """该会话是否有待签发或可用凭据（轻量遍历，不排序）。"""
+        return any(
+            credential.chat_flow == chat_flow
+            and credential.status in (CRED_STATUS_PENDING, CRED_STATUS_ACTIVE)
+            for credential in self._credentials.values()
+        )
+
+    def can_issue_pending(self, *, chat_flow: str, issuer_id: int) -> bool:
+        """该发送者是否有权限签发本会话任一待签发凭据。
+
+        失败计数与冷却提示都用它做权限门：没有签发权限的人即使猜中也会
+        `permission_denied`，对他的猜测计数没有安全收益，反而让普通成员能用
+        闲聊把签发挡住。
+        """
+        return any(
+            credential.chat_flow == chat_flow
+            and credential.status == CRED_STATUS_PENDING
+            and self._permissions.can(issuer_id, credential.required_level)
+            for credential in self._credentials.values()
+        )
+
+    def take_rate_limit_notice(self, chat_flow: str) -> bool:
+        """冷却窗口内每会话只提示一次；返回本次是否应当提示。"""
+        if chat_flow in self._rate_limit_notified:
+            return False
+        self._rate_limit_notified.add(chat_flow)
+        return True
 
     def has_active(self, *, chat_flow: str, action: str) -> bool:
         return self.consume(chat_flow=chat_flow, action=action, commit=False) is not None
@@ -135,6 +181,19 @@ class CredentialManager:
             if code not in self._credentials:
                 return code
 
+    def looks_like_code(self, text: str) -> bool:
+        """文本是否「长得像凭据码」：长度与字符集都要和凭据码一致。
+
+        `_try_issue_credential` 对每条群消息都会调用 `try_issue`，若把普通闲聊
+        也记成一次「没猜中」，活跃群聊五句话就能把会话打进 5 分钟冷却，而冷却期
+        内正确凭据码同样被拒（rate_limited），凭据功能等于不可用。所以只有格式
+        与凭据码一致的文本才算一次猜测尝试，防爆破强度不变。
+        """
+        candidate = text.strip().lower()
+        if len(candidate) != self._code_length:
+            return False
+        return all(char in _CODE_CHARS for char in candidate)
+
     def _record_issue_failure(self, chat_flow: str, now: float) -> None:
         """记录一次"没猜中"；达到阈值后进入冷却。"""
         failures = self._issue_failures.get(chat_flow, 0) + 1
@@ -142,10 +201,13 @@ class CredentialManager:
         if failures >= _ISSUE_MAX_FAILURES:
             self._issue_blocked_until[chat_flow] = now + _ISSUE_BLOCK_SECONDS
             self._issue_failures[chat_flow] = 0
+            # 新冷却窗口：允许再提示一次
+            self._rate_limit_notified.discard(chat_flow)
 
     def _clear_issue_failures(self, chat_flow: str) -> None:
         self._issue_failures.pop(chat_flow, None)
         self._issue_blocked_until.pop(chat_flow, None)
+        self._rate_limit_notified.discard(chat_flow)
 
     def is_issue_blocked(self, chat_flow: str) -> bool:
         """该会话是否正处于签发冷却期（供上层给出明确提示）。"""
@@ -162,7 +224,12 @@ class CredentialManager:
 
         credential = self._credentials.get(code.strip().lower())
         if credential is None or credential.chat_flow != chat_flow:
-            self._record_issue_failure(chat_flow, now)
+            # 只有「本来就能签发」的人发来的、格式合法的文本才算一次猜测尝试：
+            # 普通聊天不计数，无签发权限的成员也不计数（他们猜中同样会被拒）。
+            if self.looks_like_code(code) and self.can_issue_pending(
+                chat_flow=chat_flow, issuer_id=issuer_id
+            ):
+                self._record_issue_failure(chat_flow, now)
             return CredentialIssueResult(ok=False, error="not_found")
         if credential.is_expired():
             credential.status = CRED_STATUS_EXPIRED
@@ -245,6 +312,7 @@ class CredentialManager:
             if blocked_until <= now:
                 self._issue_blocked_until.pop(flow, None)
                 self._issue_failures.pop(flow, None)
+                self._rate_limit_notified.discard(flow)
         for code, credential in list(self._credentials.items()):
             if credential.status == CRED_STATUS_PENDING:
                 # pending 超时(10 分钟未签发)也清理,避免堆积

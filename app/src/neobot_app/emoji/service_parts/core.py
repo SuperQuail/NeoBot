@@ -60,6 +60,7 @@ class _CoreMixin:
         self._disk_sync_lock = threading.Lock()
         self._disk_refresh_task: asyncio.Task[None] | None = None
         self._scan_lock = asyncio.Lock()
+        self._empty_scan_reported = False
 
     def install_vision_provider(self, provider: Provider | None) -> Provider | None:
         """换用新的视觉 provider，返回旧的（热重载：只换引用，不负责关闭旧对象）。

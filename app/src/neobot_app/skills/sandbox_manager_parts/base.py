@@ -83,6 +83,8 @@ class SandboxManagerSkillBase:
         reviewer: Any = None,
         auto_review: bool = True,
         review_timeout_seconds: float = 30.0,
+        admin_self_authorize: bool = False,
+        admin_self_authorize_chats: Any = None,
     ) -> None:
         self._sandbox = sandbox_service
         from neobot_app.runtime.agent_file_tools import AgentFileTools
@@ -97,6 +99,8 @@ class SandboxManagerSkillBase:
             reviewer=reviewer,
             auto_review=bool(auto_review),
             review_timeout_seconds=float(review_timeout_seconds or 30.0),
+            admin_self_authorize=bool(admin_self_authorize),
+            admin_self_authorize_chats=admin_self_authorize_chats,
         )
 
     def reset(self) -> None:

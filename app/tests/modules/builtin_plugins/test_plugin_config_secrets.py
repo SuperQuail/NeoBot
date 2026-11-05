@@ -16,13 +16,13 @@ from neobot_app.builtin_plugins.dashboard.plugin_config import (
 )
 from neobot_app.builtin_plugins.dashboard.security import SECRET_PLACEHOLDER
 
-PLUGIN_CONFIG = '''api_key = "sk-plugin-secret"
+PLUGIN_CONFIG = """api_key = "sk-plugin-secret"
 base_url = "https://api.example.com"
 timeout = 30
 
 [extra]
 token = "tok-plugin-secret"
-'''
+"""
 
 
 def _editor(tmp_path: Path, **kwargs) -> PluginConfigEditor:
@@ -56,9 +56,7 @@ def test_save_keeps_secret_when_placeholder_or_blank(tmp_path: Path) -> None:
     """占位符/留空表示不修改，密钥原样保留。"""
     editor = _editor(tmp_path)
 
-    editor.save(
-        config={"api_key": SECRET_PLACEHOLDER, "base_url": "https://api.example.com/v2"}
-    )
+    editor.save(config={"api_key": SECRET_PLACEHOLDER, "base_url": "https://api.example.com/v2"})
     text = editor.path.read_text(encoding="utf-8")
     assert 'api_key = "sk-plugin-secret"' in text
     assert 'base_url = "https://api.example.com/v2"' in text
@@ -109,3 +107,72 @@ def test_saving_empty_config_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(PluginConfigError):
         editor.save(config={})
+
+
+@pytest.mark.parametrize("key", ["cookie", "session_cookie", "Cookie", "authorization", "access_key"])
+def test_authentication_fields_never_leave_config_documents(tmp_path: Path, key: str) -> None:
+    """认证字段的保护规则覆盖配置、默认值、嵌套描述和源码。"""
+    secret = "synthetic-authentication-value"
+    path = tmp_path / "config.toml"
+    editor = PluginConfigEditor(path, defaults={key: secret, "interval": 60})
+
+    document = editor.read()
+
+    assert document["config"][key] == SECRET_PLACEHOLDER
+    assert document["defaults"][key] == SECRET_PLACEHOLDER
+    assert document["source"] == ""
+    assert document["source_available"] is False
+    assert secret not in json.dumps(document, ensure_ascii=False)
+    field = next(item for item in document["schema"] if item["name"] == key)
+    assert field["sensitive"] is True
+    assert field["has_value"] is True
+    assert field["value"] == ""
+
+
+def test_cookie_keeps_and_replaces_saved_value_without_readback(tmp_path: Path) -> None:
+    """Cookie 表单沿用其它密钥的保留与替换语义。"""
+    path = tmp_path / "config.toml"
+    path.write_text('cookie = "synthetic-cookie-before"\ninterval = 60\n', encoding="utf-8")
+    editor = PluginConfigEditor(path)
+
+    for retained in ("", SECRET_PLACEHOLDER):
+        saved = editor.save(config={"cookie": retained, "interval": 30})
+        assert 'cookie = "synthetic-cookie-before"' in path.read_text(encoding="utf-8")
+        assert "synthetic-cookie-before" not in json.dumps(saved, ensure_ascii=False)
+
+    saved = editor.save(config={"cookie": "synthetic-cookie-after"})
+    assert 'cookie = "synthetic-cookie-after"' in path.read_text(encoding="utf-8")
+    assert "synthetic-cookie-after" not in json.dumps(saved, ensure_ascii=False)
+
+
+def test_cookie_default_also_protects_source_writes(tmp_path: Path) -> None:
+    """尚未保存的打包默认值同样禁止通过源码模式绕过表单保护。"""
+    editor = PluginConfigEditor(
+        tmp_path / "config.toml", defaults={"cookie": "synthetic-default-cookie", "interval": 60}
+    )
+
+    with pytest.raises(PluginConfigError, match="禁用源码编辑"):
+        editor.save(source="interval = 30\n")
+
+    assert editor.exists is False
+    saved = editor.save(config={"cookie": "", "interval": 30})
+    assert saved["config"]["cookie"] == SECRET_PLACEHOLDER
+    assert "synthetic-default-cookie" not in json.dumps(saved, ensure_ascii=False)
+
+
+def test_cookie_is_masked_inside_tables_and_table_lists(tmp_path: Path) -> None:
+    """分组描述和列表条目的聚合 value 不能保留嵌套 Cookie。"""
+    editor = PluginConfigEditor(
+        tmp_path / "config.toml",
+        defaults={
+            "service": {"cookie": "synthetic-table-cookie"},
+            "accounts": [{"cookie": "synthetic-list-cookie", "name": "test"}],
+        },
+    )
+
+    document = editor.read()
+    serialized = json.dumps(document, ensure_ascii=False)
+
+    assert "synthetic-table-cookie" not in serialized
+    assert "synthetic-list-cookie" not in serialized
+    assert document["source_available"] is False

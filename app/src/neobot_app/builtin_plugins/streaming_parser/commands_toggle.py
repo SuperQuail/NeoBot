@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import cards, db
+from . import cards
 from .commands import (
     UNNAMED,
     command_args,
@@ -15,6 +15,7 @@ from .commands import (
     shots,
     usage_card,
 )
+from .subscriptions import SubscriptionService
 
 try:
     from neobot_app.commands.model import PERM_SUB_ADMIN
@@ -56,11 +57,17 @@ def _register_one(
             return
         args = command_args(command_ctx)
         if len(args) < 2:
-            await cards.send_card(command_ctx, usage_card(label + "推送开关", [usage_text]), screenshots=shots(ctx))
+            await cards.send_card(
+                command_ctx,
+                usage_card(label + "推送开关", [usage_text]),
+                screenshots=shots(ctx),
+            )
             return
         switch = parse_switch(args[1])
         if switch is None:
-            await fail(command_ctx, ctx, "开关只能填 开 或 关", "收到的是：" + str(args[1]))
+            await fail(
+                command_ctx, ctx, "开关只能填 开 或 关", "收到的是：" + str(args[1])
+            )
             return
         try:
             target_kind, number = parse_target(args[0])
@@ -71,14 +78,12 @@ def _register_one(
         if row is None:
             await fail(command_ctx, ctx, "没有监听这个直播间", "先用 /监听 添加它。")
             return
-        async with state.database.transaction() as session:
-            await db.set_subscription_flags(
-                session,
-                group_id,
-                row.room_id,
-                push_live=switch if kind == "live" else None,
-                push_live_end=switch if kind == "live_end" else None,
-            )
+        await SubscriptionService(state).toggle(
+            group_id,
+            row.room_id,
+            push_live=switch if kind == "live" else None,
+            push_live_end=switch if kind == "live_end" else None,
+        )
         await cards.send_card(
             command_ctx,
             cards.kv_card(
@@ -94,4 +99,3 @@ def _register_one(
         )
 
     names.append(command_name)
-

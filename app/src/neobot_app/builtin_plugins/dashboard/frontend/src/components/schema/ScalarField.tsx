@@ -12,7 +12,6 @@ function ScalarField({
   value,
   onChange,
   disabled,
-  changed,
   onRestore,
   onShowHistory,
   historyCount,
@@ -31,9 +30,13 @@ function ScalarField({
     if (composing.current) return;
     setText(value === undefined || value === null ? '' : String(value));
   }, [value]);
-  const id = 'cfg-' + descriptor.path.map(encodeURIComponent).join('-');
+  const id =
+    typeof descriptor.input_id === 'string'
+      ? descriptor.input_id
+      : 'cfg-' + descriptor.path.map(encodeURIComponent).join('-');
   // 只有字符串才可能是密钥：max_output_tokens 这类数值字段不该出现眼睛按钮
-  const secret = descriptor.type === 'str' && SECRET_RE.test(descriptor.name);
+  const secret =
+    descriptor.type === 'str' && (descriptor.sensitive === true || SECRET_RE.test(descriptor.name));
   const locked = disabled || descriptor.readonly;
   const longText = text.length > 120 || text.includes('\n');
   /** 原生 input 事件在组字中会带 isComposing；React 的 Event 类型没声明它。 */
@@ -68,7 +71,7 @@ function ScalarField({
     <div className="cfg-label">
       <label htmlFor={id}>
         {parentPath && <span className="cfg-path-prefix">{parentPath}.</span>}
-        <Highlight text={descriptor.name} keyword={filter} />
+        <Highlight text={descriptor.label || descriptor.name} keyword={filter} />
         {descriptor.readonly && <span className="muted small"> · 只读</span>}
       </label>
       {descriptor.description && (
@@ -82,11 +85,11 @@ function ScalarField({
     </div>
   );
 
-  if (typeof value === 'boolean' || descriptor.type === 'bool') {
+  if (!descriptor.options?.length && (typeof value === 'boolean' || descriptor.type === 'bool')) {
     return (
       <div className="cfg-row">
         {header}
-        <div className="cfg-control">
+        <div className="cfg-control cfg-control-with-actions">
           <label className="config-switch">
             <input
               id={id}
@@ -102,8 +105,8 @@ function ScalarField({
           </label>
           <FieldActions
             descriptor={descriptor}
+            value={value}
             disabled={locked}
-            changed={changed}
             onRestore={onRestore}
             onShowHistory={onShowHistory}
             historyCount={historyCount}
@@ -121,7 +124,6 @@ function ScalarField({
         value={value}
         onChange={onChange}
         disabled={locked}
-        changed={changed}
         onRestore={onRestore}
         onShowHistory={onShowHistory}
         historyCount={historyCount}
@@ -135,11 +137,17 @@ function ScalarField({
     // 分组只改变显示顺序：不属于任何分组的值（如「不设置」）排在分组前，
     // 其余按后端给定分组渲染，用户才能一眼分清 OpenAI 档位与 Claude 档位。
     const grouped = new Set(groups.flatMap((group) => group.options));
-    // 手写 TOML 可能留 " HIGH " 这类写法：按大小写/空白宽容匹配，避免下拉显示成「不设置」。
+    // 枚举先精确匹配；仅旧 TOML 的 " HIGH " 这类值继续按大小写和空白宽容匹配。
     const rawValue = value === undefined || value === null ? '' : String(value);
     const normalizedValue = rawValue.trim().toLowerCase();
+    const mapped =
+      descriptor.option_values &&
+      options.find((option) => Object.is(descriptor.option_values?.[option], value));
     const selected =
-      options.find((option) => option.trim().toLowerCase() === normalizedValue) ?? rawValue;
+      mapped ??
+      (options.includes(rawValue)
+        ? rawValue
+        : (options.find((option) => option.trim().toLowerCase() === normalizedValue) ?? rawValue));
     const renderOption = (option: string) => (
       <option key={option} value={option}>
         {labelOf(option)}
@@ -148,14 +156,21 @@ function ScalarField({
     return (
       <div className="cfg-row">
         {header}
-        <div className="cfg-control">
+        <div className="cfg-control cfg-control-with-actions">
           <select
             id={id}
             className="input"
             disabled={locked}
             value={selected}
             onChange={(event) => {
-              if (!locked) onChange(event.target.value);
+              if (!locked) {
+                const key = event.target.value;
+                onChange(
+                  descriptor.option_values && key in descriptor.option_values
+                    ? descriptor.option_values[key]
+                    : key,
+                );
+              }
             }}
           >
             {options.filter((option) => !grouped.has(option)).map(renderOption)}
@@ -167,8 +182,8 @@ function ScalarField({
           </select>
           <FieldActions
             descriptor={descriptor}
+            value={value}
             disabled={locked}
-            changed={changed}
             onRestore={onRestore}
             onShowHistory={onShowHistory}
             historyCount={historyCount}
@@ -183,11 +198,11 @@ function ScalarField({
   // 非数字、非密钥的字符串一律走 LongTextField：
   // 它永远是 textarea（类型不翻转 → 不会像旧实现那样在打字途中换控件、丢焦点），
   // 高度按实测 scrollHeight（含折行）自动增高。
-  if (!numeric && !secret) {
+  if (!numeric && !secret && descriptor.single_line !== true) {
     return (
       <div className="cfg-row">
         {header}
-        <div className="cfg-control">
+        <div className="cfg-control cfg-control-with-actions">
           <LongTextField
             id={id}
             value={text}
@@ -198,13 +213,14 @@ function ScalarField({
             // 短字段不显示行数/放大：它就是个单行框，多一行说明纯属噪音
             showCount={longText}
             expandable={longText}
-            ariaLabel={descriptor.name}
+            ariaLabel={descriptor.label || descriptor.name}
+            placeholder={typeof descriptor.placeholder === 'string' ? descriptor.placeholder : undefined}
             ariaInvalid={!!error}
           />
           <FieldActions
             descriptor={descriptor}
+            value={value}
             disabled={locked}
-            changed={changed}
             onRestore={onRestore}
             onShowHistory={onShowHistory}
             historyCount={historyCount}
@@ -216,7 +232,7 @@ function ScalarField({
   return (
     <div className="cfg-row">
       {header}
-      <div className="cfg-control">
+      <div className="cfg-control cfg-control-with-actions">
         <div className="config-input-wrap">
           <input
             id={id}
@@ -229,6 +245,7 @@ function ScalarField({
             autoComplete="off"
             spellCheck={false}
             aria-invalid={!!error}
+            placeholder={typeof descriptor.placeholder === 'string' ? descriptor.placeholder : undefined}
             value={text}
             {...compositionProps}
             onChange={(event) => {
@@ -267,8 +284,8 @@ function ScalarField({
         )}
         <FieldActions
           descriptor={descriptor}
+          value={value}
           disabled={locked}
-          changed={changed}
           onRestore={onRestore}
           onShowHistory={onShowHistory}
           historyCount={historyCount}

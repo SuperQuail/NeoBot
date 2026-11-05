@@ -317,7 +317,9 @@ class CommandService:
         try:
             image_path = await self._markdown_image_converter.convert(markdown)
         except Exception as exc:
-            self._log(f"markdown 渲染失败,降级文本发送: {exc}")
+            self._log(
+                "命令图片渲染失败，将改用文本回复", kind=kind, conversation_id=conv_id, error=str(exc), level="info"
+            )
             return False
 
         return await self._send_image_path(
@@ -342,7 +344,9 @@ class CommandService:
         try:
             image_path = self._write_image_bytes(data, filename)
         except Exception as exc:
-            self._log(f"卡片图片落盘失败,降级文本发送: {exc}")
+            self._log(
+                "命令卡片保存失败，将改用文本回复", kind=kind, conversation_id=conv_id, error=str(exc), level="info"
+            )
             return False
         return await self._send_image_path(
             kind, conv_id, image_path, at_user_id=at_user_id
@@ -443,12 +447,12 @@ class CommandService:
         except Exception:  # pragma: no cover - 导入失败时不影响命令
             return "data/config.toml"
 
-    def _log(self, message: str) -> None:
+    def _log(self, message: str, *, level: str = "warning", **fields: Any) -> None:
         logger = self._logger
         if logger is None:
             return
         try:
-            logger.warning(message)
+            getattr(logger, level)(message, **fields)
         except Exception:
             pass
 

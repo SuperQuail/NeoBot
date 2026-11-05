@@ -21,7 +21,6 @@ def backup_config(file_path: Path, backup_dir: Path, max_backups: int = 15) -> N
     既容易误把 .env 备份当配置还原，也会让两类备份互相挤占保留额度。
     """
     if not file_path.exists():
-        logger.info(f"配置文件不存在，无需备份: {file_path}")
         return
 
     timestamp = time.strftime(_TIMESTAMP_FORMAT) + f"_{int(time.time() * 1000) % 1000:03d}"
@@ -34,7 +33,7 @@ def backup_config(file_path: Path, backup_dir: Path, max_backups: int = 15) -> N
         # 备份目录可能被清空/权限异常,先确保存在
         backup_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(file_path, backup_path)
-        logger.info(f"配置文件已备份到: {backup_path}")
+        logger.info("配置文件已备份", path=str(backup_path))
     except Exception as e:
         logger.error(f"备份配置文件失败: {e}")
         return

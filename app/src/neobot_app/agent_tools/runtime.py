@@ -78,6 +78,12 @@ class AgentToolRuntime:
             review_timeout_seconds=float(
                 getattr(self.config, "review_timeout_seconds", 30.0) or 30.0
             ),
+            admin_self_authorize=bool(
+                getattr(self.config, "admin_self_authorize", False)
+            ),
+            admin_self_authorize_chats=getattr(
+                self.config, "admin_self_authorize_chats", None
+            ),
         )
         self.state = StateTools(state_dir / "state", approve=self._approve_plan, max_goal_rounds=self.config.max_goal_rounds)
         self.files = AgentFileTools(sandbox)

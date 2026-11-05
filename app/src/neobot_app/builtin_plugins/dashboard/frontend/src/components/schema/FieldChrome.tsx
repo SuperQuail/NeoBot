@@ -1,4 +1,5 @@
 // components/schema/FieldChrome.tsx —— 生效方式摘要、重启例外与字段级操作
+import { RotateCcw } from 'lucide-react';
 import type { FieldDescriptor } from '../../api/types';
 import type { FieldCallbacks } from './fieldTypes';
 import { Highlight } from './Highlight';
@@ -66,20 +67,21 @@ function HotBadge({ descriptor }: { descriptor: FieldDescriptor }) {
 
 function FieldActions({
   descriptor,
+  value,
   disabled,
-  changed,
   onRestore,
   onShowHistory,
   historyCount,
 }: {
   descriptor: FieldDescriptor;
+  value: unknown;
   disabled?: boolean;
-  changed?: boolean;
   onRestore?: FieldCallbacks['onRestore'];
   onShowHistory?: FieldCallbacks['onShowHistory'];
   historyCount?: number;
 }) {
   const hasDefault = descriptor.default !== undefined;
+  const canRestore = hasDefault && JSON.stringify(value) !== JSON.stringify(descriptor.default);
   const historyTotal = historyCount ?? 0;
   if (!hasDefault && !historyTotal) return null;
   return (
@@ -96,15 +98,26 @@ function FieldActions({
         </button>
       )}
       {hasDefault && (
-        <button
-          type="button"
-          className="btn-sm"
-          disabled={disabled || descriptor.readonly || !changed}
-          title="恢复该配置项的默认值"
-          onClick={() => onRestore?.(descriptor.path, descriptor.default)}
-        >
-          恢复默认
-        </button>
+        <span className="cfg-restore-slot">
+          <button
+            type="button"
+            className="icon-btn cfg-restore"
+            hidden={!canRestore}
+            disabled={disabled || descriptor.readonly}
+            aria-label="恢复默认"
+            title={`恢复“${descriptor.label || descriptor.name}”的默认值`}
+            onClick={(event) => {
+              // 恢复后按钮会隐藏，先将焦点交还本字段，便于继续键盘操作。
+              event.currentTarget
+                .closest('.cfg-control')
+                ?.querySelector<HTMLElement>('input, textarea, select')
+                ?.focus({ preventScroll: true });
+              onRestore?.(descriptor.path, descriptor.default);
+            }}
+          >
+            <RotateCcw size={15} aria-hidden="true" />
+          </button>
+        </span>
       )}
     </span>
   );
@@ -116,7 +129,7 @@ function FieldHeader({ descriptor, filter }: { descriptor: FieldDescriptor; filt
     <div className="cfg-label">
       <span className="cfg-field-name">
         {parentPath && <span className="cfg-path-prefix">{parentPath}.</span>}
-        <Highlight text={descriptor.name} keyword={filter} />
+        <Highlight text={descriptor.label || descriptor.name} keyword={filter} />
         {descriptor.readonly && <span className="cfg-readonly">只读</span>}
       </span>
       {descriptor.description && (

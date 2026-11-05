@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar, overload
 
 
 @dataclass(frozen=True)
@@ -121,16 +122,88 @@ class Message:
     def to_list(self) -> list[dict[str, Any]]:
         return [segment.to_dict() for segment in self.segments]
 
+    def to_chain(self) -> MessageChain:
+        """取得独立消息链，处理器修改嵌套段数据时不会污染收到的消息。"""
+        return MessageChain(self.segments).copy()
+
+
+_SegmentT = TypeVar("_SegmentT", bound=MessageSegment)
+_SegmentKind = str | type[MessageSegment]
+
 
 class MessageChain:
+    """有序消息段容器；查询不修改原链，copy() 深复制消息段及其数据。"""
+
     def __init__(self, segments: Iterable[MessageSegment | Mapping[str, Any]] | None = None) -> None:
         self._segments: list[MessageSegment] = []
         for segment in segments or ():
             self.segment(segment)
 
+    def __len__(self) -> int:
+        return len(self._segments)
+
+    @property
+    def plain_text(self) -> str:
+        """按原顺序读取文本段，不把图片、@ 或引用转换为命令文本。"""
+        return "".join(segment.text for segment in self._segments)
+
+    def __iter__(self) -> Iterator[MessageSegment]:
+        return iter(self._segments)
+
+    @overload
+    def __getitem__(self, index: int) -> MessageSegment: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> MessageChain: ...
+
+    def __getitem__(self, index: int | slice) -> MessageSegment | MessageChain:
+        if isinstance(index, slice):
+            return MessageChain(self._segments[index])
+        return self._segments[index]
+
     @property
     def segments(self) -> list[MessageSegment]:
         return list(self._segments)
+
+    @overload
+    def get(self, kind: type[_SegmentT]) -> list[_SegmentT]: ...
+
+    @overload
+    def get(self, kind: str) -> list[MessageSegment]: ...
+
+    def get(self, kind: str | type[_SegmentT]) -> list[MessageSegment] | list[_SegmentT]:
+        if isinstance(kind, str):
+            return [segment for segment in self._segments if segment.type == kind]
+        return [segment for segment in self._segments if isinstance(segment, kind)]
+
+    def has(self, kind: _SegmentKind) -> bool:
+        return any(_matches_segment_kind(segment, kind) for segment in self._segments)
+
+    @overload
+    def first(self, kind: type[_SegmentT]) -> _SegmentT | None: ...
+
+    @overload
+    def first(self, kind: str) -> MessageSegment | None: ...
+
+    def first(self, kind: _SegmentKind) -> MessageSegment | None:
+        return next(
+            (segment for segment in self._segments if _matches_segment_kind(segment, kind)),
+            None,
+        )
+
+    def include(self, *kinds: _SegmentKind) -> MessageChain:
+        return MessageChain(
+            segment for segment in self._segments if any(_matches_segment_kind(segment, kind) for kind in kinds)
+        )
+
+    def exclude(self, *kinds: _SegmentKind) -> MessageChain:
+        return MessageChain(
+            segment for segment in self._segments if not any(_matches_segment_kind(segment, kind) for kind in kinds)
+        )
+
+    def copy(self) -> MessageChain:
+        """复制消息段对象及嵌套 data，保留自定义消息段的运行时类型。"""
+        return MessageChain(deepcopy(self._segments))
 
     def segment(self, segment: MessageSegment | Mapping[str, Any]) -> MessageChain:
         self._segments.append(MessageSegment.from_raw(segment))
@@ -150,6 +223,12 @@ class MessageChain:
 
     def to_list(self) -> list[dict[str, Any]]:
         return [segment.to_dict() for segment in self._segments]
+
+
+def _matches_segment_kind(segment: MessageSegment, kind: _SegmentKind) -> bool:
+    if isinstance(kind, str):
+        return segment.type == kind
+    return isinstance(segment, kind)
 
 
 def text(value: str) -> MessageSegment:

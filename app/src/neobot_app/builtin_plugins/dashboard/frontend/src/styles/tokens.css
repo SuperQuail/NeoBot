@@ -52,6 +52,7 @@
   --danger-soft: #fbece9;
   --info-soft: #eaf1f8;
   --focus-ring: color-mix(in srgb, var(--brand) 28%, transparent);
+  --focus-outline-offset: -3px;
   --radius: 12px;
   --radius-control: 8px;
   --radius-large: 16px;

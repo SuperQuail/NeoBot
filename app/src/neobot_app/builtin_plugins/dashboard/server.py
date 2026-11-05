@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import time
 import tomllib
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -35,7 +36,7 @@ from .security import (
     is_loopback,
     secrets_equal,
 )
-from .web_extension import extension_metadata
+from .web_extension import extension_metadata, extension_request_permission
 
 COOKIE_NAME = "neobot_dashboard_session"
 _STATIC_DIR = Path(__file__).resolve().parent / "web"
@@ -50,6 +51,21 @@ _ALLOW_LIST_EXEMPT_PATHS = frozenset({"/healthz"})
 
 #: 建立会话之前就要改状态、因而拿不到 CSRF token 的端点（需要额外跨站防护）
 _PRE_SESSION_STATE_CHANGE_PATHS = frozenset({"/api/auth/login", "/api/auth/setup"})
+
+
+def _bound_access_url(host: str, port: int, base_path: str) -> str:
+    """把实际监听地址转换为本机可访问 URL，不把通配地址当成访问地址。"""
+    host = host.strip("[]")
+    try:
+        address = ip_address(host)
+    except ValueError:
+        pass
+    else:
+        if address.is_unspecified:
+            host = "::1" if address.version == 6 else "127.0.0.1"
+    if ":" in host:
+        host = f"[{host.replace('%', '%25')}]"
+    return f"http://{host}:{port}{base_path}/"
 
 
 def _cross_site_guard(request: web.Request, *, trust_proxy: bool = False) -> web.Response | None:
@@ -71,9 +87,7 @@ def _cross_site_guard(request: web.Request, *, trust_proxy: bool = False) -> web
 
     返回非 None 表示应当直接以该响应拒绝请求。
     """
-    content_type = (
-        (request.headers.get("Content-Type") or "").split(";", 1)[0].strip().casefold()
-    )
+    content_type = (request.headers.get("Content-Type") or "").split(";", 1)[0].strip().casefold()
     if content_type != "application/json":
         return _json_error("该接口只接受 application/json 请求", status=415)
 
@@ -151,16 +165,10 @@ class DashboardServer:
             latency_samples=latency_sample_capacity(probe_interval),
             logger=logger,
         )
-        self.config_manager = BotConfigManager(
-            config_path=config_path, backup_dir=backup_dir, logger=logger
-        )
-        self.env_manager = EnvFileManager(
-            env_path=env_path, backup_dir=backup_dir, logger=logger
-        )
+        self.config_manager = BotConfigManager(config_path=config_path, backup_dir=backup_dir, logger=logger)
+        self.env_manager = EnvFileManager(env_path=env_path, backup_dir=backup_dir, logger=logger)
         self.api = DashboardApi(console=self)
-        self.bilibili_login = BilibiliQrLoginFlow(
-            lambda: self.api._service("bilibili_service")
-        )
+        self.bilibili_login = BilibiliQrLoginFlow(lambda: self.api._service("bilibili_service"))
 
         self._config_cache: dict[str, Any] = {}
         self._config_cache_key: tuple[int, int] | None = None
@@ -171,6 +179,7 @@ class DashboardServer:
         self.runtime_config: DashboardConfig = config
         self._bot_cache: dict[str, Any] = {}
         self._bot_cache_at = 0.0
+        self._bot_cache_connected: bool | None = None
         self._bot_lock = asyncio.Lock()
         #: 依赖面板的插件注册进来的 HTTP 扩展（星舰游戏等）
         self._extensions: dict[str, Any] = {}
@@ -260,16 +269,14 @@ class DashboardServer:
 
     @property
     def allow_remote_manage(self) -> bool:
-        return bool(
-            self._live_config().get("allow_remote_manage", self._allow_remote_manage)
-        )
+        return bool(self._live_config().get("allow_remote_manage", self._allow_remote_manage))
 
     async def start(self) -> str | None:
         app = self._make_app()
         runner = web.AppRunner(app, access_log=None, shutdown_timeout=5)
         await runner.setup()
         last_error: OSError | None = None
-        port = self.config.port
+        bound_site: web.TCPSite | None = None
         for offset in range(_PORT_SEARCH_LIMIT):
             candidate = self.config.port + offset
             if candidate > 65535:
@@ -280,27 +287,33 @@ class DashboardServer:
             except OSError as exc:
                 last_error = exc
                 continue
-            port = candidate
+            bound_site = site
             break
-        else:
+        if bound_site is None:
             await runner.cleanup()
-            raise OSError(
-                f"面板端口从 {self.config.port} 起的 {_PORT_SEARCH_LIMIT} 个端口均不可用: {last_error}"
-            )
+            raise OSError(f"面板从端口 {self.config.port} 起未找到可用监听端口: {last_error}")
+        addresses = runner.addresses
+        if not addresses:
+            await runner.cleanup()
+            raise OSError("网页面板未建立监听，无法发布访问地址")
+        # host=localhost/None 可能同时绑定两个地址；选择一个确实绑定的地址。
+        # 端口 0 的程序化装配由系统分配端口，必须从 socket 结果读取。
+        address = next((item for item in addresses if ":" not in str(item[0])), addresses[0])
+        bound_host, port = str(address[0]), int(address[1])
+        if len(address) > 3 and address[3] and ":" in bound_host and "%" not in bound_host:
+            # IPv6 link-local 地址需要 zone；getsockname 把它放在四元组 scope_id 中。
+            zone = self.config.host.strip("[]").partition("%")[2] or str(address[3])
+            bound_host = f"{bound_host}%{zone}"
         self._runner = runner
-        self._site = site
+        self._site = bound_site
         self.bound_port = port
-        display_host = "<服务器IP>" if self.config.host in {"0.0.0.0", "::"} else self.config.host
-        prefix = self.base_path or ""
-        self.public_url = f"http://{display_host}:{port}{prefix}/"
-        if port != self.config.port:
-            self.logger.warning(
-                f"面板端口 {self.config.port} 被占用，已改用 {port}；请同步修改 dashboard.port"
-            )
+        self.public_url = _bound_access_url(bound_host, port, self.base_path or "")
+        if self.config.port and port != self.config.port:
+            self.logger.warning(f"面板端口 {self.config.port} 被占用，已改用 {port}；请同步修改 dashboard.port")
         self.logger.info(
             "网页面板已启动",
             url=self.public_url,
-            local_url=f"http://127.0.0.1:{port}{prefix}/",
+            local_url=self.public_url,
             listen_host=self.config.host,
             password_configured=self.passwords.configured,
         )
@@ -332,6 +345,7 @@ class DashboardServer:
         self._runner = None
         self._site = None
         self.public_url = None
+        self.bound_port = None
         self.metrics.flush()
 
     # ------------------------------------------------------------------
@@ -388,6 +402,11 @@ class DashboardServer:
         self._route(app, "POST", "/api/plugins/{name}/uninstall", self.api.plugin_uninstall)
         self._route(app, "GET", "/api/plugins/{name}/config", self.api.plugin_config_get)
         self._route(app, "POST", "/api/plugins/{name}/config", self.api.plugin_config_save)
+        self._route(app, "GET", "/api/plugins/{name}/surface", self.api.plugin_surface_get)
+        self._route(app, "POST", "/api/plugins/{name}/actions/{action}", self.api.plugin_action_call)
+        self._route(app, "GET", "/api/plugins/{name}/views", self.api.plugin_views_get)
+        self._route(app, "GET", "/plugins-ui/{name}/{view}/", self.api.plugin_view_asset)
+        self._route(app, "GET", "/plugins-ui/{name}/{view}/{asset:.*}", self.api.plugin_view_asset)
 
         self._route(app, "GET", "/api/config", self.api.config_get)
         self._route(app, "POST", "/api/config", self.api.config_save)
@@ -410,9 +429,7 @@ class DashboardServer:
         self._route(app, "GET", "/api/chat-flows/detail", self.api.chat_flow_detail)
         self._route(app, "GET", "/api/chat-flows/prompts", self.api.chat_flow_prompts)
         self._route(app, "GET", "/api/chat-flows/prompt", self.api.chat_flow_prompt)
-        self._route(
-            app, "POST", "/api/chat-flows/prompts/clear", self.api.chat_flow_prompts_clear
-        )
+        self._route(app, "POST", "/api/chat-flows/prompts/clear", self.api.chat_flow_prompts_clear)
         # ── 档案管理（features/spec(2)）──
         self._route(app, "GET", "/api/archives", self.api.archives)
         self._route(app, "GET", "/api/archives/over-limit", self.api.archives_over_limit)
@@ -444,12 +461,8 @@ class DashboardServer:
         # B站扫码登录：轻量独立页（不改 React 构建），接口走 /api 鉴权。
         self._route(app, "GET", "/bilibili/login", self.api.bilibili_login_page)
         self._route(app, "GET", "/bilibili/login.js", self.api.bilibili_login_script)
-        self._route(
-            app, "GET", "/api/bilibili/login/status", self.api.bilibili_login_status
-        )
-        self._route(
-            app, "POST", "/api/bilibili/login/start", self.api.bilibili_login_start
-        )
+        self._route(app, "GET", "/api/bilibili/login/status", self.api.bilibili_login_status)
+        self._route(app, "POST", "/api/bilibili/login/start", self.api.bilibili_login_start)
 
         self._route(app, "GET", "/favicon.ico", self._favicon)
         self._route(app, "GET", "/image/{name}", self._image)
@@ -506,21 +519,18 @@ class DashboardServer:
                 allowed_ips=False,
             )
 
-        if (
-            path in _PRE_SESSION_STATE_CHANGE_PATHS
-            and request.method in {"POST", "PUT", "PATCH", "DELETE"}
-        ):
+        # 扩展的数据接口可能不在 /api/ 下，初始化保护与会话校验必须共用这个判据。
+        extension_protected = self._extension_requires_auth(path)
+        if path in _PRE_SESSION_STATE_CHANGE_PATHS and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
             # 会话建立前无法校验 CSRF token，用 Content-Type / Origin 兜住跨站提交
-            guarded = _cross_site_guard(
-                request, trust_proxy=self.config.trust_proxy_headers
-            )
+            guarded = _cross_site_guard(request, trust_proxy=self.config.trust_proxy_headers)
             if guarded is not None:
                 return guarded
 
         if not configured:
             # 未设置密码：禁止外网访问；本机只允许进入设置流程。
             # 状态接口与静态资源始终可访问，便于前端展示明确的提示。
-            if path == "/api/auth/status" or not path.startswith(_API_PREFIX):
+            if path == "/api/auth/status" or (not path.startswith(_API_PREFIX) and not extension_protected):
                 return await handler(request)
             if not loopback:
                 return _json_error(
@@ -550,24 +560,11 @@ class DashboardServer:
         }
         # 子插件挂载的接口（auth_prefixes）与面板 /api 一样必须先有会话；
         # 其余静态资源与 SPA 页面本身不需要鉴权（数据全部来自受保护的接口）
-        extension_protected = self._extension_requires_auth(path)
-        if (
-            not extension_protected
-            and not path.startswith(_API_PREFIX)
-            and path not in public
-            and not path.startswith("/assets/")
-            and not path.startswith("/image/")
-        ):
-            return await handler(request)
-        if not extension_protected and (
-            path in public or path.startswith("/assets/") or path.startswith("/image/")
-        ):
+        if not extension_protected and (not path.startswith(_API_PREFIX) or path in public):
             return await handler(request)
 
         token = request.headers.get("X-Token") or request.cookies.get(COOKIE_NAME) or ""
-        session = self.sessions.get(
-            token, password_revision=self.passwords.revision
-        )
+        session = self.sessions.get(token, password_revision=self.passwords.revision)
         if session is None:
             return _json_error("需要登录", status=401)
         request["dashboard_session"] = session
@@ -575,7 +572,22 @@ class DashboardServer:
             supplied = request.headers.get("X-CSRF-Token", "")
             if not supplied or not secrets_equal(supplied, session.csrf_token):
                 return _json_error("CSRF 校验失败，请刷新页面后重试", status=403)
+        if extension_protected:
+            denied = self._extension_permission_error(request, path)
+            if denied is not None:
+                return denied
         return await handler(request)
+
+    def _extension_permission_error(self, request: web.Request, path: str) -> web.Response | None:
+        try:
+            permission = extension_request_permission(self._extension_for(path), method=request.method, path=path)
+        except Exception as exc:
+            # 声明出错必须拒绝访问，不能按普通操作放行。
+            self.logger.warning(f"扩展权限声明无效 path={path}: {type(exc).__name__}")
+            return _json_error("扩展接口权限声明无效，已拒绝请求", status=403)
+        if permission == "manage":
+            return self.api._require_manage(request)
+        return None
 
     async def _security_headers(self, request: web.Request, response: web.StreamResponse) -> None:
         response.headers["X-Robots-Tag"] = "noindex, nofollow, nosnippet, noimageindex"
@@ -587,8 +599,12 @@ class DashboardServer:
             "script-src 'self'; connect-src 'self'; media-src 'self' blob:; "
             "worker-src 'self' blob:; base-uri 'none'; form-action 'none'"
         )
-        if self._strip_base(request.path).startswith(_API_PREFIX):
+        path = self._strip_base(request.path)
+        if path.startswith(_API_PREFIX) or self._extension_requires_auth(path):
             response.headers["Cache-Control"] = "no-store"
+        from .api_parts.plugin_views import apply_plugin_view_headers
+
+        apply_plugin_view_headers(request, response)
 
     def _strip_base(self, path: str) -> str:
         if self.base_path and path.startswith(self.base_path):
@@ -709,17 +725,26 @@ class DashboardServer:
         response.del_cookie(COOKIE_NAME, path=self.base_path or "/")
 
     async def bot_info(self) -> dict[str, Any]:
-        """获取机器人信息（带缓存）。"""
+        """缓存身份信息，但连接／断开后下一次读取必须立即重新探测。"""
         ttl = float(self.runtime_config.bot_info_cache_ttl)
+        connected = bool(getattr(self.adapter, "connected", False))
         now = time.time()
-        if ttl > 0 and self._bot_cache and now - self._bot_cache_at < ttl:
+        if ttl > 0 and self._bot_cache and self._bot_cache_connected == connected and now - self._bot_cache_at < ttl:
             return self._bot_cache
         async with self._bot_lock:
-            if ttl > 0 and self._bot_cache and time.time() - self._bot_cache_at < ttl:
+            connected = bool(getattr(self.adapter, "connected", False))
+            if (
+                ttl > 0
+                and self._bot_cache
+                and self._bot_cache_connected == connected
+                and time.time() - self._bot_cache_at < ttl
+            ):
                 return self._bot_cache
             info = await self._probe_bot()
             self._bot_cache = info
             self._bot_cache_at = time.time()
+            # 保留探测前的连接状态；探测期间若发生变化，下一次读取仍会失效。
+            self._bot_cache_connected = connected
             return info
 
     async def _probe_bot(self) -> dict[str, Any]:
@@ -768,8 +793,7 @@ class DashboardServer:
         if not allow_list.invalid:
             return
         self.logger.warning(
-            "面板白名单含无法解析的条目，已忽略（除本机外将全部拒绝访问）: "
-            + ", ".join(allow_list.invalid)
+            "面板白名单含无法解析的条目，已忽略（除本机外将全部拒绝访问）: " + ", ".join(allow_list.invalid)
         )
 
     def _note_denied(self, ip: str, path: str) -> None:
@@ -819,9 +843,8 @@ class DashboardServer:
     def describe(self) -> dict[str, Any]:
         """面板自身状态（供诊断接口使用）。"""
         return {
-            "url": self.public_url,
+            **self.connection_info(),
             "host": self.config.host,
-            "port": self.bound_port or self.config.port,
             "base_path": self.base_path,
             "password_configured": self.passwords.configured,
             "manage_plugins": self.manage_plugins,
@@ -831,6 +854,18 @@ class DashboardServer:
             "sessions": self.sessions.describe(),
             "system": system_module.snapshot(data_dir=self.data_dir),
             "extensions": self.describe_extensions(),
+        }
+
+    def connection_info(self) -> dict[str, Any]:
+        """只读运行快照；未监听时不返回配置推测出的可用端口或地址。"""
+        available = self._site is not None and self.public_url is not None
+        return {
+            "available": available,
+            "url": self.public_url if available else None,
+            "local_url": self.public_url if available else None,
+            "port": self.bound_port if available else None,
+            "listen_host": self.config.host,
+            "base_path": self.base_path,
         }
 
 

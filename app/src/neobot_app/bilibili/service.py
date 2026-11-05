@@ -275,12 +275,12 @@ class BilibiliService:
     async def _login_failed(self, reason: str) -> bool:
         """记录可读失败原因；账号其实已登录（如轮询被提前打断）时按成功处理。"""
         self._error = reason
-        self._logger.warning(reason)
         if await self.verify():
-            self._logger.info("B站扫码登录未完成，但当前账号已登录，按成功处理")
+            self._logger.info("扫码流程未完成，现有账号验证仍有效")
             return True
         # verify 失败会覆盖成它自己的错误，这里恢复登录流程的真实原因。
         self._error = reason
+        self._logger.warning("B站扫码登录未完成", reason=reason)
         return False
 
     # ── 对外动作 ──

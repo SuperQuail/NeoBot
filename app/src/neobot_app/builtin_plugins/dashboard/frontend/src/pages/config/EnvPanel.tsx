@@ -13,7 +13,7 @@ import InlineAlert from '../../components/ui/InlineAlert';
 import { confirmAction } from '../../components/ui/ConfirmDialog';
 import { useConfigAutoRead, useEditorGuard, useEditorOperation } from './shared';
 function EnvPanel() {
-  const [doc, setDoc] = useState<(EnvPayload & { revision?: number }) | null>(null);
+  const [doc, setDoc] = useState<EnvPayload | null>(null);
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [deletes, setDeletes] = useState<string[]>([]);
   const [newKey, setNewKey] = useState('');

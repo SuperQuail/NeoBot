@@ -62,7 +62,9 @@ def _escape(value: Any) -> str:
     return html.escape(str(value if value is not None else ""), quote=True)
 
 
-def _fill(template: str, values: dict[str, Any], *, raw_keys: tuple[str, ...] = ()) -> str:
+def _fill(
+    template: str, values: dict[str, Any], *, raw_keys: tuple[str, ...] = ()
+) -> str:
     """替换 {{key}}；raw_keys 里的键原样插入（它们必须是渲染端自己生成的 HTML）。"""
     out: list[str] = []
     index = 0
@@ -76,7 +78,7 @@ def _fill(template: str, values: dict[str, Any], *, raw_keys: tuple[str, ...] = 
             out.append(template[index:])
             break
         out.append(template[index:start])
-        key = template[start + len(OPEN_TAG):end].strip()
+        key = template[start + len(OPEN_TAG) : end].strip()
         if key in raw_keys:
             out.append(str(values.get(key, "")))
         else:
@@ -144,7 +146,12 @@ class CardRenderer:
             from neobot_modloader import FontFace
         except Exception:
             return ()
-        formats = {".woff2": "woff2", ".woff": "woff", ".ttf": "truetype", ".otf": "opentype"}
+        formats = {
+            ".woff2": "woff2",
+            ".woff": "woff",
+            ".ttf": "truetype",
+            ".otf": "opentype",
+        }
         faces: list[Any] = []
         for path in sorted(fonts_dir.iterdir()):
             fmt = formats.get(path.suffix.lower())
@@ -190,14 +197,19 @@ class CardRenderer:
             return None
         return None
 
-    async def render_card(self, values: dict[str, Any], *, style: str) -> bytes | None:
-        """渲染开播/下播卡片；style 必须是具体风格名。"""
+    def card_html(self, values: dict[str, Any], *, style: str) -> str | None:
+        """通知与面板预览共用同一模板，所有外部文字仍统一转义。"""
         template = self._template(f"card_{style}.html")
         if template is None:
             return None
         payload = dict(values)
         payload["font_style"] = ""
-        return await self._render_html(_fill(template, payload, raw_keys=("font_style",)))
+        return _fill(template, payload, raw_keys=("font_style",))
+
+    async def render_card(self, values: dict[str, Any], *, style: str) -> bytes | None:
+        """渲染开播/下播卡片；style 必须是具体风格名。"""
+        html_text = self.card_html(values, style=style)
+        return await self._render_html(html_text) if html_text is not None else None
 
     async def render_overview(
         self,
@@ -227,4 +239,3 @@ class CardRenderer:
         }
         html_text = _fill(template, values, raw_keys=("grid", "font_style"))
         return await self._render_html(html_text)
-

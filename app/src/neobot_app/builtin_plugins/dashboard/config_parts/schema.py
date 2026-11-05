@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import MISSING, fields, is_dataclass
+from enum import Enum
 from types import UnionType
 from typing import Any, Union, get_args, get_origin
+
+from pydantic import BaseModel, SecretBytes, SecretStr
 
 from neobot_app.config.loader.converter import _validate_type
 from neobot_app.config.model_params import extra_body_reserved_keys
@@ -51,6 +54,13 @@ def _default_of(field_obj: Any) -> Any:
 
 
 def _jsonable(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return _jsonable(value.value)
+    if isinstance(value, (SecretStr, SecretBytes)):
+        return "**********" if value.get_secret_value() else ""
+    if isinstance(value, BaseModel):
+        # 保留模型字段结构，后续脱敏才能识别嵌套密钥，禁止退化成含明文的 repr。
+        return _jsonable(value.model_dump())
     if is_dataclass(value):
         return {item.name: _jsonable(getattr(value, item.name)) for item in fields(value)}
     if isinstance(value, dict):
@@ -81,10 +91,7 @@ def _matches(value: Any, expected: Any) -> bool:
         args = get_args(expected)
         if len(args) != 2:
             return True
-        return all(
-            _matches(key, args[0]) and _matches(item, args[1])
-            for key, item in value.items()
-        )
+        return all(_matches(key, args[0]) and _matches(item, args[1]) for key, item in value.items())
     if is_dataclass(expected):
         return isinstance(value, dict)
     if expected is bool:
@@ -161,9 +168,7 @@ def _coerce_payload(schema: type, data: Any) -> Any:
         elif get_origin(target) is dict and isinstance(raw, dict):
             args = get_args(target)
             if len(args) == 2 and args[1] in _COERCIBLE_TYPES:
-                coerced[field_obj.name] = {
-                    key: _coerce_leaf(item, args[1]) for key, item in raw.items()
-                }
+                coerced[field_obj.name] = {key: _coerce_leaf(item, args[1]) for key, item in raw.items()}
         else:
             coerced[field_obj.name] = _coerce_leaf(raw, target)
     return coerced
@@ -195,8 +200,7 @@ def _validate_payload(schema: type, data: Any, path: str, errors: list[dict[str,
                 errors.append(
                     {
                         "path": field_path,
-                        "message": "自定义参数不得使用 __ 开头（内部命名空间）: "
-                        + "、".join(reserved),
+                        "message": "自定义参数不得使用 __ 开头（内部命名空间）: " + "、".join(reserved),
                     }
                 )
         inner = _inner_types(field_type)
@@ -221,10 +225,7 @@ def _validate_payload(schema: type, data: Any, path: str, errors: list[dict[str,
                         errors.append(
                             {
                                 "path": f"{field_path}[{index}]",
-                                "message": (
-                                    f"类型应为 {_type_name(args[0])}，"
-                                    f"实际为 {type(item).__name__}"
-                                ),
+                                "message": (f"类型应为 {_type_name(args[0])}，实际为 {type(item).__name__}"),
                             }
                         )
             continue
@@ -232,9 +233,7 @@ def _validate_payload(schema: type, data: Any, path: str, errors: list[dict[str,
             # 只说「类型应为 dict，实际为 dict」等于没报：容器对得上、里面某个键
             # 的类型不对，必须指到那个键。
             if not isinstance(raw, dict):
-                errors.append(
-                    {"path": field_path, "message": f"应为表（table），实际为 {type(raw).__name__}"}
-                )
+                errors.append({"path": field_path, "message": f"应为表（table），实际为 {type(raw).__name__}"})
                 continue
             args = get_args(target)
             if len(args) == 2:
@@ -244,20 +243,14 @@ def _validate_payload(schema: type, data: Any, path: str, errors: list[dict[str,
                         errors.append(
                             {
                                 "path": item_path,
-                                "message": (
-                                    f"键类型应为 {_type_name(args[0])}，"
-                                    f"实际为 {type(key).__name__}"
-                                ),
+                                "message": (f"键类型应为 {_type_name(args[0])}，实际为 {type(key).__name__}"),
                             }
                         )
                     if not _matches(item, args[1]):
                         errors.append(
                             {
                                 "path": item_path,
-                                "message": (
-                                    f"类型应为 {_type_name(args[1])}，"
-                                    f"实际为 {type(item).__name__}"
-                                ),
+                                "message": (f"类型应为 {_type_name(args[1])}，实际为 {type(item).__name__}"),
                             }
                         )
             continue

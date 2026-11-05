@@ -40,6 +40,9 @@ def build_plugin_host(
     *,
     logger_factory: Any,
 ) -> dict[str, Any]:
+    from neobot_app.runtime.speaking_policy import SpeakingPolicyRegistry
+
+    speaking_policy = SpeakingPolicyRegistry()
     reply_block_registry = ReplyBlockRegistry()
     runtime_output = RuntimeOutput(logger=logger_factory.get_logger("app.output"))
     hook_bus = PluginHookBus(
@@ -56,7 +59,10 @@ def build_plugin_host(
         services=DefaultServiceRegistry(),
     )
 
+    host_facade.services.register("speaking_policy", speaking_policy, description="统一发言策略")
+
     return {
+        "speaking_policy": speaking_policy,
         "reply_block_registry": reply_block_registry,
         "runtime_output": runtime_output,
         "hook_bus": hook_bus,

@@ -193,10 +193,12 @@ class _ReplyMixin:
                 f"错误 {type(exc).__name__}: {exc}"
             )
             return False
-        self._logger.info(
-            f"直播回复意愿：房间 {room_id}，概率 {decision.probability:.3f}，"
-            f"判定{'回复' if decision.should_reply else '不回复'}，"
-            f"依据：{'；'.join(decision.reasons)}"
+        self._logger.debug(
+            "直播回复意愿判定",
+            room_id=room_id,
+            probability=round(decision.probability, 3),
+            should_reply=bool(decision.should_reply),
+            reasons=list(decision.reasons),
         )
         return bool(decision.should_reply)
 

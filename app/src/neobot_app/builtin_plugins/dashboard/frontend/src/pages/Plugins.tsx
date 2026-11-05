@@ -3,17 +3,19 @@ import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { api } from '../api/endpoints';
 import type { PluginConfigSaveBody } from '../api/endpoints';
 import type { ConfigDocument, Plugin, PluginConflict, ProxyInfo, Result } from '../api/types';
-import { infoBar, notify } from '../notifications/infoBar';
+import { closeInfoBarDetails, infoBar, notify } from '../notifications/infoBar';
 import Modal, { ModalActions } from '../components/Modal';
 import Button from '../components/ui/Button';
 import Icon from '../components/Icon';
 import WorkspaceLayout from '../components/WorkspaceLayout';
 import PluginListPanel from './plugins/PluginListPanel';
 import PluginEditorPanel from './plugins/PluginEditorPanel';
+import { scheduleErrors } from './plugins/speakingScheduleModel';
 import { confirmAction } from '../components/ui/ConfirmDialog';
 import PageHeader from '../components/ui/PageHeader';
 import { isEditingSurfaceActive, useAutoRefresh } from '../hooks/useAutoRefresh';
 import { POLL } from '../data/queryKeys';
+import { setPath } from '../utils/paths';
 
 const statusLabels: Record<string, string> = {
   loaded: '运行中',
@@ -58,6 +60,7 @@ export default function Plugins() {
   const [editorVersion, setEditorVersion] = useState(0);
   const [editingSession, setEditingSession] = useState(false);
   const editingSessionRef = useRef(false);
+  const configComposing = useRef(false);
   const [installOpen, setInstallOpen] = useState(false);
   const [installRepo, setInstallRepo] = useState('');
   const [installBranch, setInstallBranch] = useState('main');
@@ -158,6 +161,28 @@ export default function Plugins() {
   }, []);
 
   useEffect(() => {
+    if (!listError) return;
+    infoBar({
+      title: '插件列表读取失败',
+      message: listError,
+      tone: 'err',
+      details: (
+        <>
+          <p>{listError}</p>
+          <Button
+            onClick={() => {
+              closeInfoBarDetails();
+              void load(true);
+            }}
+          >
+            重试
+          </Button>
+        </>
+      ),
+    });
+  }, [listError, load]);
+
+  useEffect(() => {
     const pending = listRequest;
     mounted.current = true;
     void load(true);
@@ -236,6 +261,7 @@ export default function Plugins() {
     }
   };
   useAutoRefresh(syncConfig, {
+    interval: POLL.pluginSurface,
     enabled: !!selectedId && !dirty && !editingSession && !operation && !loading,
   });
 
@@ -396,6 +422,13 @@ export default function Plugins() {
 
   async function save(reload: boolean) {
     if (!configDocument) return;
+    if (
+      mode === 'form' &&
+      selected?.official &&
+      selected.name === 'speaking_schedule' &&
+      scheduleErrors(draft).length
+    )
+      return;
     const body: PluginConfigSaveBody = {
       revision: configDocument.revision,
       mode,
@@ -441,26 +474,25 @@ export default function Plugins() {
     setEditorVersion((version) => version + 1);
   }
 
-  function changeField(path: string[], value: unknown) {
+  function changeField(path: Array<string | number>, value: unknown) {
     editGeneration.current++;
     setErrors([]);
-    setDraft((previous) => {
-      const next: Record<string, any> = structuredClone(previous);
-      let target: Record<string, any> = next;
-      for (const key of path.slice(0, -1)) target = target[key as string];
-      Object.defineProperty(target, path[path.length - 1], {
-        value,
-        writable: true,
-        enumerable: true,
-        configurable: true,
-      });
-      return next;
-    });
+    setDraft((previous) => setPath(previous, path, value));
   }
 
   const isConsole = selected?.name === consolePlugin;
-  const canEdit = selectedExists && permissions.manage_enabled && !!configDocument && !loading;
-  const canSave = canEdit && dirty && !operation && !errors.length;
+  const canEdit =
+    selectedExists &&
+    permissions.manage_enabled &&
+    !!configDocument &&
+    !loading &&
+    (mode !== 'toml' || configDocument.source_available !== false);
+  const invalidSchedule =
+    mode === 'form' &&
+    selected?.official &&
+    selected.name === 'speaking_schedule' &&
+    scheduleErrors(draft).length > 0;
+  const canSave = canEdit && dirty && !operation && !errors.length && !invalidSchedule;
   const canReload =
     selectedExists &&
     !!selected &&
@@ -475,11 +507,42 @@ export default function Plugins() {
   return (
     <div
       className="page plugins-page page--viewport"
-      onInputCapture={(event) => {
+      // 与字段的 change 在冒泡阶段一起提交，避免捕获阶段先重渲染、覆盖首次输入。
+      onInput={(event) => {
         if (!(event.target instanceof HTMLElement) || !event.target.closest('.config-body')) return;
         editGeneration.current++;
         editingSessionRef.current = true;
         setEditingSession(true);
+      }}
+      onCompositionStart={(event) => {
+        if (event.target instanceof HTMLElement && event.target.closest('.config-body'))
+          configComposing.current = true;
+      }}
+      onCompositionEnd={(event) => {
+        if (event.target instanceof HTMLElement && event.target.closest('.config-body'))
+          configComposing.current = false;
+      }}
+      onBlur={(event) => {
+        const editor = event.target instanceof HTMLElement ? event.target.closest('.config-body') : null;
+        if (!editor) return;
+        // 等焦点与本次输入落定；集合里尚未点击添加的内容同样属于本地草稿。
+        queueMicrotask(() => {
+          const pending = editor.querySelectorAll<HTMLInputElement>(
+            '.cfg-kv-row.add input, .cfg-draglist-row.add input, .cfg-chip-add input',
+          );
+          if (
+            !mounted.current ||
+            !editor.isConnected ||
+            configComposing.current ||
+            dirtyRef.current ||
+            editor.contains(document.activeElement) ||
+            editor.querySelector('[aria-invalid="true"]') ||
+            Array.from(pending).some((input) => input.value !== '')
+          )
+            return;
+          editingSessionRef.current = false;
+          setEditingSession(false);
+        });
       }}
     >
       <PageHeader
@@ -522,7 +585,6 @@ export default function Plugins() {
             proxy={proxy}
             onSelect={select}
             onOpenProxy={() => setProxyOpen(true)}
-            onReload={() => void load()}
           />
         }
         editor={
@@ -543,6 +605,7 @@ export default function Plugins() {
             loading={loading}
             operation={operation}
             dirty={dirty}
+            editingSession={editingSession}
             isConsole={isConsole}
             canEdit={canEdit}
             canSave={canSave}

@@ -7,6 +7,7 @@ import asyncio
 import os
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -29,16 +30,26 @@ from neobot_app.bootstrap import (
 )
 from neobot_app.bootstrap._standby_runtime import STOP_TIMEOUT_SECONDS, StandbyController
 from neobot_app.config.loader.manager import ConfigLoadError
-from neobot_app.core import APP_VERSION
+from neobot_app.core import APP_VERSION, DATA_DIR
+from neobot_app.runtime.instance_lease import InstanceAlreadyRunning, InstanceLease
 from neobot_app.runtime.application import ConnectionTimeoutError
+from neobot_app.observability.startup_display import display_banner, display_startup_result
+from neobot_app.observability.log_exceptions import install_exception_hooks
 from neobot_app.utils.http import sanitize_no_proxy_environment
 from neobot_app.cli_parts.doctor import cmd_doctor, cmd_install_browser
 from neobot_app.cli_parts.init import cmd_init
 from neobot_app.cli_parts.network import cmd_firewall_open, cmd_open_web
 from neobot_app.cli_parts.sandbox import cmd_sandbox_clean
 
+
 async def run() -> bool:
+    with InstanceLease(DATA_DIR):
+        return await _run_instance()
+
+
+async def _run_instance() -> bool:
     """运行一轮；只有所有旧运行时与核心清理确认完成，才允许进程重启。"""
+    startup_started_at = time.monotonic()
     loop = asyncio.get_running_loop()
     state: dict[str, Any] = {"application": None, "stopping": False, "controller": None}
 
@@ -81,6 +92,17 @@ async def run() -> bool:
         # Legacy standalone/test assembly has no core watcher.
         state["application"] = application
         try:
+            start_application = getattr(application, "start", None)
+            if callable(start_application):
+                await start_application()
+                dashboard_info = await _dashboard_startup_info(get_cached_core("plugin_runtime"))
+                if not state["stopping"]:
+                    display_startup_result(
+                        ready=True,
+                        version=APP_VERSION,
+                        duration_seconds=time.monotonic() - startup_started_at,
+                        dashboard=dashboard_info,
+                    )
             await application.run_forever()
             return not state["stopping"] and application.restart_requested
         finally:
@@ -103,24 +125,72 @@ async def run() -> bool:
         on_onebot_change=controller.set_onebot,
     )
     plugin_runtime = get_cached_core("plugin_runtime")
+    control_server = None
+    from neobot_modloader.runtime import PluginRuntime
+
+    if isinstance(plugin_runtime, PluginRuntime):
+        from neobot_app.runtime.local_control import LocalControlServer
+
+        control_server = LocalControlServer(
+            plugin_runtime, data_dir=DATA_DIR, version=APP_VERSION, request_stop=request_stop
+        )
 
     async def startup() -> None:
+        webui_announced = False
         try:
             if plugin_runtime is not None and not controller.exiting:
                 await plugin_runtime.load_registered()
                 if not controller.exiting:
                     await plugin_runtime.start_all()
             if not controller.exiting:
+                dashboard_info = await _dashboard_startup_info(plugin_runtime)
+                if not controller.exiting and dashboard_info.get("available"):
+                    display_startup_result(
+                        ready=True,
+                        initializing=True,
+                        version=APP_VERSION,
+                        duration_seconds=time.monotonic() - startup_started_at,
+                        dashboard=dashboard_info,
+                        detail="可立即打开面板，OneBot 连接与其余初始化会继续进行",
+                    )
+                    webui_announced = True
+            if not controller.exiting:
                 ok, detail = await controller.start()
                 if not ok:
                     standby_service.record_failure(detail)
+                if not controller.exiting and (not webui_announced or not ok or standby_service.is_standby()):
+                    dashboard_info = await _dashboard_startup_info(plugin_runtime)
+                    if not controller.exiting:
+                        standby = standby_service.is_standby()
+                        status = getattr(standby_service, "status", lambda: {})()
+                        display_startup_result(
+                            ready=ok,
+                            standby=standby,
+                            version=APP_VERSION,
+                            duration_seconds=time.monotonic() - startup_started_at,
+                            dashboard=dashboard_info,
+                            detail=(status.get("reason") or detail) if standby or not ok else "",
+                        )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             standby_service.record_failure(f"启动失败：{type(exc).__name__}: {exc}")
+            if not controller.exiting:
+                dashboard_info = await _dashboard_startup_info(plugin_runtime)
+                if not controller.exiting:
+                    display_startup_result(
+                        ready=False,
+                        standby=standby_service.is_standby(),
+                        version=APP_VERSION,
+                        duration_seconds=time.monotonic() - startup_started_at,
+                        dashboard=dashboard_info,
+                        detail=f"{type(exc).__name__}: {exc}",
+                    )
 
-    startup_task = asyncio.create_task(startup(), name="neobot-core-startup")
     try:
+        if control_server is not None:
+            await control_server.start()
+        startup_task = asyncio.create_task(startup(), name="neobot-core-startup")
         restart_requested = await run_entry_loop(
             controller=controller,
             standby_service=standby_service,
@@ -129,34 +199,38 @@ async def run() -> bool:
             startup_task=startup_task,
         )
     finally:
-        state["application"] = None
-        if stop_watcher is not None:
-            stop_watcher.cancel()
-            await asyncio.gather(stop_watcher, return_exceptions=True)
-        # Do not rely on asyncio.run's cancellation drain to own core shutdown.
-        # In particular, a timeout is a report, NEVER permission to exec early.
-        if plugin_runtime is not None:
-            async def stop_core() -> None:
-                await plugin_runtime.stop_all()
-                registry = getattr(plugin_runtime, "agent_registry", None)
-                if registry is not None:
-                    await registry.close()
+        try:
+            state["application"] = None
+            if control_server is not None:
+                await control_server.begin_shutdown()
+            if stop_watcher is not None:
+                stop_watcher.cancel()
+                await asyncio.gather(stop_watcher, return_exceptions=True)
+            # Do not rely on asyncio.run's cancellation drain to own core shutdown.
+            # In particular, a timeout is a report, NEVER permission to exec early.
+            if plugin_runtime is not None:
 
-            await _drain_shutdown_task(asyncio.create_task(stop_core()), "core plugins")
+                async def stop_core() -> None:
+                    await plugin_runtime.stop_all()
+                    registry = getattr(plugin_runtime, "agent_registry", None)
+                    if registry is not None:
+                        await registry.close()
+
+                await _drain_shutdown_task(asyncio.create_task(stop_core()), "core plugins")
+        finally:
+            if control_server is not None:
+                await control_server.close()
     # SIGINT/SIGTERM can arrive during the last core cleanup await too.
     return not state["stopping"] and restart_requested
 
 
-async def _drain_shutdown_task(
-    task: asyncio.Task, phase: str, timeout: float | None = None
-) -> Any:
+async def _drain_shutdown_task(task: asyncio.Task, phase: str, timeout: float | None = None) -> Any:
     if timeout is None:
         timeout = STOP_TIMEOUT_SECONDS
     done, _ = await asyncio.wait((task,), timeout=timeout)
     if not done:
         print(
-            f"优雅关闭仍在等待 {phase}；不会启动新进程。"
-            "若持续卡住，需手动处理或显式强制重启。",
+            f"优雅关闭仍在等待 {phase}；不会启动新进程。若持续卡住，需手动处理或显式强制重启。",
             file=sys.stderr,
         )
     return await asyncio.shield(task)
@@ -177,6 +251,7 @@ async def run_entry_loop(
     runtime. The process remains alive (with truthful diagnostics) if graceful
     cleanup is stuck; returning True would incorrectly authorize execv.
     """
+
     async def watch_restart() -> None:
         await restart_signal.wait()
         controller.request_shutdown()
@@ -185,7 +260,8 @@ async def run_entry_loop(
     stop_timeout = float(getattr(controller, "stop_timeout", STOP_TIMEOUT_SECONDS))
     watcher = (
         asyncio.create_task(watch_restart(), name="neobot-process-restart-watch")
-        if restart_signal is not None else None
+        if restart_signal is not None
+        else None
     )
     runtime_task: asyncio.Task | None = None
     runtime: Any = None
@@ -194,9 +270,7 @@ async def run_entry_loop(
     shutdown_confirmed = False
     try:
         while True:
-            legacy_restart = legacy_restart or bool(
-                runtime is not None and runtime.restart_requested
-            )
+            legacy_restart = legacy_restart or bool(runtime is not None and runtime.restart_requested)
             restart = legacy_restart or bool(restart_signal is not None and restart_signal.requested)
             if state.get("stopping") or restart:
                 controller.request_shutdown()
@@ -230,10 +304,7 @@ async def run_entry_loop(
                         runtime = current
                         state["application"] = current
                         runtime_task = asyncio.create_task(current.run_forever(), name="neobot-run-forever")
-            waiting = [
-                task for task in (runtime_task, startup_task, watcher)
-                if task is not None and not task.done()
-            ]
+            waiting = [task for task in (runtime_task, startup_task, watcher) if task is not None and not task.done()]
             if waiting:
                 await asyncio.wait(waiting, timeout=poll_interval, return_when=asyncio.FIRST_COMPLETED)
             else:
@@ -270,10 +341,33 @@ async def run_entry_loop(
                     raise RuntimeError(detail)
 
 
+async def _dashboard_startup_info(plugin_runtime: Any) -> dict[str, Any]:
+    """经面板公开的只读能力查询真实监听信息，不根据出厂配置猜地址。"""
+    try:
+        registry = getattr(getattr(plugin_runtime, "manager", None), "registry_view", None)
+        if registry is None:
+            return {"available": False, "reason": "面板未启用或未加载"}
+        handle = registry.get("dashboard")
+        if handle is None:
+            return {"available": False, "reason": "面板未启用或未加载"}
+        if not handle.ready:
+            return {"available": False, "reason": f"面板未就绪（{handle.state.value}）"}
+        result = await asyncio.wait_for(handle.call("server.describe"), timeout=2.0)
+    except Exception as exc:
+        return {"available": False, "reason": f"面板运行状态查询失败：{type(exc).__name__}"}
+    if not isinstance(result, dict) or not result.get("available") or not result.get("local_url"):
+        return {"available": False, "reason": "面板监听未启动或启动失败"}
+    return result
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     """启动机器人；重启时先回收旧循环，再以原启动参数替换进程。"""
+    display_banner(APP_VERSION)
     try:
         restart_requested = asyncio.run(run())
+    except InstanceAlreadyRunning as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
     except ConfigLoadError as exc:
         print(f"配置加载失败，无法启动机器人：\n{exc}")
         print("请补充上述缺失的环境变量（或禁用对应功能）后重新启动。")
@@ -330,9 +424,7 @@ def _file_version_win(path: str) -> str:
             return ""
         ptr = ctypes.c_void_p()
         total = ctypes.c_uint()
-        if not ctypes.windll.version.VerQueryValueW(
-            buf, "\\", ctypes.byref(ptr), ctypes.byref(total)
-        ):
+        if not ctypes.windll.version.VerQueryValueW(buf, "\\", ctypes.byref(ptr), ctypes.byref(total)):
             return ""
         data = ctypes.string_at(ptr, total.value)
         if len(data) < 16:
@@ -369,10 +461,7 @@ def _vc_runtime_issues() -> list[str]:
 def _ask_install_vc_redist() -> str:
     """询问是否在线下载安装 VC++ 运行库,返回 "online" / ""(跳过)。"""
     try:
-        answer = input(
-            "是否在线下载最新版 VC++ 运行库并安装"
-            "(约 25 MB,需管理员,可能弹出 UAC)? [y/N] "
-        ).strip().lower()
+        answer = input("是否在线下载最新版 VC++ 运行库并安装(约 25 MB,需管理员,可能弹出 UAC)? [y/N] ").strip().lower()
         return "online" if answer in ("y", "yes") else ""
     except (EOFError, KeyboardInterrupt):
         print("(非交互环境,跳过安装)")
@@ -440,17 +529,17 @@ def _ensure_vc_runtime_fixed() -> bool:
     print(f"         将在线下载最新版 VC++ 运行库: {VC_REDIST_URL}")
     choice = _ask_install_vc_redist()
     if not choice:
-        print(f"         跳过。可稍后手动下载安装: {VC_REDIST_URL}"
-              "(右键管理员运行)或 scripts/onnx_deploy_check.py --install-redist")
+        print(
+            f"         跳过。可稍后手动下载安装: {VC_REDIST_URL}"
+            "(右键管理员运行)或 scripts/onnx_deploy_check.py --install-redist"
+        )
         return False
     installer = _download_vc_redist()
     if installer is None:
-        print(f"         下载失败。请手动下载并安装: {VC_REDIST_URL}"
-              "(以管理员身份运行 vc_redist.x64.exe)")
+        print(f"         下载失败。请手动下载并安装: {VC_REDIST_URL}(以管理员身份运行 vc_redist.x64.exe)")
         return False
     if not _install_vc_redist(installer):
-        print(f"         安装失败,请手动下载安装: {VC_REDIST_URL}"
-              "(以管理员身份运行,可能需重启后生效)")
+        print(f"         安装失败,请手动下载安装: {VC_REDIST_URL}(以管理员身份运行,可能需重启后生效)")
         return False
     leftover = _vc_runtime_issues()
     if leftover:
@@ -463,22 +552,23 @@ def _ensure_vc_runtime_fixed() -> bool:
 
 
 def main() -> None:
+    install_exception_hooks()
     # 启动期加固（先于任何 httpx 客户端构造）：把 NO_PROXY 里 "[::1]" 这类带方括号的
     # IPv6 字面量还原成 "::1"。httpx 只识别不带方括号的形态，带方括号的会被当成域名
     # 通配条目并生成非法的 URLPattern，导致装配阶段直接抛 httpx.InvalidURL 而整体启动失败。
     renormalized = sanitize_no_proxy_environment()
     if renormalized:
         print(
-            "[启动] 已规范化 NO_PROXY 中的 IPv6 字面量（去掉方括号）: "
-            + ", ".join(renormalized),
+            "[启动] 已规范化 NO_PROXY 中的 IPv6 字面量（去掉方括号）: " + ", ".join(renormalized),
             file=sys.stderr,
         )
 
-    parser = argparse.ArgumentParser(description="NeoBot — QQ 机器人")
+    parser = argparse.ArgumentParser(prog="neobot", description="NeoBot — QQ 机器人")
     parser.add_argument(
         # 版本号动态取自包元数据（neobot_app.core.APP_VERSION → importlib.metadata），
         # 不再硬编码：升级版本时只需改 pyproject.toml，CLI 自动跟随。
-        "--version", action="version",
+        "--version",
+        action="version",
         version=f"%(prog)s {APP_VERSION}",
     )
 
@@ -486,53 +576,59 @@ def main() -> None:
 
     # `neobot install-browser`
     sub.add_parser(
-        "install-browser", help="下载内嵌 Chromium 浏览器",
-        description="通过 Playwright 下载 Chromium 浏览器到本地缓存，"
-                    "供 DrissionPage 无头模式使用。只需执行一次。",
+        "install-browser",
+        help="下载内嵌 Chromium 浏览器",
+        description="通过 Playwright 下载 Chromium 浏览器到本地缓存，供 DrissionPage 无头模式使用。只需执行一次。",
     )
 
     # `neobot open_web [url]`
     open_web = sub.add_parser(
-        "open_web", help="启动有头浏览器供手动登录认证",
-        description="启动有头 Chromium 浏览器，用户完成登录后关闭窗口，"
-                    "会话持久化供后续无头模式复用。",
+        "open_web",
+        help="启动有头浏览器供手动登录认证",
+        description="启动有头 Chromium 浏览器，用户完成登录后关闭窗口，会话持久化供后续无头模式复用。",
     )
-    open_web.add_argument("url", nargs="?", default=None,
-                          help="要打开的网址 (默认 bing.com)")
+    open_web.add_argument("url", nargs="?", default=None, help="要打开的网址 (默认 bing.com)")
 
     # `neobot sandbox_CP`
     sub.add_parser(
-        "sandbox_CP", help="独立执行沙箱清理（临时文件 + 维护），不启动 Bot",
+        "sandbox_CP",
+        help="独立执行沙箱清理（临时文件 + 维护），不启动 Bot",
         description="执行一次完整的沙箱临时文件清理和持久化文件维护，完成后退出。",
     )
 
     # `neobot firewall-open`
     firewall_parser = sub.add_parser(
-        "firewall-open", help="放行网页面板端口（Windows 防火墙，需管理员）",
+        "firewall-open",
+        help="放行网页面板端口（Windows 防火墙，需管理员）",
         description="为当前 Python 程序添加网页面板端口的入站放行规则，"
-                    "解决'内网可访问、外网不可用'的问题。需以管理员身份运行。",
+        "解决'内网可访问、外网不可用'的问题。需以管理员身份运行。",
     )
     firewall_parser.add_argument(
-        "--port", type=int, default=9981,
+        "--port",
+        type=int,
+        default=9981,
         help="网页面板端口 (默认 9981)",
     )
 
     # `neobot doctor`
     sub.add_parser(
-        "doctor", help="依赖体检：列出关键第三方库的版本与缺失符号，不启动 Bot",
+        "doctor",
+        help="依赖体检：列出关键第三方库的版本与缺失符号，不启动 Bot",
         description="检查 DrissionPage / httpx / sqlalchemy / aiohttp / loguru 的版本，"
-                    "逐个验证项目真正用到的符号是否存在，并打印模块路径与解释器信息。"
-                    "新环境部署报 ImportError / AttributeError 时先跑它。",
+        "逐个验证项目真正用到的符号是否存在，并打印模块路径与解释器信息。"
+        "新环境部署报 ImportError / AttributeError 时先跑它。",
     )
 
     # `neobot init [--force]`
     init_parser = sub.add_parser(
-        "init", help="重新扫描并建立资源索引（模型库等），不启动 Bot",
+        "init",
+        help="重新扫描并建立资源索引（模型库等），不启动 Bot",
         description="扫描模型目录等可再生资源并重建索引（如 data/vision_detect/models.toml），"
-                    "通常在放入新模型后执行；启动 Bot 时也会自动执行。",
+        "通常在放入新模型后执行；启动 Bot 时也会自动执行。",
     )
     init_parser.add_argument(
-        "--force", action="store_true",
+        "--force",
+        action="store_true",
         help="强制重建索引骨架（不会覆盖已填写的模型描述）",
     )
 
@@ -553,7 +649,6 @@ def main() -> None:
     else:
         # 无子命令 → 启动机器人
         cmd_run(args)
-
 
 
 if __name__ == "__main__":

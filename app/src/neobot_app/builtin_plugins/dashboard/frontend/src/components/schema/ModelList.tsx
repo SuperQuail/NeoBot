@@ -4,7 +4,7 @@ import Icon from '../Icon';
 import { confirmAction } from '../ui/ConfirmDialog';
 import type { FieldDescriptor } from '../../api/types';
 import { HotBadge } from './FieldChrome';
-import { matchPath } from '../../utils/paths';
+import { matchPath, setPath } from '../../utils/paths';
 import Field from './Field';
 import { defaultsFromFields, type FieldCallbacks } from './fieldTypes';
 function ModelList({
@@ -20,7 +20,7 @@ function ModelList({
   const setList = (next: any[]) => {
     if (!locked) onChange(next);
   };
-  const add = () => setList([...list, defaultsFromFields(descriptor.item_fields)]);
+  const add = () => setList([...list, defaultsFromFields(descriptor.item_fields, descriptor.path)]);
   const remove = async (index: number) => {
     if (
       locked ||
@@ -73,7 +73,7 @@ function ModelList({
         >
           <Icon name="chevron" />
         </button>
-        <h3>{descriptor.name}</h3>
+        <h3>{descriptor.label || descriptor.name}</h3>
         {descriptor.readonly && <span className="cfg-readonly">只读</span>}
         <span>{list.length} 项</span>
         <span className="cfg-badges">
@@ -151,10 +151,11 @@ function ModelList({
                   filter={filter}
                   onChange={(next) => {
                     const cloned: Record<string, any>[] = structuredClone(list);
-                    let node: Record<string, any> = cloned[index];
-                    for (const key of field.path.slice(descriptor.path.length + 1, -1))
-                      node = node[key as string];
-                    node[field.path[field.path.length - 1] as string] = next;
+                    cloned[index] = setPath(
+                      cloned[index],
+                      field.path.slice(descriptor.path.length + 1),
+                      next,
+                    );
                     setList(cloned);
                   }}
                 />

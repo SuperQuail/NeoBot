@@ -27,10 +27,6 @@ class SelfHealManagerHealMixin:
     async def _publish_start_notification(self, heal: HealTask) -> None:
         """Send the «已开始工作» notification to the admin private chat."""
         if self._notification_hub is None:
-            self._logger.warning(
-                "self_heal start notification skipped: notification hub 未配置",
-                task_id=heal.task_id,
-            )
             return
         samples = self._build_sample_summary(heal.error_snapshot, max_count=3)
         content = (
@@ -166,10 +162,6 @@ class SelfHealManagerHealMixin:
             return
         heal.notified_final = True
         if self._notification_hub is None:
-            self._logger.warning(
-                "self_heal result notification skipped: hub 未配置",
-                task_id=heal.task_id,
-            )
             return
 
         summary = (heal.summary or "").strip() or "（agent 未提供摘要）"

@@ -92,7 +92,7 @@ class _MessageMixin:
             return False
         sender_uid = self.my_uid
         if not sender_uid:
-            self._logger.warning("B站私信发送失败：未取到自己的 UID")
+            self._logger.debug("B站私信发送失败：未取到自己的 UID")
             return False
         form: dict[str, Any] = {
             "msg[sender_uid]": sender_uid,

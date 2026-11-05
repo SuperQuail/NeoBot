@@ -204,9 +204,9 @@ describe('Prompts', () => {
     prompts.mockResolvedValue({ ok: true, data: PAYLOAD, error: null, status: 200 });
     promptsSave.mockResolvedValue({ ok: true, data: { message: '已保存' }, error: null, status: 200 });
     render(<Prompts />);
-    await screen.findByRole('button', { name: '群聊人设 · 提示词模板' });
+    const editor = await screen.findByLabelText('提示词内容');
 
-    fireEvent.change(screen.getByLabelText('提示词内容'), {
+    fireEvent.change(editor, {
       target: { value: '你好{bot_name}' },
     });
 
@@ -396,9 +396,9 @@ describe('Prompts', () => {
     });
     promptsReset.mockResolvedValue({ ok: true, data: { message: '已恢复默认' }, error: null, status: 200 });
     render(<Prompts />);
-    await screen.findByRole('button', { name: '群聊人设 · 提示词模板' });
 
-    const reset = screen.getByRole('button', { name: /恢复默认/ });
+    // 目录先渲染，自动选中后才挂载编辑区与恢复按钮。
+    const reset = await screen.findByRole('button', { name: '恢复默认' });
     expect(reset).toBeEnabled();
     fireEvent.click(reset);
 
@@ -415,12 +415,12 @@ describe('Prompts', () => {
       status: 200,
     });
     render(<Prompts />);
-    await screen.findByRole('button', { name: '群聊人设 · 提示词模板' });
+    const editor = await screen.findByLabelText('提示词内容');
 
     // InlineAlert 的 warning 走 role="status"（error 才用 alert）
     expect(screen.getByRole('status')).toHaveTextContent('没有管理权限');
     expect(screen.getByRole('button', { name: /保存/ })).toBeDisabled();
-    expect(screen.getByLabelText('提示词内容')).toHaveAttribute('readonly');
+    expect(editor).toHaveAttribute('readonly');
   });
 
   it('切换模板前保护未保存草稿，取消后保留输入', async () => {

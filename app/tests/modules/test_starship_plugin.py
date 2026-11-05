@@ -121,6 +121,25 @@ def test_custom_route_moves_prefix() -> None:
     assert extension.auth_prefixes == ("/starship/api",)
 
 
+@pytest.mark.parametrize("route", ["game", "starship"])
+@pytest.mark.parametrize(
+    "method, endpoint, expected",
+    [
+        ("GET", "scores", "read"),
+        ("POST", "scores", "operate"),
+        ("POST", "achievements", "operate"),
+        ("POST", "scores/reset", "manage"),
+        ("GET", "scores/reset", "manage"),
+        ("PATCH", "scores/reset", "manage"),
+        ("PUT", "scores", "manage"),
+        ("POST", "scores/reset/extra", "manage"),
+    ],
+)
+def test_extension_declares_exact_operation_permissions(route, method, endpoint, expected) -> None:
+    extension = make_extension(route=route)
+    assert extension.request_permission(method, f"/{route}/api/{endpoint}") == expected
+
+
 def test_foreign_paths_fall_through() -> None:
     extension = make_extension()
     result = asyncio.run(extension.handle_request(FakeRequest("/other"), "/other"))
@@ -129,9 +148,7 @@ def test_foreign_paths_fall_through() -> None:
 
 def test_bare_prefix_redirects_to_directory() -> None:
     extension = make_extension()
-    response = asyncio.run(
-        extension.handle_request(FakeRequest("/game"), "/game")
-    )
+    response = asyncio.run(extension.handle_request(FakeRequest("/game"), "/game"))
     assert response.status == 302
     assert response.headers["Location"] == "/game/"
 
@@ -140,9 +157,7 @@ def test_index_reports_build_hint_when_bundle_missing(tmp_path: Path) -> None:
     extension = make_extension()
     extension.web_root = tmp_path
     extension.index_file = tmp_path / "index.html"
-    response = asyncio.run(
-        extension.handle_request(FakeRequest("/game/"), "/game/")
-    )
+    response = asyncio.run(extension.handle_request(FakeRequest("/game/"), "/game/"))
     assert response.status == 503
 
 
@@ -166,13 +181,9 @@ def test_unknown_api_returns_json_404() -> None:
 
     extension = make_extension()
     extension.api = FakeApi()
-    response = asyncio.run(
-        extension.handle_request(FakeRequest("/game/api/health"), "/game/api/health")
-    )
+    response = asyncio.run(extension.handle_request(FakeRequest("/game/api/health"), "/game/api/health"))
     assert response.status == 200
-    missing = asyncio.run(
-        extension.handle_request(FakeRequest("/game/api/nope"), "/game/api/nope")
-    )
+    missing = asyncio.run(extension.handle_request(FakeRequest("/game/api/nope"), "/game/api/nope"))
     assert missing.status == 404
 
 
@@ -186,10 +197,6 @@ def test_bootstrap_receives_panel_base_path() -> None:
 
     extension = make_extension()
     extension.api = FakeApi()
-    asyncio.run(
-        extension.handle_request(
-            FakeRequest("/nb/game/api/bootstrap"), "/game/api/bootstrap"
-        )
-    )
+    asyncio.run(extension.handle_request(FakeRequest("/nb/game/api/bootstrap"), "/game/api/bootstrap"))
     # 面板挂在 /nb 子路径下时，游戏接口要能算出面板根路径
     assert captured["base"] == "/nb"

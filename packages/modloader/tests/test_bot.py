@@ -21,16 +21,16 @@ class TestBot(unittest.IsolatedAsyncioTestCase):
 
         self.bot = Bot(self.adapter)
 
-    # ── test_bot_send_delegates ─────────────────────────────────────
+    # ── 单段消息归一化 ─────────────────────────────────────────────
 
-    async def test_bot_send_delegates(self) -> None:
-        """Bot.send 委托给 adapter.send。"""
+    async def test_bot_send_normalizes_single_segment(self) -> None:
+        """单个原始段按 Reply 的既有约定包装成段列表，再交给适配器。"""
         conv = ConversationRef(kind="private", id="test_conv")
         msg = {"type": "text", "data": {"text": "hello"}}
 
         await self.bot.send(conv, msg)
 
-        self.adapter.send.assert_awaited_once_with(conv, msg)
+        self.adapter.send.assert_awaited_once_with(conv, [msg])
 
     # ── test_bot_self_id ────────────────────────────────────────────
 

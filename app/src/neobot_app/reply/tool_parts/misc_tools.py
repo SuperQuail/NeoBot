@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from neobot_contracts.ports.speaking import SpeechBlocked
+
 from neobot_app.reply.output_guard import clean_text
 from neobot_app.time_context import monotonic_seconds
 from neobot_chat.schema.types import ToolDefinition
@@ -54,6 +56,8 @@ class _MiscToolsMixin:
             return "错误：text 清洗后为空，请只提供要朗读的正文，不要带系统标注或思考草稿"
         try:
             return await self._speak_handler(text=text)
+        except SpeechBlocked:
+            raise
         except Exception as exc:
             self._logger.warning("语音生成失败", error_type=type(exc).__name__)
             return "语音生成失败"

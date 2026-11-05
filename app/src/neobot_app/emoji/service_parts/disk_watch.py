@@ -13,7 +13,6 @@ class _DiskWatchMixin:
         while True:
             try:
                 await asyncio.sleep(self._REFRESH_INTERVAL_SECONDS)
-                self._logger.debug("开始定时刷新表情包")
                 await self._scan_safe()
             except asyncio.CancelledError:
                 raise

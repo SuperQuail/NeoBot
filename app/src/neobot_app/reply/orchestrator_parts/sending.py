@@ -1,6 +1,8 @@
 """回复发送、媒体发送与发送者标签。"""
+
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from neobot_contracts.models import ConversationRef
@@ -8,13 +10,14 @@ from neobot_app.reply.event import ReplyEvent
 from neobot_app.reply.postprocess import ReplySplitPreview
 from neobot_app.reply.sender import ReplySender, SelfSentSink
 
+
 class SendingMixin:
-    async def _send_with_timeout(
-        self, conversation_ref: ConversationRef, payload: object
-    ) -> Any:
+    async def _send_with_timeout(self, conversation_ref: ConversationRef, payload: object) -> Any:
         return await self._sender.send_with_timeout(conversation_ref, payload)
+
     async def _call_api_with_timeout(self, action: str, params: dict[str, Any]) -> Any:
         return await self._sender.call_api_with_timeout(action, params)
+
     @staticmethod
     def _known_sender_names(*queues: Any, queue_key: str | None = None) -> list[str]:
         """收集本会话出现过的全部发送者显示名（昵称 / 群名片）。
@@ -40,6 +43,7 @@ class SendingMixin:
                     seen.add(name)
                     names.append(name)
         return names
+
     async def _send_reply(
         self,
         event: ReplyEvent,
@@ -54,6 +58,16 @@ class SendingMixin:
         split_preview: ReplySplitPreview | None = None,
     ) -> bool:
         """转发到 ReplySender.send_reply；返回是否真的发出了内容（见 sender 注释）。"""
+        if self_sent is not None and self_sent.usable:
+            sink = self_sent
+            before_message_id = sink.queue.get_last_message_id(sink.queue_key)
+
+            def record_delivery() -> None:
+                self._record_reply_delivered(event, sink.queue, sink.queue_key, before_message_id=before_message_id)
+                if sink.on_delivered is not None:
+                    sink.on_delivered()
+
+            self_sent = replace(sink, on_delivered=record_delivery)
         # post-reply hooks：可对回复文本做后处理
         text = await self._apply_post_reply_hooks(event, text) or text
         # 缺少标签时补配置昵称及当前会话标签，不能混入其他群聊/私聊。
@@ -79,11 +93,11 @@ class SendingMixin:
             sender_names=names,
             **({"split_preview": split_preview} if split_preview is not None else {}),
         )
+
     @staticmethod
-    def _self_sent_sink(
-        queue: Any, snapshot: Any, queue_key: str
-    ) -> SelfSentSink:
+    def _self_sent_sink(queue: Any, snapshot: Any, queue_key: str) -> SelfSentSink:
         return SelfSentSink(queue=queue, snapshot=snapshot, queue_key=queue_key)
+
     @staticmethod
     def _resolve_image_registrar(drawing_manager: Any) -> Any:
         """取「本地文件 → temp 图库(tmp_xxx)」的最小登记入口。
@@ -98,6 +112,7 @@ class SendingMixin:
             service = getattr(drawing_manager, "_service", None)
         registrar = getattr(service, "register_local_image", None)
         return registrar if callable(registrar) else None
+
     def record_notification(
         self,
         *,
@@ -122,13 +137,23 @@ class SendingMixin:
                 NotificationEntry(source=str(source or ""), content=str(content or "")),
             )
         except Exception as exc:
-            self._logger.warning("后台通知入队失败（已忽略）", source=source, error=str(exc))
+            self._logger.warning(
+                "后台通知未写入会话历史",
+                event="notification.history_failed",
+                chat_flow_id=f"{kind}:{conversation_id}",
+                source=source,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
             return False
         return True
+
     def _can_use_markdown_image(self, text: str) -> bool:
         return self._sender._can_use_markdown_image(text)
+
     async def _render_long_reply_as_image(self, text: str) -> Path:
         return await self._sender._render_long_reply_as_image(text)
+
     def _build_reply_messages(
         self,
         text: str,
@@ -136,9 +161,8 @@ class SendingMixin:
         segments: list[str] | None = None,
         send_original: bool = False,
     ) -> list[str]:
-        return self._sender._build_reply_messages(
-            text, segments=segments, send_original=send_original
-        )
+        return self._sender._build_reply_messages(text, segments=segments, send_original=send_original)
+
     @staticmethod
     def _build_reply_segments(
         *,
@@ -153,6 +177,7 @@ class SendingMixin:
             reply_to_message_id=reply_to_message_id,
             mention_user_ids=mention_user_ids,
         )
+
     @staticmethod
     def _api_succeeded(result: Any) -> bool:
         if result is None:
@@ -163,6 +188,7 @@ class SendingMixin:
         if status is None:
             return True
         return status == "ok"
+
 
 def _segment_file_hint(segment: Any) -> str:
     """从消息段里取出可供将来取用的文件引用（语音段用）。

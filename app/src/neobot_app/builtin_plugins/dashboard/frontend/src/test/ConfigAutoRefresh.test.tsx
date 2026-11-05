@@ -35,7 +35,7 @@ vi.mock('../api/endpoints', () => ({
 }));
 
 const CONFIG: ConfigDocument = {
-  revision: 7,
+  revision: '00000000000000000000000000000007',
   source: 'host = "before"',
   config: { host: 'before', payload: { nested: [1] } },
   schema: [
@@ -44,14 +44,14 @@ const CONFIG: ConfigDocument = {
   ],
 };
 const ENV: EnvPayload = {
-  revision: 7,
+  revision: '00000000000000000000000000000007',
   items: [
     { key: 'CUSTOM_VALUE', value: 'before', in_file: true },
     { key: 'Demo_APIKey', sensitive: true, has_value: true, in_file: true, value: '' },
   ],
 };
 const MODELS: ModelsPayload = {
-  revision: 7,
+  revision: '00000000000000000000000000000007',
   library: [
     { model_ref: 'main', display_name: '原始模型', entry: { model_ref: 'main', display_name: '原始模型' } },
     { model_ref: 'reason', display_name: '推理模型' },
@@ -151,7 +151,11 @@ describe('配置面板自动读取', () => {
     await mount(<BotConfigPanel />);
     expect(api.config).toHaveBeenCalledTimes(1);
     vi.mocked(api.config).mockResolvedValue(
-      ok({ ...CONFIG, revision: 8, config: { ...CONFIG.config, host: 'remote' } }),
+      ok({
+        ...CONFIG,
+        revision: '00000000000000000000000000000008',
+        config: { ...CONFIG.config, host: 'remote' },
+      }),
     );
     await tick();
     expect(screen.getByRole('textbox', { name: 'host' })).toHaveValue('remote');
@@ -163,7 +167,11 @@ describe('配置面板自动读取', () => {
   it('环境变量同步新值与版本，敏感字段仍为空', async () => {
     await mount(<EnvPanel />);
     vi.mocked(api.env).mockResolvedValue(
-      ok({ ...ENV, revision: 8, items: [{ ...ENV.items![0], value: 'remote' }, ENV.items![1]] }),
+      ok({
+        ...ENV,
+        revision: '00000000000000000000000000000008',
+        items: [{ ...ENV.items![0], value: 'remote' }, ENV.items![1]],
+      }),
     );
     await tick();
     expect(screen.getByDisplayValue('remote')).toBeInTheDocument();
@@ -175,7 +183,10 @@ describe('配置面板自动读取', () => {
       fireEvent.click(screen.getByRole('button', { name: '保存并重载' }));
     });
     expect(api.envSave).toHaveBeenCalledWith(
-      expect.objectContaining({ revision: 8, updates: { CUSTOM_VALUE: 'local' } }),
+      expect.objectContaining({
+        revision: '00000000000000000000000000000008',
+        updates: { CUSTOM_VALUE: 'local' },
+      }),
     );
     expect(notify).not.toHaveBeenCalled();
   });
@@ -183,7 +194,11 @@ describe('配置面板自动读取', () => {
   it('模型库空闲时同步外部新增模型，不发成功通知', async () => {
     await mount(<ModelsPanel />);
     vi.mocked(api.configModels).mockResolvedValue(
-      ok({ ...MODELS, revision: 8, library: [...MODELS.library!, { model_ref: 'external' }] }),
+      ok({
+        ...MODELS,
+        revision: '00000000000000000000000000000008',
+        library: [...MODELS.library!, { model_ref: 'external' }],
+      }),
     );
     await tick();
     expect(screen.getByText('external', { selector: 'code' })).toBeInTheDocument();
@@ -199,7 +214,9 @@ describe('配置面板自动读取', () => {
     await mount(<AssignPanel />);
     const select = screen.getByRole('combobox', { name: '主对话使用的模型' });
     expect(select).toHaveAttribute('aria-invalid', 'true');
-    vi.mocked(api.configModels).mockResolvedValue(ok({ ...MODELS, revision: 8 }));
+    vi.mocked(api.configModels).mockResolvedValue(
+      ok({ ...MODELS, revision: '00000000000000000000000000000008' }),
+    );
     await tick();
     expect(select).toHaveTextContent('原始模型 · main');
     expect(select).toHaveAttribute('aria-invalid', 'false');
@@ -224,7 +241,7 @@ describe('配置面板自动读取', () => {
         pending.resolve(
           ok({
             ...CONFIG,
-            revision: 88,
+            revision: '00000000000000000000000000000088',
             config: { ...CONFIG.config, host: 'stale' },
             source: 'host = "stale"',
           }),
@@ -237,7 +254,9 @@ describe('配置面板自动读取', () => {
       await act(async () => {
         fireEvent.click(screen.getByRole('button', { name: '保存并重载' }));
       });
-      expect(api.configSave).toHaveBeenCalledWith(expect.objectContaining({ revision: 7, mode }));
+      expect(api.configSave).toHaveBeenCalledWith(
+        expect.objectContaining({ revision: '00000000000000000000000000000007', mode }),
+      );
     },
   );
 
@@ -252,7 +271,13 @@ describe('配置面板自动读取', () => {
     expect(input).toHaveAttribute('aria-invalid', 'true');
     expect(screen.getByRole('button', { name: '保存并重载' })).toBeDisabled();
     await act(async () => {
-      pending.resolve(ok({ ...CONFIG, revision: 88, config: { host: 'stale', payload: { nested: [2] } } }));
+      pending.resolve(
+        ok({
+          ...CONFIG,
+          revision: '00000000000000000000000000000088',
+          config: { host: 'stale', payload: { nested: [2] } },
+        }),
+      );
     });
     await tick();
     expect(input).toHaveValue('{"unfinished":');
@@ -269,7 +294,13 @@ describe('配置面板自动读取', () => {
     fireEvent.change(host, { target: { value: 'local' } });
     fireEvent.change(host, { target: { value: 'before' } });
     await act(async () => {
-      pending.resolve(ok({ ...CONFIG, revision: 88, config: { ...CONFIG.config, host: 'stale' } }));
+      pending.resolve(
+        ok({
+          ...CONFIG,
+          revision: '00000000000000000000000000000088',
+          config: { ...CONFIG.config, host: 'stale' },
+        }),
+      );
     });
     expect(host).toHaveValue('before');
   });
@@ -282,7 +313,7 @@ describe('配置面板自动读取', () => {
     const secret = screen.getByPlaceholderText('已设置 · 留空则不修改');
     fireEvent.change(secret, { target: { value: 'local-secret' } });
     await act(async () => {
-      pending.resolve(ok({ ...ENV, revision: 88 }));
+      pending.resolve(ok({ ...ENV, revision: '00000000000000000000000000000088' }));
     });
     await tick();
     expect(secret).toHaveValue('local-secret');
@@ -292,7 +323,10 @@ describe('配置面板自动读取', () => {
       fireEvent.click(screen.getByRole('button', { name: '保存并重载' }));
     });
     expect(api.envSave).toHaveBeenCalledWith(
-      expect.objectContaining({ revision: 7, updates: { Demo_APIKey: 'local-secret' } }),
+      expect.objectContaining({
+        revision: '00000000000000000000000000000007',
+        updates: { Demo_APIKey: 'local-secret' },
+      }),
     );
   });
 
@@ -305,7 +339,7 @@ describe('配置面板自动读取', () => {
       fireEvent.click(screen.getByRole('button', { name: '一键添加 API 供应商' }));
     });
     await act(async () => {
-      pending.resolve(ok({ ...ENV, revision: 88 }));
+      pending.resolve(ok({ ...ENV, revision: '00000000000000000000000000000088' }));
     });
     await tick();
     expect(api.env).toHaveBeenCalledTimes(2);
@@ -314,7 +348,9 @@ describe('配置面板自动读取', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: '保存供应商' }));
     });
-    expect(api.envAddPlatform).toHaveBeenCalledWith(expect.objectContaining({ revision: 7, api_key: '' }));
+    expect(api.envAddPlatform).toHaveBeenCalledWith(
+      expect.objectContaining({ revision: '00000000000000000000000000000007', api_key: '' }),
+    );
   });
 
   it('模型编辑器打开即保护基线；在途回包不能改变表单及保存 revision', async () => {
@@ -327,7 +363,7 @@ describe('配置面板自动读取', () => {
     });
     const dialog = screen.getByRole('dialog', { name: '编辑模型 main' });
     await act(async () => {
-      pending.resolve(ok({ ...MODELS, revision: 88, library: [] }));
+      pending.resolve(ok({ ...MODELS, revision: '00000000000000000000000000000088', library: [] }));
     });
     await tick();
     expect(api.configModels).toHaveBeenCalledTimes(2);
@@ -336,7 +372,9 @@ describe('配置面板自动读取', () => {
     await act(async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: '仅保存' }));
     });
-    expect(api.modelsLibrarySave).toHaveBeenCalledWith(expect.objectContaining({ revision: 7 }));
+    expect(api.modelsLibrarySave).toHaveBeenCalledWith(
+      expect.objectContaining({ revision: '00000000000000000000000000000007' }),
+    );
   });
 
   it('模型分配在途读取期间更改选项，保留草稿和版本并暂停后续读取', async () => {
@@ -347,7 +385,7 @@ describe('配置面板自动读取', () => {
     const select = screen.getByRole('combobox', { name: '主对话使用的模型' });
     await chooseModel(select, '推理模型 · reason');
     await act(async () => {
-      pending.resolve(ok({ ...MODELS, revision: 88 }));
+      pending.resolve(ok({ ...MODELS, revision: '00000000000000000000000000000088' }));
     });
     await tick();
     expect(select).toHaveTextContent('推理模型 · reason');
@@ -361,7 +399,9 @@ describe('配置面板自动读取', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: '保存分配' }));
     });
-    expect(api.modelsAssignmentsSave).toHaveBeenCalledWith(expect.objectContaining({ revision: 7 }));
+    expect(api.modelsAssignmentsSave).toHaveBeenCalledWith(
+      expect.objectContaining({ revision: '00000000000000000000000000000007' }),
+    );
   });
 
   it('在途读取晚于保存完成时不回滚已保存内容，保存后恢复自动更新', async () => {
@@ -371,7 +411,11 @@ describe('配置面板自动读取', () => {
     await tick();
     fireEvent.change(screen.getByRole('textbox', { name: 'host' }), { target: { value: 'saved' } });
     vi.mocked(api.configSave).mockResolvedValue(
-      ok({ ...CONFIG, revision: 9, config: { ...CONFIG.config, host: 'saved' } }),
+      ok({
+        ...CONFIG,
+        revision: '00000000000000000000000000000009',
+        config: { ...CONFIG.config, host: 'saved' },
+      }),
     );
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: '保存并重载' }));
@@ -381,7 +425,11 @@ describe('配置面板自动读取', () => {
     });
     expect(screen.getByRole('textbox', { name: 'host' })).toHaveValue('saved');
     vi.mocked(api.config).mockResolvedValue(
-      ok({ ...CONFIG, revision: 10, config: { ...CONFIG.config, host: 'newer' } }),
+      ok({
+        ...CONFIG,
+        revision: '00000000000000000000000000000010',
+        config: { ...CONFIG.config, host: 'newer' },
+      }),
     );
     await tick();
     expect(screen.getByRole('textbox', { name: 'host' })).toHaveValue('newer');

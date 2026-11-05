@@ -56,6 +56,9 @@ export interface BotSummary {
 }
 
 /** 日志 /api/logs */
+export type LogFieldValue =
+  string | number | boolean | null | LogFieldValue[] | { [key: string]: LogFieldValue };
+
 export interface LogItem {
   id?: number;
   time?: string;
@@ -63,6 +66,12 @@ export interface LogItem {
   level?: string;
   module?: string;
   message?: string;
+  timestamp?: number;
+  file?: string;
+  line?: number | null;
+  function?: string;
+  fields?: Record<string, LogFieldValue>;
+  exception?: { type: string; message: string; traceback: string } | null;
 }
 
 export interface LogPayload {

@@ -13,7 +13,7 @@ vi.mock('../api/endpoints', () => ({
 vi.mock('../notifications/infoBar', () => ({ infoBar: vi.fn(), notify: vi.fn() }));
 
 const document: EnvPayload = {
-  revision: 7,
+  revision: '00000000000000000000000000000007',
   items: [
     { key: 'DeepSeek_APIKey', builtin: true, in_file: true, sensitive: true, has_value: true, value: '' },
     { key: 'CUSTOM_VALUE', builtin: false, in_file: true, value: 'hello', has_value: true },
@@ -61,7 +61,7 @@ describe('EnvPanel 删除真实条目', () => {
     vi.mocked(api.envSave).mockResolvedValue(
       ok({
         ...document,
-        revision: 8,
+        revision: '00000000000000000000000000000008',
         items: document.items?.map((item) =>
           item.key === 'DeepSeek_APIKey' ? { ...item, in_file: false, has_value: false } : item,
         ),
@@ -80,7 +80,7 @@ describe('EnvPanel 删除真实条目', () => {
       expect(api.envSave).toHaveBeenCalledWith({
         updates: {},
         deletes: ['DeepSeek_APIKey'],
-        revision: 7,
+        revision: '00000000000000000000000000000007',
         reload: true,
       }),
     );
@@ -124,7 +124,7 @@ describe('EnvPanel 删除真实条目', () => {
       expect(api.envSave).toHaveBeenCalledWith({
         updates: { DeepSeek_APIKey: '' },
         deletes: [],
-        revision: 7,
+        revision: '00000000000000000000000000000007',
         reload: true,
       }),
     );
@@ -137,7 +137,7 @@ describe('EnvPanel 保存后的生效范围提示', () => {
     vi.mocked(api.envSave).mockResolvedValue(
       ok({
         ...document,
-        revision: 8,
+        revision: '00000000000000000000000000000008',
         needs_restart: true,
         message:
           '环境变量已保存并重载：平台凭据变更已重建 provider（覆盖 主对话 / 视觉 / 档案总结）。' +
@@ -180,7 +180,7 @@ describe('EnvPanel 保存后的生效范围提示', () => {
     vi.mocked(api.envSave).mockResolvedValue(
       ok({
         ...document,
-        revision: 8,
+        revision: '00000000000000000000000000000008',
         needs_restart: false,
         message: '未检测到环境变量改动；已重载配置。',
       }),

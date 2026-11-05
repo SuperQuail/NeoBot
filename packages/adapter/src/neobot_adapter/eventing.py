@@ -14,6 +14,31 @@ Rule = Callable[[Dict[str, Any]], bool | Awaitable[bool]]
 EventHandlerFunc = Callable[..., Any]
 
 
+def _event_log_fields(event: Any, handler: EventHandlerFunc) -> dict[str, Any]:
+    fields = {
+        "handler": getattr(handler, "__qualname__", type(handler).__name__),
+        "event_type": type(event).__name__,
+    }
+    if isinstance(event, dict):
+        fields.update(
+            {
+                key: event[key]
+                for key in (
+                    "post_type",
+                    "message_type",
+                    "notice_type",
+                    "request_type",
+                    "meta_event_type",
+                    "message_id",
+                    "group_id",
+                    "user_id",
+                )
+                if key in event
+            }
+        )
+    return fields
+
+
 @dataclass
 class Subscription:
     _unsubscribe: Callable[[], None]
@@ -90,9 +115,10 @@ class EventDispatcher:
                 except Exception as exc:
                     # 单个处理器的匹配逻辑（或形状异常的事件）不得让整条事件
                     # 分发失败：跳过该处理器并告警，其余处理器继续。
-                    self._logger.error(
-                        "事件匹配失败，已跳过该处理器 "
-                        f"({handler.handler.__qualname__}): {exc}"
+                    self._logger.exception(
+                        "事件匹配失败，已跳过该处理器",
+                        **_event_log_fields(event, handler.handler),
+                        error=str(exc),
                     )
 
         for handler in handlers:
@@ -104,13 +130,21 @@ class EventDispatcher:
                     if not rule_result:
                         continue
                 except Exception as exc:
-                    self._logger.error(f"事件规则执行失败: {exc}")
+                    self._logger.exception(
+                        "事件规则执行失败，已跳过该处理器",
+                        **_event_log_fields(event, handler.handler),
+                        error=str(exc),
+                    )
                     continue
 
             try:
                 coerced = handler.coerce(event)
             except Exception as exc:
-                self._logger.error(f"事件模型转换失败 ({handler.handler.__qualname__}): {exc}")
+                self._logger.exception(
+                    "事件模型转换失败，改用原始事件",
+                    **_event_log_fields(event, handler.handler),
+                    error=str(exc),
+                )
                 coerced = event
 
             try:
@@ -119,7 +153,11 @@ class EventDispatcher:
                 else:
                     await asyncio.to_thread(handler.handler, coerced)
             except Exception as exc:
-                self._logger.error(f"事件处理失败: {exc}")
+                self._logger.exception(
+                    "事件处理失败",
+                    **_event_log_fields(event, handler.handler),
+                    error=str(exc),
+                )
 
 
 def extract_event_model(handler: EventHandlerFunc) -> Optional[type[BaseModel]]:

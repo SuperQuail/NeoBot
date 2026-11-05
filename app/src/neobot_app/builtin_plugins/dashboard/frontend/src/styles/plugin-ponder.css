@@ -1,0 +1,620 @@
+/* 思索占满视口，原配置退到背景；舞台、时间线和字幕共用同一阅读宽度。 */
+.ponder-screen {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  color: var(--text);
+  backdrop-filter: blur(18px);
+  animation: ponder-enter 180ms ease-out;
+}
+.ponder-header {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-height: 64px;
+  padding: 12px 28px;
+}
+.ponder-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  font-size: 14px;
+}
+.ponder-heading > svg,
+.ponder-heading > span {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.ponder-heading > strong {
+  overflow-wrap: anywhere;
+}
+.ponder-heading .select-control {
+  width: min(320px, 36vw);
+  min-width: 0;
+}
+.ponder-screen kbd {
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  font: 11px var(--font-mono);
+}
+.ponder-empty {
+  display: grid;
+  flex: 1;
+  place-content: center;
+  justify-items: center;
+  gap: 16px;
+}
+.ponder-lesson {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.ponder-main {
+  display: grid;
+  flex: 1;
+  grid-template-rows: minmax(160px, 1fr) auto minmax(104px, auto);
+  gap: 8px;
+  width: min(1080px, 100%);
+  margin-inline: auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 8px 24px 0;
+}
+.ponder-main[data-reading] {
+  grid-template-rows: minmax(160px, 1fr) auto;
+  padding-bottom: 12px;
+}
+.ponder-stage-viewport {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--bg);
+  overflow: hidden;
+  isolation: isolate;
+  box-shadow: 0 16px 48px color-mix(in srgb, var(--text) 8%, transparent);
+}
+.ponder-stage-viewport .plugin-view-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--panel);
+}
+.ponder-synthetic-stage {
+  height: 100%;
+  overflow-y: auto;
+}
+.ponder-stage-heading {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  min-height: 56px;
+  padding: 16px 28px;
+  padding-right: 100px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel);
+  font-size: 14px;
+  font-weight: 600;
+}
+.ponder-stage-heading > :last-child {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+.ponder-stage-content {
+  display: grid;
+  gap: 16px;
+  width: min(100%, 460px);
+  margin-inline: auto;
+  padding: 32px;
+}
+.ponder-reference-value {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+}
+.ponder-reference-value > span {
+  color: var(--muted);
+}
+.ponder-reference-value pre {
+  margin: 0;
+  min-height: 40px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--panel);
+  color: var(--text);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.ponder-sample-empty {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  padding: 20px 0;
+  text-align: center;
+}
+.ponder-sample-empty svg {
+  color: var(--brand);
+}
+.ponder-sample-empty p {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.ponder-sample-empty span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.8;
+}
+.ponder-stage-heading > :first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.ponder-command-content,
+.ponder-config-content {
+  display: grid;
+  align-content: start;
+  gap: 24px;
+  min-width: 0;
+  padding: 24px;
+}
+.ponder-command-context,
+.ponder-config-path {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.ponder-command-message,
+.ponder-command-reply {
+  display: grid;
+  gap: 12px;
+  width: min(100%, 520px);
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.ponder-command-message {
+  justify-self: end;
+  background: var(--brand-soft);
+}
+.ponder-command-message > span,
+.ponder-command-reply > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.ponder-command-message code,
+.ponder-command-reply p {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ponder-command-message .btn-sm {
+  justify-self: end;
+}
+.ponder-config-content .cfg-row {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+.ponder-config-content .cfg-root {
+  padding: 0;
+}
+.ponder-config-content > p:last-child:not(.ponder-config-path) {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.ponder-config-value pre {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.ponder-cursor {
+  position: absolute;
+  color: var(--brand);
+  pointer-events: none;
+  transition:
+    left 220ms ease-out,
+    top 220ms ease-out;
+  filter: drop-shadow(0 2px 2px color-mix(in srgb, var(--text) 18%, transparent));
+}
+.ponder-focus-frame {
+  position: absolute;
+  border: 2px solid var(--brand);
+  border-radius: var(--radius-control);
+  pointer-events: none;
+  background: color-mix(in srgb, var(--brand) 4%, transparent);
+}
+.ponder-cursor svg {
+  stroke: var(--panel);
+  stroke-width: 1.5;
+}
+.ponder-caption {
+  min-height: 0;
+  max-height: 156px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  padding: 8px 0 16px;
+}
+.ponder-caption-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.ponder-contents {
+  display: flex;
+  flex-direction: column;
+}
+.ponder-contents-search {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel);
+}
+.ponder-contents-search label {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 160px;
+  color: var(--muted);
+}
+.ponder-contents-search input {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+}
+.ponder-contents-search > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.ponder-contents-list {
+  min-height: 0;
+  margin: 0;
+  padding: 8px 20px 20px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+}
+.ponder-contents-list > li {
+  padding: 12px 0 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.ponder-contents-list > li:last-child {
+  border-bottom: 0;
+}
+.ponder-contents-step {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text);
+  text-align: start;
+  cursor: pointer;
+}
+.ponder-contents-step:hover,
+[aria-current='step'] > .ponder-contents-step {
+  background: var(--brand-soft);
+}
+.ponder-contents-step > strong {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ponder-contents-step > span {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.ponder-contents-list p {
+  margin: 8px;
+  font-size: 14px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.ponder-contents-command {
+  margin: 12px 8px 0;
+  padding: 8px 12px;
+  border-left: 2px solid var(--brand);
+  background: var(--panel);
+}
+.ponder-contents-command code {
+  display: block;
+  padding: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ponder-contents-empty {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.8;
+}
+.ponder-caption-heading strong {
+  color: var(--text);
+  font-weight: 550;
+}
+.ponder-caption p {
+  margin: 8px 0 0;
+  color: var(--text);
+  font-size: 17px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.ponder-playback {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ponder-playback :is(.btn, .btn-sm) {
+  flex-shrink: 0;
+  min-height: 40px;
+  padding-inline: 10px;
+}
+.ponder-playback .ponder-play-toggle {
+  width: 40px;
+  border-radius: 50%;
+}
+.ponder-timeline {
+  position: relative;
+  display: flex;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  height: 44px;
+  margin-inline: 12px;
+}
+.ponder-segment {
+  position: relative;
+  flex: 1;
+  min-width: 12px;
+  transition: flex-grow 180ms ease-out;
+}
+.ponder-segment[data-current] {
+  flex-grow: 6;
+}
+.ponder-chapter-hit {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+.ponder-track {
+  position: absolute;
+  inset: 20px 0;
+  height: 4px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--border);
+  pointer-events: none;
+}
+.ponder-progress {
+  display: block;
+  height: 100%;
+  background: var(--brand);
+  transform-origin: left;
+  transform: scaleX(0);
+}
+.ponder-segment[data-past] .ponder-progress {
+  transform: scaleX(1);
+}
+.ponder-segment[data-current] .ponder-progress {
+  animation: ponder-progress linear both;
+}
+.ponder-chapter-tip {
+  position: absolute;
+  bottom: 42px;
+  left: 0;
+  z-index: 1;
+  width: max-content;
+  max-width: 240px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  pointer-events: none;
+  visibility: hidden;
+}
+.ponder-segment:nth-last-child(-n + 3) .ponder-chapter-tip {
+  left: auto;
+  right: 0;
+}
+.ponder-chapter-hit:hover .ponder-chapter-tip,
+.ponder-chapter-hit:focus-visible .ponder-chapter-tip {
+  visibility: visible;
+}
+.ponder-step-tick {
+  position: absolute;
+  top: 10px;
+  width: 24px;
+  height: 24px;
+  transform: translateX(-50%);
+  padding: 8px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+.ponder-step-tick::after {
+  content: '';
+  display: block;
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--brand);
+  border-radius: 50%;
+  background: var(--panel);
+}
+.ponder-step-tick[aria-pressed='true']::after {
+  background: var(--brand);
+}
+.ponder-accessible-seek {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  clip-path: inset(50%);
+}
+.ponder-accessible-seek:focus-visible {
+  inset: 0;
+  width: 100%;
+  height: 44px;
+  clip-path: none;
+  z-index: 2;
+  accent-color: var(--brand);
+  background: var(--panel);
+}
+.ponder-position {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  margin-left: auto;
+}
+.ponder-legend {
+  display: flex;
+  flex-shrink: 0;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 12px 28px;
+  padding: 16px 24px 24px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.ponder-legend > span {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+@keyframes ponder-progress {
+  from {
+    transform: scaleX(var(--ponder-from));
+  }
+  to {
+    transform: scaleX(var(--ponder-to));
+  }
+}
+@keyframes ponder-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+[data-reduced-motion='true'] .ponder-cursor {
+  transition: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ponder-cursor {
+    transition: none;
+  }
+  .ponder-screen {
+    animation: none;
+  }
+  .ponder-segment {
+    transition: none;
+  }
+}
+@media (max-width: 740px) {
+  .ponder-header {
+    gap: 8px;
+    padding: 12px 16px;
+    flex-wrap: wrap;
+  }
+  .ponder-heading {
+    gap: 8px;
+    flex: 1;
+  }
+  .ponder-heading .select-control {
+    width: auto;
+    flex: 1;
+  }
+  .ponder-header > :is(.btn, .btn-sm) kbd {
+    display: none;
+  }
+  .ponder-main {
+    padding: 4px 16px 0;
+    grid-template-rows: minmax(160px, 1fr) auto minmax(120px, auto);
+  }
+  .ponder-stage-content {
+    padding: 24px;
+  }
+  .ponder-playback {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .ponder-playback :is(.btn, .btn-sm) {
+    min-height: 44px;
+  }
+  .ponder-timeline {
+    flex: 1 0 100%;
+    order: -1;
+    margin: 0;
+  }
+  .ponder-caption p {
+    font-size: 15px;
+  }
+  .ponder-legend {
+    gap: 8px 16px;
+    padding: 8px 16px 16px;
+  }
+}
+@media (max-height: 640px) {
+  .ponder-lesson {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .ponder-main {
+    grid-template-rows: minmax(96px, 1fr) auto minmax(68px, auto);
+  }
+  .ponder-main[data-reading] {
+    grid-template-rows: minmax(96px, 1fr) auto;
+  }
+  .ponder-caption {
+    max-height: 100px;
+    padding-bottom: 8px;
+  }
+  .ponder-caption p {
+    font-size: 14px;
+  }
+  .ponder-legend {
+    display: none;
+  }
+}

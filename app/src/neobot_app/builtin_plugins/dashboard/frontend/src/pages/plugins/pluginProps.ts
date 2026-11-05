@@ -8,7 +8,12 @@ export type ActResult = Result<any> | undefined;
 
 export interface PluginActionHandlers {
   /** 执行一次受管操作：内部维护 operation/busyRef 并 notify 结果 */
-  act: (key: string, fn: () => Promise<Result<any>>, success: string) => Promise<ActResult>;
+  act: (
+    key: string,
+    fn: () => Promise<Result<any>>,
+    success: string,
+    showFeedback?: boolean,
+  ) => Promise<ActResult>;
   load: () => Promise<void>;
   read: (id: string) => Promise<void>;
   save: (reload: boolean) => Promise<void>;
@@ -42,7 +47,6 @@ export interface PluginListPanelProps {
   proxy: ProxyInfo;
   onSelect: (plugin: Plugin) => void;
   onOpenProxy: () => void;
-  onReload: () => void;
 }
 
 /** 右侧编辑器（工具条 + 详情 + 配置体 + 页脚） */
@@ -63,6 +67,7 @@ export interface PluginEditorPanelProps extends PluginActionHandlers {
   loading: boolean;
   operation: string;
   dirty: boolean;
+  editingSession?: boolean;
   isConsole: boolean;
   canEdit: boolean;
   canSave: boolean;
@@ -73,6 +78,6 @@ export interface PluginEditorPanelProps extends PluginActionHandlers {
   onBack: () => void;
   onModeChange: (mode: 'form' | 'toml') => void;
   onSourceChange: (value: string) => void;
-  onChangeField: (path: string[], value: unknown) => void;
+  onChangeField: (path: Array<string | number>, value: unknown) => void;
   onRetryRead: () => void;
 }

@@ -1,0 +1,116 @@
+/* 完整表单教程保持真实控件布局；高亮与滚动仍由思索舞台管理。 */
+.ponder-form-scene .ponder-config-content {
+  gap: 20px;
+}
+.ponder-form-phases {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+.ponder-form-phases li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ponder-form-phases li > span {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  font-variant-numeric: tabular-nums;
+}
+.ponder-form-phases [aria-current='step'] {
+  color: var(--accent);
+  font-weight: 600;
+}
+.ponder-form-phases [aria-current='step'] > span {
+  border-color: currentColor;
+  background: var(--accent-soft);
+}
+.ponder-form-phases [data-complete] > span {
+  color: var(--ok);
+  border-color: currentColor;
+}
+.ponder-form-scene .cfg-row {
+  grid-template-columns: minmax(140px, 1fr) minmax(0, 1.4fr);
+}
+/* 演示只禁用写入能力，样例值仍需清晰可读。 */
+.ponder-form-scene .cfg-root input:disabled,
+.ponder-form-scene .cfg-root textarea:disabled,
+.ponder-form-scene .cfg-root select:disabled,
+.ponder-form-scene .config-switch input:disabled + .switch-track {
+  opacity: 1;
+  color: var(--text);
+}
+.ponder-form-status,
+.ponder-form-save {
+  padding: 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.ponder-form-status p,
+.ponder-form-save p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.ponder-form-status.is-error {
+  color: var(--err);
+  border-color: var(--err);
+  background: var(--danger-soft);
+}
+.ponder-form-status ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+.ponder-form-save {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+.ponder-form-save .btn {
+  min-height: 44px;
+}
+.ponder-form-scene[data-form-phase='save'] .ponder-form-save,
+.ponder-form-scene[data-form-phase='saved'] .ponder-form-save {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.ponder-form-scene[data-form-phase='saved'] .ponder-form-save strong {
+  color: var(--ok);
+}
+@media (max-width: 640px) {
+  .ponder-form-scene .cfg-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ponder-form-scene .ponder-config-content {
+    padding: 16px;
+  }
+}
+/* 不依赖动画表达阶段；系统减少动态效果时同样可跳转、回放与阅读。 */
+@media (prefers-reduced-motion: reduce) {
+  .ponder-form-scene *,
+  .ponder-form-scene *::before,
+  .ponder-form-scene *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+[data-reduced-motion] .ponder-form-scene * {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}

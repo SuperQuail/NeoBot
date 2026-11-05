@@ -40,7 +40,7 @@ vi.mock('../api/endpoints', () => ({
 
 const CONFIG_DOC: ConfigDocument = {
   section: 'bot',
-  revision: 7,
+  revision: '00000000000000000000000000000007',
   form_supported: true,
   source_available: true,
   path: 'data/config.toml',
@@ -146,7 +146,7 @@ describe('ConfigManager 页面', () => {
       error: null,
       data: {
         ...CONFIG_DOC,
-        revision: 8,
+        revision: '00000000000000000000000000000008',
         config: { ...CONFIG_DOC.config, host: '127.0.0.1' },
         applied: true,
         message: '配置已热重载：2 项已生效，0 项需重启',
@@ -318,7 +318,10 @@ describe('ConfigManager 页面', () => {
       ok: true,
       status: 200,
       error: null,
-      data: { revision: 2, items: [{ key: 'Demo_APIKey', sensitive: true, has_value: true, in_file: true }] },
+      data: {
+        revision: '00000000000000000000000000000002',
+        items: [{ key: 'Demo_APIKey', sensitive: true, has_value: true, in_file: true }],
+      },
     });
     renderConfig();
     await readyHostField();
@@ -617,7 +620,12 @@ describe('ConfigManager 页面', () => {
         }),
     );
     fireEvent.keyDown(editor, { key: 's', ctrlKey: true });
-    expect(api.configSave).toHaveBeenCalledWith({ revision: 7, mode: 'toml', source, reload: true });
+    expect(api.configSave).toHaveBeenCalledWith({
+      revision: '00000000000000000000000000000007',
+      mode: 'toml',
+      source,
+      reload: true,
+    });
     expect(editor).toBeDisabled();
     fireEvent.keyDown(editor, { key: 's', ctrlKey: true });
     expect(api.configSave).toHaveBeenCalledTimes(1);

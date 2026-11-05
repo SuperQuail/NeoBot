@@ -83,7 +83,7 @@ class AdminMixin:
         期间事件循环也被占住（面板看起来像卡死）。后台执行后，前端按
         /api/admin/power 轮询即可看到状态变化，界面不需要额外改造。
         """
-        self.logger.warning(log)
+        self.logger.info(log)
 
         async def _worker() -> None:
             try:
@@ -184,7 +184,7 @@ class AdminMixin:
         stop = getattr(signal, "request", None)
         if not callable(stop):
             return _json_error("优雅关闭入口不可用，请手动停止 NeoBot", status=503)
-        self.logger.warning(f"面板请求优雅关闭 NeoBot ip={self.console.request_ip(request)}")
+        self.logger.info(f"面板请求优雅关闭 NeoBot ip={self.console.request_ip(request)}")
         # 立刻接受并返回：重复请求在信号里合并。调用方（如桌面端）拿到 200 后
         # 应当按进程存活轮询等待，而不是把「已请求」当成「已关闭」。
         stop()
@@ -203,7 +203,7 @@ class AdminMixin:
             restart = getattr(application, "request_restart", None)
         if not callable(restart):
             return _json_error("重启入口不可用，请手动重启 NeoBot", status=503)
-        self.logger.warning(f"面板请求重启 NeoBot ip={self.console.request_ip(request)}")
+        self.logger.info(f"面板请求重启 NeoBot ip={self.console.request_ip(request)}")
         if signal is not None and callable(getattr(signal, "request", None)):
             # Accept durably now. Repeated requests coalesce in the signal; a
             # delayed callback must not allow another runtime to be published.

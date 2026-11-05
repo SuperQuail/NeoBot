@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -156,9 +157,14 @@ def build_browser_components(
     configured_available = False
     if configured_browser:
         try:
-            configured_available = Path(configured_browser).is_file()
+            configured_available = Path(configured_browser).is_file() and os.access(
+                configured_browser, os.R_OK | os.X_OK
+            )
         except OSError:
             configured_available = False
+        if not configured_available:
+            logger.warning("配置的 browser_path 不可用，回退自动检测", browser_path=configured_browser)
+            configured_browser = ""
 
     # 已显式配置可用浏览器时不要再下载内嵌 Chromium（Windows 上通常直接复用 Edge/Chrome）。
     if not configured_available and not _find_chrome_binary():
@@ -229,6 +235,53 @@ def build_markdown_image_converter(
     )
 
 
+def _resolve_allowed_read_dirs(sandbox_cfg: Any, data_dir: Path) -> list[Path]:
+    """把 ``agent.sandbox.allowed_read_dirs`` 解析成绝对路径。
+
+    相对路径按 **数据目录的父目录** 解析：默认部署下 ``DATA_DIR`` 是
+    ``<项目根>/app/data``（打包版是 ``<exe>/data``），父目录正是写
+    ``./data/emoji/`` 这类相对路径时的基准，解析结果与旧硬编码
+    ``data_dir/emoji`` / ``data_dir/creator/gallery`` 一致。
+    字段缺失时回退到这两个默认目录。
+    """
+    raw = getattr(sandbox_cfg, "allowed_read_dirs", None)
+    if raw is None:
+        raw = [str(data_dir / "emoji"), str(data_dir / "creator" / "gallery")]
+    base = Path(data_dir).parent
+    resolved: list[Path] = []
+    for value in raw:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        path = Path(text).expanduser()
+        if not path.is_absolute():
+            path = base / path
+        resolved.append(path.resolve())
+    return resolved
+
+
+def _resolve_excluded_workspaces(sandbox_cfg: Any) -> list[Path]:
+    """把 ``agent.sandbox.excluded_workspaces`` 解析成绝对路径。
+
+    只接受绝对路径（``~`` 会展开）；相对路径在装配期直接报错，避免配置
+    「存在但不生效」。目录暂时不存在时保留归一后的路径，首次写入按需创建。
+    """
+    resolved: list[Path] = []
+    for value in getattr(sandbox_cfg, "excluded_workspaces", None) or []:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        path = Path(text).expanduser()
+        if not path.is_absolute():
+            raise ValueError(
+                f"agent.sandbox.excluded_workspaces 只接受绝对路径（可用 ~ 开头）：{text!r}"
+            )
+        path = path.resolve()
+        if path not in resolved:
+            resolved.append(path)
+    return resolved
+
+
 def build_sandbox_components(
     *,
     config: BotConfigSchema,
@@ -247,11 +300,9 @@ def build_sandbox_components(
 
     result["sandbox_service"] = SandboxService(
         sandbox_root=data_dir / "sandbox",
-        allowed_read_dirs=[
-            data_dir / "emoji",
-            data_dir / "creator" / "gallery",
-        ],
+        allowed_read_dirs=_resolve_allowed_read_dirs(sandbox_cfg, data_dir),
         max_total_size_bytes=sandbox_cfg.max_total_size_bytes,
+        excluded_workspaces=_resolve_excluded_workspaces(sandbox_cfg),
     )
     result["temp_cleaner"] = TempCleaner(
         temp_dir=data_dir / "sandbox" / "temp",

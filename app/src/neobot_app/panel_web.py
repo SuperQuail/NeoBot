@@ -11,9 +11,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from aiohttp import web
+
+ExtensionRequestPermission = Literal["read", "operate", "manage"]
+_READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 @runtime_checkable
@@ -35,10 +38,36 @@ class DashboardWebExtension(Protocol):
     def panel_entry(self) -> dict[str, str] | None:
         """面板侧栏入口元数据：{title, path, icon, description}；None 表示不显示。"""
 
-    async def handle_request(
-        self, request: web.Request, path: str
-    ) -> web.StreamResponse | None:
+    async def handle_request(self, request: web.Request, path: str) -> web.StreamResponse | None:
         """处理请求；返回 None 表示交给面板继续兜底。"""
+
+
+@runtime_checkable
+class DashboardWebPermissionProvider(Protocol):
+    """扩展可选的权限声明；不改变旧扩展必须实现的协议成员。"""
+
+    def request_permission(self, method: str, path: str) -> ExtensionRequestPermission:
+        """对 auth_prefixes 内的请求声明读取、普通操作或面板管理权限。
+
+        path 已去掉面板 base_path。普通操作仍需登录和 CSRF；管理操作额外受
+        manage_plugins / allow_remote_manage 约束，不能用此声明公开数据接口。
+        """
+
+
+def extension_request_permission(extension: Any, *, method: str, path: str) -> ExtensionRequestPermission:
+    """解析受保护请求的权限，旧扩展写操作默认要求管理权限。"""
+    method = method.upper()
+    declaration = getattr(extension, "request_permission", None)
+    if declaration is None:
+        return "read" if method in _READ_METHODS else "manage"
+    if not callable(declaration):
+        raise ValueError("扩展 request_permission 必须可调用")
+    permission = declaration(method, path)
+    if permission not in {"read", "operate", "manage"}:
+        raise ValueError("扩展必须声明 read、operate 或 manage 权限")
+    if permission == "read" and method not in _READ_METHODS:
+        raise ValueError("扩展写操作不能声明为 read 权限")
+    return permission
 
 
 class StaticAssetDirectory:
@@ -98,15 +127,16 @@ def extension_metadata(extension: Any) -> dict[str, Any]:
     return {
         "name": str(getattr(extension, "name", "") or ""),
         "prefixes": [str(item) for item in (getattr(extension, "prefixes", ()) or ())],
-        "auth_prefixes": [
-            str(item) for item in (getattr(extension, "auth_prefixes", ()) or ())
-        ],
+        "auth_prefixes": [str(item) for item in (getattr(extension, "auth_prefixes", ()) or ())],
         "panel": entry,
     }
 
 
 __all__ = [
     "DashboardWebExtension",
+    "DashboardWebPermissionProvider",
+    "ExtensionRequestPermission",
     "StaticAssetDirectory",
     "extension_metadata",
+    "extension_request_permission",
 ]

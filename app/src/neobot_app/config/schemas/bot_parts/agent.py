@@ -128,7 +128,16 @@ class AgentSandbox:
     )
     allowed_read_dirs: Optional[list[str]] = field(
         default_factory=lambda: ["./data/emoji/", "./data/creator/gallery/"],
-        metadata={"description": "允许文件操作 agent 只读访问的目录列表"},
+        metadata={"description": "允许文件操作 agent 只读访问的目录列表（相对路径按数据目录的父目录解析）"},
+    )
+    excluded_workspaces: Optional[list[str]] = field(
+        default_factory=list,
+        metadata={
+            "description": (
+                "不受沙箱限制的工作区（绝对路径列表，支持 ~）：目录内文件读写、编辑、删除、移动全部放行，"
+                "且不计入沙箱容量（目录本身位于沙箱根内时仍计入）；相对路径会在装配时直接报错"
+            )
+        },
     )
     maintenance: SandboxMaintenance = field(
         default_factory=SandboxMaintenance,
@@ -263,6 +272,25 @@ class AgentToolsConfig:
     auto_review: bool = field(
         default=True,
         metadata={"description": "沙箱/宿主执行等敏感工具默认 AI 自动审查；false=回到旧凭据门控"},
+    )
+    admin_self_authorize: bool = field(
+        default=False,
+        metadata={
+            "description": (
+                "管理员本人发起的请求视为已授权：跳过凭据申请与自动审查；"
+                "其他人发起的请求仍需管理员签发凭据。默认只信任与超管的私聊，"
+                "群聊需另配 admin_self_authorize_chats。默认 false（所有人一律走审查/凭据）"
+            )
+        },
+    )
+    admin_self_authorize_chats: Optional[list[str]] = field(
+        default_factory=list,
+        metadata={
+            "description": (
+                "额外的受信会话（如 group:12345）：管理员本人发起的请求在这些会话里也免审批。"
+                "受信群里的其他成员可能通过 wait 插话搭上同一条回复管线，只填只有可信成员的群"
+            )
+        },
     )
     review_timeout_seconds: float = field(
         default=30.0,

@@ -2,13 +2,15 @@
 flow: 22-storage-migrations
 covers:
   - packages/storage/src/neobot_storage/
-verified_against: d37eae4
-verified_hash: ffb148cba373
+verified_against: d525a5b
+verified_hash: dd5c2b98a6d6
 ---
 
 # 22 存储与迁移
 
 ## 范围
+
+嵌入式 Alembic 迁移沿用宿主日志出口，迁移内部进度保留到 DEBUG，宿主按结果与耗时输出摘要；独立 Alembic 命令仍使用自身 ini 日志配置。
 
 `neobot_storage` 包（32 个 py 文件）：异步引擎与 PRAGMA、UoW 事务边界、16 张表、
 28 个 Alembic 迁移、仓储层与锁重试。所有上层（档案、画像、用量、定时任务、头像、
@@ -221,11 +223,26 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["backup.py"] --> B["迁移前快照"]
-    B --> C["失败时可人工恢复"]
+    A["backup_sqlite_database(source, backup_dir)"] --> B["同目录隐藏暂存：mkstemp 独占分配"]
+    B --> C["SQLite backup 完成并关闭连接"]
+    C --> G["独占创建零字节目标占位，再原子替换为完整快照"]
+    G --> H{"目标名称碰撞?"}
+    H -- 是 --> I["清理暂存并换名重试"]
+    I --> B
+    H -- 否 --> J["清理暂存，再执行保留策略"]
+    B -- 复制或发布失败 --> K["清理暂存，记录警告并返回 None"]
+    J --> L["跳过零字节占位，按 mtime_ns / 文件名稳定排序"]
+    L --> M["并发删除的文件跳过，其余快照继续检查"]
+    M --> N["返回快照路径，供调用方保存或恢复"]
     D["app/src/neobot_app/database/"] --> E["连接/初始化辅助"]
     E --> F["与 storage 包的分工：<br/>包内管 schema 与仓储，app 侧管生命周期接线"]
 ```
+
+时间戳只用于可读性，随机后缀与独占发布保证同毫秒调用不覆盖旧快照。
+隐藏暂存不匹配公开备份 glob，零字节占位不计入保留数量，不会被另一调用删除；默认保留 5 份，
+`max_backups <= 0` 不清理。公开名称沿用 `<源库名>_*.db`，兼容旧快照。
+发布不依赖硬链接；仅原子替换本调用独占持有的占位，失败时清理本次占位与暂存。
+功能说明见 [数据库备份](../04-功能文档/数据库备份.md)。
 
 改 schema 的标准动作：**加迁移文件 -> 本地先跑一遍 -> 确认能升级也能回滚**。
 直接改 `models.py` 而忘了迁移，表现为「新库正常、老库启动报缺列」。

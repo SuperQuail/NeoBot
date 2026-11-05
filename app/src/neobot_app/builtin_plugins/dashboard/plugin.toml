@@ -29,7 +29,7 @@ allow_remote_manage = true
 session_timeout_minutes = 720
 # 面板内存中保留的日志条数（用于「日志」页实时滚动）。
 log_buffer_size = 500
-# 机器人信息（昵称/版本/头像）的缓存秒数，0 表示每次都重新查询。
+# 机器人信息（昵称/版本/头像）的缓存秒数，0 表示每次都重新查询；连接或断开后缓存立即失效。
 bot_info_cache_ttl = 300
 # 有人查看面板时的延迟探测间隔（秒）。探测会真实调用一次 get_status；0 表示彻底关闭探针。
 latency_probe_interval_seconds = 60

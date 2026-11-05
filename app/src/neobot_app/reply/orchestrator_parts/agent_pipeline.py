@@ -16,7 +16,6 @@ if TYPE_CHECKING:
 
 
 class AgentPipelineMixin:
-
     async def _agent_inject_new_entries(
         self,
         *,
@@ -47,9 +46,7 @@ class AgentPipelineMixin:
             )
             member_block = ""
             if is_group:
-                member_block = await self._render_new_member_block(
-                    new_entries, rendered_user_ids
-                )
+                member_block = await self._render_new_member_block(new_entries, rendered_user_ids)
             if new_role_messages:
                 if member_block:
                     messages.append({"role": "user", "content": member_block})
@@ -97,7 +94,9 @@ class AgentPipelineMixin:
         # into a labelled user appendix at the END of every model request.
         vision_context.manual_parts.extend(image_parts)
         if vision_just_disabled:
-            messages.append({"role": "user", "content": "[原生视觉回退] 图片未发送；非视觉模型和外部图片解析工具已恢复。"})
+            messages.append(
+                {"role": "user", "content": "[原生视觉回退] 图片未发送；非视觉模型和外部图片解析工具已恢复。"}
+            )
 
         # 已经回复过:清零轮次与时间基准,本次管线激活不再提醒
         if state.reply_sent:
@@ -131,9 +130,10 @@ class AgentPipelineMixin:
         if is_group:
             if group_lifespan > 0:
                 group_lifespan -= 1
-                action = "cancel消耗寿命" if state.cancelled else "回复消耗寿命"
-                self._logger.info(
-                    f"群聊回复管线{action}",
+                self._logger.debug(
+                    "群聊本轮已结束",
+                    event="reply.round_finished",
+                    chat_flow_id=f"group:{queue_key}",
                     event_id=event.event_id,
                     queue_key=queue_key,
                     remaining_lifespan=group_lifespan,
@@ -144,7 +144,10 @@ class AgentPipelineMixin:
                     # 低于重启管线输入成本时,额外续用,受阈值上限约束)
                     if cost_pipeline_extension_budget > 0 and self._cache_continue_cheaper_than_restart(
                         vision_context.request_messages(messages) if native_vision_active else messages,
-                        prompt, queue, queue_key, numbering
+                        prompt,
+                        queue,
+                        queue_key,
+                        numbering,
                     ):
                         cost_pipeline_extension_budget -= 1
                         group_lifespan = 1
@@ -161,8 +164,9 @@ class AgentPipelineMixin:
                             remaining_extension_budget=cost_pipeline_extension_budget,
                         )
                     else:
-                        self._logger.info(
-                            "群聊回复管线寿命归零，结束管线",
+                        self._logger.debug(
+                            "群聊回复轮数已用尽",
+                            chat_flow_id=f"group:{queue_key}",
                             event_id=event.event_id,
                             queue_key=queue_key,
                         )
@@ -175,25 +179,15 @@ class AgentPipelineMixin:
                     queue_key=queue_key,
                     remaining_lifespan=group_lifespan,
                 )
-                new_entries, notification_text, wake_prompt = (
-                    await self._suspend_group_chat(queue, queue_copy, queue_key)
+                new_entries, notification_text, wake_prompt = await self._suspend_group_chat(
+                    queue, queue_copy, queue_key
                 )
                 if not new_entries and not notification_text:
-                    self._logger.debug(
-                        "群聊挂起超时，结束管线",
-                        event_id=event.event_id,
-                        queue_key=queue_key,
-                    )
                     return group_lifespan, cost_pipeline_extension_budget, False
 
                 # 注入后台通知
                 if notification_text:
                     messages.append({"role": "user", "content": notification_text})
-                    self._logger.info(
-                        "注入后台通知（群聊挂起期间）",
-                        event_id=event.event_id,
-                        queue_key=queue_key,
-                    )
                     self._record_debug(
                         "background_notification_injected_during_group_suspend",
                         event,
@@ -203,9 +197,7 @@ class AgentPipelineMixin:
 
                 # 注入睡眠唤醒提示词(挂起期间被@唤醒)
                 if wake_prompt:
-                    messages.append(
-                        {"role": "user", "content": f"[系统状态]{wake_prompt}"}
-                    )
+                    messages.append({"role": "user", "content": f"[系统状态]{wake_prompt}"})
                     self._logger.info(
                         "注入睡眠唤醒提示词(挂起期间被@唤醒)",
                         event_id=event.event_id,
@@ -243,7 +235,11 @@ class AgentPipelineMixin:
                 # 重置事件状态，允许下一轮回复
                 event.state = ReplyState.GENERATING
                 event.completed_at = None
-                return group_lifespan, cost_pipeline_extension_budget, True  # 继续外层 while 循环，重新进入 agent 回复流程
+                return (
+                    group_lifespan,
+                    cost_pipeline_extension_budget,
+                    True,
+                )  # 继续外层 while 循环，重新进入 agent 回复流程
 
             # 寿命为 0（禁用寿命机制），正常结束管线
             return group_lifespan, cost_pipeline_extension_budget, False
@@ -269,21 +265,15 @@ class AgentPipelineMixin:
         )
         # Token 超限 → 先做 compact 检查点；失败才结束会话。
         if estimated_tokens >= self._get_private_chat_max_tokens():
-            self._logger.info(
+            self._logger.debug(
                 "私聊token超限，尝试 compact",
+                event="reply.compacting",
+                chat_flow_id=f"private:{queue_key}",
                 event_id=event.event_id,
                 queue_key=queue_key,
                 estimated_tokens=estimated_tokens,
             )
-            if not await self._compact_private_history(
-                messages, event=event, queue_key=queue_key
-            ):
-                self._logger.info(
-                    "私聊token超限且 compact 未成功，结束当前会话",
-                    event_id=event.event_id,
-                    queue_key=queue_key,
-                    estimated_tokens=estimated_tokens,
-                )
+            if not await self._compact_private_history(messages, event=event, queue_key=queue_key):
                 return False
 
         # 私聊挂起，等待新消息或后台通知
@@ -292,25 +282,13 @@ class AgentPipelineMixin:
             event_id=event.event_id,
             queue_key=queue_key,
         )
-        new_entries, notification_text = await self._suspend_private_chat(
-            queue, queue_copy, queue_key
-        )
+        new_entries, notification_text = await self._suspend_private_chat(queue, queue_copy, queue_key)
         if not new_entries and not notification_text:
-            self._logger.debug(
-                "私聊挂起超时，结束会话",
-                event_id=event.event_id,
-                queue_key=queue_key,
-            )
             return False
 
         # 注入后台通知（视作新消息，结束挂起状态）
         if notification_text:
             messages.append({"role": "user", "content": notification_text})
-            self._logger.info(
-                "注入后台通知（挂起期间）",
-                event_id=event.event_id,
-                queue_key=queue_key,
-            )
             self._record_debug(
                 "background_notification_injected_during_suspend",
                 event,

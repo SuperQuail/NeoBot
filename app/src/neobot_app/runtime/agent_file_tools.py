@@ -123,7 +123,7 @@ class AgentFileTools:
 
     @staticmethod
     def definitions() -> list[dict]:
-        path = {"type": "string", "description": "Current-flow path, or explicit shared:tools/..."}
+        path = {"type": "string", "description": "Current-flow path, an absolute path inside a configured excluded workspace, or explicit shared:tools/..."}
         version = {"type": "string", "description": "Version returned by your last read"}
         schemas = {
             "read": ({"file_path": path, "offset": {"type": "integer", "minimum": 1},

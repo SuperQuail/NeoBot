@@ -323,6 +323,7 @@ class PromptStore:
         self.custom_file = prompts_dir / CUSTOM_DIR_NAME / PROMPTS_FILE_NAME
         self._cache: dict[str, dict[str, Any]] | None = None
         self._cache_signature: tuple[Any, Any] = (None, None)
+        self._warned_fields: set[tuple[str, str]] = set()
 
     # ── 内部:带 mtime 缓存的加载 ──
 
@@ -353,6 +354,7 @@ class PromptStore:
         if self._cache is not None and signature == self._cache_signature:
             return self._cache
 
+        self._warned_fields.clear()
         merged = self._load_default_sections()
         custom = _parse_sections(self.custom_file, self._logger)
         for key in custom:
@@ -409,14 +411,19 @@ class PromptStore:
         if value is None:
             return default
         if not isinstance(value, str):
-            self._logger.warning(
-                f"提示词分区 [{key}].{sub} 的值不是字符串(实际 {type(value).__name__}),已忽略"
-            )
+            self._warn_field_once(key, sub, "应为字符串，已使用默认值")
             return default
         stripped = value.strip()
         if not stripped:
             return default
         return stripped
+
+    def _warn_field_once(self, key: str, sub: str, reason: str) -> None:
+        field = (key, sub)
+        if field in self._warned_fields:
+            return
+        self._warned_fields.add(field)
+        self._logger.warning("提示词配置项无效", section=key, field=sub, reason=reason)
 
     def template(self, key: str, default: str = "") -> str:
         """读取分区的 template 键(常用快捷方式)。"""
@@ -458,9 +465,7 @@ class PromptStore:
                 return False
             if text in ("true", "1", "yes", "on", "是", "开启"):
                 return True
-        self._logger.warning(
-            f"提示词分区 [{key}].enabled 的值无法解析为布尔(实际 {value!r}),按启用处理"
-        )
+        self._warn_field_once(key, "enabled", f"无法解析为布尔，已使用默认值 {default}")
         return default
 
 
@@ -506,7 +511,7 @@ def sync_default_prompts(data_dir: Path, logger: Logger | None = None) -> None:
                         tmp.unlink()
                     except OSError:
                         pass
-            log.info(f"默认提示词已同步: {dest}")
+            log.info("默认提示词已同步", path=str(dest))
         else:
             log.warning(f"内置默认提示词文件不存在,跳过同步: {DEFAULT_TEMPLATE_FILE}")
 

@@ -280,42 +280,8 @@ def test_wake_without_reason_uses_unknown(monkeypatch) -> None:
     )
     assert wake_record[1]["reason"] == "unknown"
 
-def test_log_remaining_prints_during_sleep(monkeypatch) -> None:
-    """睡眠中每分钟播报剩余时间(带可读文本与秒数)。"""
-    fake = {"now": 1000.0}
-    monkeypatch.setattr(sleep_module, "epoch_seconds", lambda: fake["now"])
-    monkeypatch.setattr(sleep_module, "monotonic_seconds", lambda: fake["now"])
-    recorder = _LogRecorder()
-    service = SleepService(logger=recorder)
-
-    service.sleep(3600)
-    service._log_remaining()
-
-    records = [
-        record for record in recorder.records if "睡眠中,剩余睡眠时间" in record[0]
-    ]
-    assert len(records) == 1
-    assert "剩余睡眠时间1 小时" in records[0][0]
-    assert records[0][1]["remaining_seconds"] == 3600
-
-
-def test_log_remaining_silent_when_awake(monkeypatch) -> None:
-    """未睡眠时不打印剩余时间播报。"""
-    fake = {"now": 1000.0}
-    monkeypatch.setattr(sleep_module, "epoch_seconds", lambda: fake["now"])
-    monkeypatch.setattr(sleep_module, "monotonic_seconds", lambda: fake["now"])
-    recorder = _LogRecorder()
-    service = SleepService(logger=recorder)
-
-    service._log_remaining()
-
-    assert not any(
-        "睡眠中,剩余睡眠时间" in record[0] for record in recorder.records
-    )
-
-
-async def test_ticker_loop_polls_remaining(monkeypatch) -> None:
-    """ticker 循环按间隔播报剩余时间(睡眠中打印,醒来后停止)。"""
+def test_sleep_expiry_checks_do_not_repeat_status_logs(monkeypatch) -> None:
+    """多次检查保持安静，到期只记录一次，仍能查询剩余时长。"""
     fake = {"now": 1000.0}
     monkeypatch.setattr(sleep_module, "epoch_seconds", lambda: fake["now"])
     monkeypatch.setattr(sleep_module, "monotonic_seconds", lambda: fake["now"])
@@ -323,24 +289,42 @@ async def test_ticker_loop_polls_remaining(monkeypatch) -> None:
     service = SleepService(logger=recorder)
     service.sleep(120)
 
-    task = asyncio.create_task(service._ticker_loop(interval_seconds=0.01))
-    await asyncio.sleep(0.045)  # 约 4 轮播报
-    logs_during_sleep = [
-        record for record in recorder.records if "睡眠中,剩余睡眠时间" in record[0]
-    ]
-    assert len(logs_during_sleep) >= 2
+    for now in (1030.0, 1060.0, 1090.0):
+        fake["now"] = now
+        service._check_sleep_expiry()
+        assert service.remaining_seconds() == 1120 - int(now)
+    assert len(recorder.records) == 1
 
-    service.wake()
-    await asyncio.sleep(0.04)  # 醒来后不再打印
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-
-    logs_after_wake = [
-        record for record in recorder.records if "睡眠中,剩余睡眠时间" in record[0]
-    ]
-    assert len(logs_after_wake) == len(logs_during_sleep)
+    fake["now"] = 1120.0
+    service._check_sleep_expiry()
+    service._check_sleep_expiry()
+    assert not service.is_sleeping()
+    assert len(recorder.records) == 2
+    assert "自动醒来" in recorder.records[-1][0]
+    assert recorder.records[-1][1]["elapsed_text"] == "2 分钟"
 
 
+async def test_ticker_loop_checks_expiry_without_status_spam(monkeypatch) -> None:
+    """ticker 保留到期唤醒职责，长期睡眠不会按轮询次数扩张日志。"""
+    fake = {"now": 1000.0}
+    monkeypatch.setattr(sleep_module, "epoch_seconds", lambda: fake["now"])
+    monkeypatch.setattr(sleep_module, "monotonic_seconds", lambda: fake["now"])
+    recorder = _LogRecorder()
+    service = SleepService(logger=recorder)
+    service.sleep(120)
+    ticks = 0
+
+    async def tick(_):
+        nonlocal ticks
+        ticks += 1
+        fake["now"] += 30.0
+        if ticks == 6:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(sleep_module.asyncio, "sleep", tick)
+    with pytest.raises(asyncio.CancelledError):
+        await service._ticker_loop(interval_seconds=30.0)
+
+    assert not service.is_sleeping()
+    assert len(recorder.records) == 2
+    assert "自动醒来" in recorder.records[-1][0]

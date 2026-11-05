@@ -5,13 +5,15 @@ covers:
   - app/src/neobot_app/reply/flow_registry.py
   - app/src/neobot_app/observability/context_recorder.py
   - app/src/neobot_app/observability/prompt_diff.py
-verified_against: 2d7925b
-verified_hash: 6f76818d7129
+verified_against: d525a5b
+verified_hash: b982070998c5
 ---
 
 # 24 提示词系统与聊天流快照
 
 ## 范围
+
+无效模板或 enabled 字段按配置文件版本去重告警，文件变化后重新诊断；不在每条回复重复同一配置问题。聊天流提示词和请求快照失败只由登记处记录一条带会话与原因的告警；纯活动状态赋值不再套重复防御日志。
 
 「系统提示词怎么拼出来」与「拼好的提示词怎么给人看」两件事：
 

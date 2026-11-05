@@ -142,11 +142,13 @@ class _SessionToolsMixin:
             if not t.cancelled():
                 exc = t.exception()
                 if exc is not None:
-                    self._logger.warning(
-                        "会话工具任务异常",
+                    self._logger.error(
+                        "会话工具任务意外退出",
                         tool=name,
                         pipeline_key=info["pipeline_key"] if info else "",
                         error_type=type(exc).__name__,
+                        error=str(exc),
+                        exc_info=(type(exc), exc, exc.__traceback__),
                     )
                     if info is not None:
                         started = info.get("started_at", 0.0) or 0.0

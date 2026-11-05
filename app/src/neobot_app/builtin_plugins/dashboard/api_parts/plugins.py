@@ -8,6 +8,8 @@ from typing import Any
 
 from aiohttp import web
 
+from neobot_modloader import ActionError
+
 from ..config_manager import ConfigConflictError, ConfigValidationError
 from ..plugin_config import PluginConfigEditor, apply_field_descriptions, read_manifest_comments
 from ._common import _json_ok, _json_error, installed_name, _operation_response
@@ -48,10 +50,30 @@ class PluginsMixin:
             except Exception:
                 defaults = {}
         # 字段说明来自插件自带 plugin.toml 的 [config] 注释（生成的配置也带注释）
+        model = control.config_model(name)
+        schema = None
+        source_disabled_reason = ""
+        getter = getattr(control, "surface", None)
+        if model is None and callable(getter):
+            # 停用插件只读静态契约，仍须保护显式敏感字段，不能为读取配置导入插件。
+            try:
+                contract = getter(name).get("contract")
+            except ActionError as exc:
+                from ..plugin_config import PluginConfigError
+
+                raise PluginConfigError("插件配置契约无效，请先检查插件工程") from exc
+            schema = contract.get("config") if contract else None
+            # JSON Schema 无法执行插件作者的跨字段校验器。只有运行中或静态
+            # 契约明确声明 config=null，才能确认无模型并沿用纯 TOML 编辑。
+            if not isinstance(contract, dict) or "config" not in contract or schema is not None:
+                source_disabled_reason = "插件配置模型尚不可用，无法校验 TOML 原文；请先启用并加载插件，或使用表单模式"
         return PluginConfigEditor(
             path,
             defaults=defaults,
             comments=self._plugin_field_comments(control, name),
+            model=model,
+            schema=schema,
+            source_disabled_reason=source_disabled_reason,
         )
 
     def _plugin_field_comments(self, control: Any, name: str) -> dict[str, str]:
@@ -68,17 +90,13 @@ class PluginsMixin:
         except Exception:
             return {}
 
-    def _with_field_comments(
-        self, schema: list[dict[str, Any]], comments: dict[str, str]
-    ) -> list[dict[str, Any]]:
+    def _with_field_comments(self, schema: list[dict[str, Any]], comments: dict[str, str]) -> list[dict[str, Any]]:
         """给 pydantic 生成的 schema 补上 plugin.toml 注释（不覆盖已有说明）。"""
         if not schema or not comments:
             return schema
         return apply_field_descriptions(schema, comments)
 
-    def _plugin_config_meta(
-        self, snapshot: Any, name: str, document: dict[str, Any]
-    ) -> dict[str, Any]:
+    def _plugin_config_meta(self, snapshot: Any, name: str, document: dict[str, Any]) -> dict[str, Any]:
         """插件配置文档的公共元信息（官方与第三方插件一致）。"""
         official = bool(getattr(snapshot, "official", False))
         hot_reload = bool(getattr(snapshot, "hot_reload", True))
@@ -90,9 +108,7 @@ class PluginsMixin:
                 "manage_enabled": self.console.manage_plugins,
                 "can_reload": hot_reload,
                 "hot_reload": hot_reload,
-                "config_hot_reload": bool(
-                    getattr(snapshot, "config_hot_reload", True)
-                ),
+                "config_hot_reload": bool(getattr(snapshot, "config_hot_reload", True)),
                 "config_error": getattr(snapshot, "config_error", None),
                 "message": "插件配置保存在插件数据目录，与插件代码和启停状态分离",
             }
@@ -267,9 +283,7 @@ class PluginsMixin:
         replace = bool(payload.get("replace"))
         if not repo:
             return _json_error("请填写 GitHub 仓库地址")
-        result = await control.install(
-            repo, branch=branch, replace=replace, dry_run=dry_run
-        )
+        result = await control.install(repo, branch=branch, replace=replace, dry_run=dry_run)
         conflict = getattr(result, "conflict", None)
         if dry_run:
             if not getattr(result, "ok", False):
@@ -333,10 +347,6 @@ class PluginsMixin:
             {
                 "items": items,
                 "available": len(available),
-                "message": (
-                    f"{len(available)} 个插件可更新"
-                    if available
-                    else "全部插件均为最新"
-                ),
+                "message": (f"{len(available)} 个插件可更新" if available else "全部插件均为最新"),
             }
         )

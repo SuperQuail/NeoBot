@@ -7,6 +7,7 @@ from typing import Any
 
 from neobot_modloader.command_dsl import PatternError, PatternMatch
 from neobot_modloader.message import Message
+from neobot_modloader.plugins.commands import bind_command
 from neobot_modloader.plugins.injection import (
     get_handler_type_hints,
     injected_parameter_kind,
@@ -16,16 +17,19 @@ from neobot_modloader.plugins.registration import Handler, HandlerRegistration
 from neobot_modloader.reply import Reply
 
 
-def bind_handlers(
-    plugin: Any, registrations: Sequence[HandlerRegistration], context: Any
-) -> None:
+def bind_handlers(plugin: Any, registrations: Sequence[HandlerRegistration], context: Any) -> None:
     for registration in registrations:
         _validate_handler_binding(plugin, registration, context)
     for registration in registrations:
+        if registration.permission is not None:
+            bind_command(plugin, registration, context)
+            continue
         # HookBus 负责事件筛选和超时/阻断；真正的参数注入留到 dispatch 阶段。
         subscription = context.hook_bus.subscribe(
             _wrap_handler(plugin, registration, context),
-            post_type="message",
+            post_type=registration.post_type,
+            notice_type=registration.notice_type,
+            request_type=registration.request_type,
             message_type=_message_type_filter(registration),
             rule=_build_rule(registration),
             priority=registration.priority,
@@ -44,9 +48,7 @@ def _build_rule(registration: HandlerRegistration) -> Handler:
             # Ignored parse failures are not handled and therefore must not
             # trigger this subscription's block/consume behavior.
             match = registration.pattern.match(message)
-            return match.command_matched and (
-                match.matched or registration.parse_error != "ignore"
-            )
+            return match.command_matched and (match.matched or registration.parse_error != "ignore")
         pattern_match = registration.pattern.match(message)
         if not pattern_match.matched:
             return False
@@ -62,9 +64,7 @@ def _build_rule(registration: HandlerRegistration) -> Handler:
     return rule
 
 
-def _validate_handler_binding(
-    plugin: Any, registration: HandlerRegistration, context: Any
-) -> None:
+def _validate_handler_binding(plugin: Any, registration: HandlerRegistration, context: Any) -> None:
     hints = get_handler_type_hints(registration.handler)
     signature = inspect.signature(registration.handler)
     capture_names = set(registration.pattern.capture_names)
@@ -78,8 +78,7 @@ def _validate_handler_binding(
         )
         if name in capture_names and kind is not None:
             raise PatternError(
-                f"pattern capture {name!r} conflicts with {kind} DI on handler "
-                f"{registration.handler.__qualname__}"
+                f"pattern capture {name!r} conflicts with {kind} DI on handler {registration.handler.__qualname__}"
             )
         if kind == "config" and getattr(plugin, "_config", None) is not None:
             validate_config_injection(
@@ -91,18 +90,14 @@ def _validate_handler_binding(
             )
 
 
-def _wrap_handler(
-    plugin: Any, registration: HandlerRegistration, context: Any
-) -> Handler:
+def _wrap_handler(plugin: Any, registration: HandlerRegistration, context: Any) -> Handler:
     async def dispatch(event: dict[str, Any]) -> None:
         message = Message(event)
         match = registration.pattern.match(message)
         if not match.matched:
             await _handle_parse_error(registration, context, event, match)
             return
-        await plugin._call_handler(
-            registration.handler, context, event, message, match.values
-        )
+        await plugin._call_handler(registration.handler, context, event, message, match.values)
 
     return dispatch
 
@@ -129,9 +124,7 @@ def _message_type_filter(registration: HandlerRegistration) -> str | None:
     return None
 
 
-def _message_filters_match(
-    registration: HandlerRegistration, event: dict[str, Any], message: Message
-) -> bool:
+def _message_filters_match(registration: HandlerRegistration, event: dict[str, Any], message: Message) -> bool:
     text_value = message.text
     if registration.text is not None and text_value != registration.text:
         return False
@@ -141,13 +134,9 @@ def _message_filters_match(
     keyword_values = _text_list(registration.keywords)
     if keyword_values and not any(value in text_value for value in keyword_values):
         return False
-    if registration.startswith is not None and not text_value.startswith(
-        registration.startswith
-    ):
+    if registration.startswith is not None and not text_value.startswith(registration.startswith):
         return False
-    if registration.endswith is not None and not text_value.endswith(
-        registration.endswith
-    ):
+    if registration.endswith is not None and not text_value.endswith(registration.endswith):
         return False
     if registration.fullmatch is not None and text_value != registration.fullmatch:
         return False

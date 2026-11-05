@@ -69,7 +69,7 @@
 
 .cfg-json-field .input[aria-invalid='true'] {
   border-color: var(--err);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--err) 10%, transparent);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--err) 10%, transparent);
 }
 
 .cfg-longtext-bar:empty {

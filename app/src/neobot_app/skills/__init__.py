@@ -387,6 +387,12 @@ def build_all_skills(
                     getattr(getattr(getattr(config, "agent", None), "tools", None), "review_timeout_seconds", 30.0)
                     or 30.0
                 ),
+                admin_self_authorize=bool(
+                    getattr(getattr(getattr(config, "agent", None), "tools", None), "admin_self_authorize", False)
+                ),
+                admin_self_authorize_chats=getattr(
+                    getattr(getattr(config, "agent", None), "tools", None), "admin_self_authorize_chats", None
+                ),
                 adapter=adapter,
                 file_server=file_server,
                 hold_max_minutes=(

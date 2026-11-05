@@ -1,0 +1,56 @@
+/* 隔离 HTML 文档的缩放、文字回退与工具栏。 */
+.plugin-preview-frame-area {
+  padding: 16px;
+  background: var(--panel-2);
+}
+
+.plugin-html-preview iframe {
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: 0;
+}
+
+.plugin-preview-canvas {
+  overflow: auto;
+  max-width: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+.plugin-preview-canvas.is-original {
+  display: block;
+  max-height: 520px;
+}
+
+.plugin-preview-tools {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--panel-2);
+  border-top: 1px solid var(--border-soft);
+}
+
+.plugin-preview-tools .btn-sm {
+  font-size: 11.5px;
+  border-radius: 6px;
+}
+
+.plugin-preview-text {
+  margin: 0;
+  padding: 16px;
+  border-top: 1px solid var(--border-soft);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+@media (max-width: 600px) {
+  .plugin-preview-tools .btn-sm {
+    min-height: 44px;
+  }
+}

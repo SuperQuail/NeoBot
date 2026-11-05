@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 from typing import Mapping
+from neobot_modloader import IncomingEvent, starts_with
 
 from .constants import KEYWORDS, PACKAGE_BASE, RANK_PAGE_SIZE, _MG_COMMAND_RE
 from .registration import plugin
@@ -41,6 +42,7 @@ async def _tool_bottle_write(
     result = await game.write(request, anonymous=bool(anonymous), content=str(content or ""))
     return result or "已发瓶。"
 
+
 @plugin.tool(
     "bottle_pick",
     package="bottle",
@@ -60,6 +62,7 @@ async def _tool_bottle_pick(user_id: str = "", user_name: str = "") -> str:
         return runtime.NEED_IDENTITY_HINT
     result = await game.pick(request)
     return result or "已捞取。"
+
 
 @plugin.tool(
     "checkin",
@@ -81,6 +84,7 @@ async def _tool_checkin(user_id: str = "", user_name: str = "") -> str:
     result = await game.do_checkin(request)
     return result or "已签到。"
 
+
 @plugin.tool(
     "fortune",
     package="fortune",
@@ -101,6 +105,7 @@ async def _tool_fortune(user_id: str = "", user_name: str = "") -> str:
     result = await game.draw(request)
     return result or "已抽签。"
 
+
 @plugin.tool(
     "points",
     package=PACKAGE_BASE,
@@ -116,6 +121,7 @@ async def _tool_points(user_id: str = "", user_name: str = "") -> str:
         return runtime.NEED_IDENTITY_HINT
     return await runtime.points_text(resolved)
 
+
 @plugin.tool(
     "help",
     package=PACKAGE_BASE,
@@ -128,6 +134,7 @@ async def _tool_help(game: str = "") -> str:
     runtime = _runtime()
     return runtime.help_command(str(game or ""))
 
+
 @plugin.tool(
     "chengyu_submit",
     package="chengyu",
@@ -137,9 +144,7 @@ async def _tool_help(game: str = "") -> str:
         "单局最多 10 步、每条 60 秒，用满步数或超时即结束本局；达成目标 N 额外 +N。"
     ),
 )
-async def _tool_chengyu_submit(
-    word: str, user_id: str = "", user_name: str = ""
-) -> str:
+async def _tool_chengyu_submit(word: str, user_id: str = "", user_name: str = "") -> str:
     runtime = _runtime()
     game: Any = runtime.game_by_id("chengyu")
     if game is None:
@@ -149,6 +154,7 @@ async def _tool_chengyu_submit(
         return runtime.NEED_IDENTITY_HINT
     result = await game.submit(request, str(word if word is not None else ""))
     return result or "已记录。"
+
 
 # ── 对外能力：其它插件通过 ctx.require_plugin("minigame").call(...) 读写积分 ──
 # 契约（四个能力的入参与返回）见 docs/07-插件开发.md「调用其它插件的功能」与
@@ -161,6 +167,7 @@ async def _tool_chengyu_submit(
 def _points_payload(payload: Any) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
+
 def _points_user_id(data: Mapping[str, Any]) -> str:
     """取出并校验 user_id（数字 QQ 号；长度与 mg_profile.user_id 对齐）。"""
     uid = str(data.get("user_id") or "").strip()
@@ -169,6 +176,7 @@ def _points_user_id(data: Mapping[str, Any]) -> str:
     if not uid.isdigit() or len(uid) > 32:
         raise ValueError(f"user_id 必须是数字 QQ 号（收到 {uid!r}）")
     return uid
+
 
 def _points_int(data: Mapping[str, Any], key: str, *, default: Any = None) -> int:
     """整数入参：不接受 bool，也不接受带小数部分的浮点（避免 1.5 被悄悄截断成 1）。"""
@@ -187,6 +195,7 @@ def _points_int(data: Mapping[str, Any], key: str, *, default: Any = None) -> in
         raise ValueError(f"{key} 必须是整数（收到 {raw!r}）")
     return value
 
+
 def _points_flag(data: Mapping[str, Any], key: str, *, default: bool = False) -> bool:
     """布尔入参：字符串形态也接受，但写错的字符串必须报错而不是当 True。"""
     if key not in data:
@@ -203,6 +212,7 @@ def _points_flag(data: Mapping[str, Any], key: str, *, default: bool = False) ->
         return True
     raise ValueError(f"{key} 必须是布尔值（收到 {value!r}）")
 
+
 @plugin.capability("points.get")
 async def _capability_points_get(payload: Any) -> dict[str, Any]:
     """查询某个用户的积分档案（积分 / 最高分 / 场次 / 胜场 / 连续签到 / 今日是否签到）。
@@ -214,6 +224,7 @@ async def _capability_points_get(payload: Any) -> dict[str, Any]:
     """
     data = _points_payload(payload)
     return await _runtime().points_snapshot(_points_user_id(data))
+
 
 @plugin.capability("points.add")
 async def _capability_points_add(payload: Any) -> dict[str, Any]:
@@ -241,6 +252,7 @@ async def _capability_points_add(payload: Any) -> dict[str, Any]:
         win=_points_flag(data, "win"),
     )
 
+
 @plugin.capability("points.rank")
 async def _capability_points_rank(payload: Any) -> dict[str, Any]:
     """查询积分排行榜：不传 conversation_id 查全局榜，传了就查该会话的本群榜。
@@ -257,35 +269,36 @@ async def _capability_points_rank(payload: Any) -> dict[str, Any]:
         conversation_id=str(data.get("conversation_id") or ""),
     )
 
+
 @plugin.capability("points.describe")
 async def _capability_points_describe(payload: Any) -> dict[str, Any]:
     """积分接口自描述：接口名 / 版本 / 能力清单 / 单次上限 / 当前写开关。"""
     return _runtime().describe_points_api()
 
-def _keyword_rule(event: dict[str, Any]) -> bool:
-    """命令消息不参与关键词入口（/mg ... 有自己的命令路径）。"""
-    text = _event_text(event)
-    return bool(text.strip()) and not text.strip().startswith("/")
 
 def _command_rule(event: dict[str, Any]) -> bool:
     """只对本插件的命令文本登记「预激活」意图（不消费、不改写消息）。"""
     return _MG_COMMAND_RE.match(_event_text(event).strip()) is not None
 
-@plugin.message(
-    keywords=tuple(KEYWORDS),
-    rule=_keyword_rule,
-    priority=10,
-)
-async def _minigame_keyword_entry(ctx: Any, event: dict[str, Any]) -> str:
-    return _runtime().on_keyword(ctx, event)
 
 @plugin.message(
+    keywords=tuple(KEYWORDS),
+    rule=~starts_with("/"),
+    priority=10,
+)
+async def _minigame_keyword_entry(ctx: Any, incoming: IncomingEvent) -> str:
+    return _runtime().on_keyword(ctx, dict(incoming.raw))
+
+
+@plugin.event(
+    post_type="message",
     rule=_command_rule,
     priority=9,
 )
-async def _minigame_command_intent_entry(ctx: Any, event: dict[str, Any]) -> str:
+async def _minigame_command_intent_entry(ctx: Any, incoming: IncomingEvent) -> str:
     """命令入口的预激活声明（背景仍由本体命令结果提供）。"""
-    return _runtime().on_command_intent(ctx, event)
+    return _runtime().on_command_intent(ctx, dict(incoming.raw))
+
 
 # ── 生命周期 ──────────────────────────────────────────────────
 
@@ -293,6 +306,7 @@ async def _minigame_command_intent_entry(ctx: Any, event: dict[str, Any]) -> str
 @plugin.on_load
 async def _minigame_load(ctx: Any) -> None:
     await _runtime().load(ctx)
+
 
 @plugin.on_shutdown
 async def _minigame_shutdown() -> None:

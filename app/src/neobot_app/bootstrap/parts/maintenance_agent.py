@@ -163,7 +163,6 @@ def _make_maintenance_coro(
                 now=now_utc(),
             )
             if not plan.due:
-                logger.info(f"沙箱维护未到期，跳过本轮：{plan.reason}")
                 await _record_skip(trigger, plan.reason)
                 try:
                     # 分片上界避免长时间休眠拖延配置变更/关闭

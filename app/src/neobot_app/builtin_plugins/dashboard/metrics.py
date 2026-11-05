@@ -1,6 +1,6 @@
 """面板运行指标：消息统计、活跃用户、延迟、API 调用、日志缓冲。
 
-所有数据都来自运行时事件（插件订阅 hook_bus），不依赖日志文本之外的内部实现，
+所有数据都来自运行时事件（插件订阅 hook_bus），API 调用使用独立指标事件，
 重启后从 data_dir/stats.json 恢复累计消息数与历史。
 """
 
@@ -8,17 +8,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import time
 from collections import deque
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from neobot_app.utils.atomic import atomic_write_text
 from neobot_contracts.ports.logging import Logger, NullLogger
-
-_API_ACTION_RE = re.compile(r"action['\"]?\s*[:=]\s*['\"]([A-Za-z0-9_]+)")
 
 #: 延迟样本至少要能覆盖的时长（秒），用于按采样间隔推导 deque 容量
 _LATENCY_COVERAGE_SECONDS = 3600.0
@@ -186,22 +184,26 @@ class Metrics:
     def record_log(self, payload: dict[str, Any]) -> None:
         self._log_seq += 1
         raw_time = str(payload.get("time") or "")
+        timestamp = payload.get("timestamp")
+        timestamp = float(timestamp) if timestamp is not None else time.time()
+        fields = payload.get("fields")
+        exception = payload.get("exception")
         item = {
             "id": self._log_seq,
             "time": raw_time[11:19] if len(raw_time) >= 19 else raw_time,
             "datetime": raw_time[:19].replace("T", " "),
-            "ts": float(payload.get("timestamp") or time.time()),
+            "ts": timestamp,
+            "timestamp": timestamp,
             "level": str(payload.get("level") or "info").lower(),
             "module": str(payload.get("module") or "—") or "—",
             "message": str(payload.get("message") or ""),
+            "file": str(payload.get("file") or ""),
+            "line": payload.get("line"),
+            "function": str(payload.get("function") or ""),
+            "fields": deepcopy(fields) if isinstance(fields, dict) else {},
+            "exception": deepcopy(exception) if isinstance(exception, dict) else None,
         }
         self._log_buffer.append(item)
-        message = item["message"]
-        if "API" in message or "api" in message:
-            match = _API_ACTION_RE.search(message)
-            if match:
-                action = match.group(1)
-                self._api_calls[action] = self._api_calls.get(action, 0) + 1
 
     def logs(self, *, since: int = 0, limit: int = 200) -> dict[str, Any]:
         items = [item for item in self._log_buffer if int(item["id"]) > int(since)]
@@ -212,6 +214,12 @@ class Metrics:
             "last_id": self._log_seq,
             "total": len(self._log_buffer),
         }
+
+    def record_api_call(self, action: str) -> None:
+        """按成功发出的请求计数，不从日志正文推断调用。"""
+        action = action.strip()
+        if action:
+            self._api_calls[action] = self._api_calls.get(action, 0) + 1
 
     def api_calls(self, limit: int = 10) -> dict[str, Any]:
         items = [

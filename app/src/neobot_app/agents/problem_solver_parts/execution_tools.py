@@ -75,7 +75,6 @@ class ProblemSolverToolExecutionMixin:
 
     async def _execute_parse_image(self, args: dict) -> str:
         if self._vision_provider is None:
-            self._logger.warning("视觉模型未配置，跳过图片解析（仅记录日志）")
             return _json({"ok": True, "skipped": True, "note": ""})
         from neobot_app.runtime.sandbox_service import detect_file_type
 

@@ -21,8 +21,8 @@ vi.mock('../api/endpoints', () => ({
 }));
 
 const deployment: DeployStatus = {
-  revision: 1,
-  env_revision: 1,
+  revision: '00000000000000000000000000000001',
+  env_revision: '00000000000000000000000000000001',
   ready: true,
   values: {
     bot_account: '100000001',
@@ -86,7 +86,7 @@ beforeEach(() => {
   vi.mocked(api.config).mockResolvedValue({
     ...success,
     data: {
-      revision: 7,
+      revision: '00000000000000000000000000000007',
       config: {
         bot: { account: '100000001', nick_name: '演示机器人', untouched: 'identity-option' },
         chat: { admin_accounts: ['100000002'], group_chat_chance: 0.3, untouched: 'chat-option' },
@@ -154,7 +154,7 @@ describe('Deploy 分步配置', () => {
     vi.mocked(api.config).mockResolvedValue({
       ...success,
       data: {
-        revision: 9,
+        revision: '00000000000000000000000000000009',
         config: {
           bot: {
             account: '100000001',
@@ -171,7 +171,7 @@ describe('Deploy 分步配置', () => {
     fireEvent.click(screen.getByRole('button', { name: '保存并应用' }));
     await waitFor(() => expect(api.configSave).toHaveBeenCalled());
     expect(api.configSave).toHaveBeenCalledWith({
-      revision: 9,
+      revision: '00000000000000000000000000000009',
       mode: 'form',
       reload: true,
       config: {
@@ -248,7 +248,7 @@ describe('Deploy 分步配置', () => {
     fireEvent.click(screen.getByRole('button', { name: '保存并应用' }));
     await waitFor(() => expect(screen.getByRole('button', { name: '保存并应用' })).toBeDisabled());
     expect(api.configSave).toHaveBeenCalledWith({
-      revision: 7,
+      revision: '00000000000000000000000000000007',
       mode: 'form',
       reload: true,
       config: {
@@ -266,7 +266,7 @@ describe('Deploy 分步配置', () => {
     expect(api.envSave).toHaveBeenCalledWith({
       updates: { DeepSeek_APIKey: 'sk-test', DeepSeek_URL: 'https://api.deepseek.com' },
       deletes: [],
-      revision: 1,
+      revision: '00000000000000000000000000000001',
       reload: true,
     });
     expect(screen.getByPlaceholderText('sk-…')).toHaveValue('');
@@ -312,7 +312,7 @@ describe('Deploy 分步配置', () => {
     expect(screen.getByDisplayValue('待保存的昵称')).toBeInTheDocument();
     goTo('供应商');
     expect(screen.getByPlaceholderText('sk-…')).toHaveValue('sk-pending');
-    expect(api.deployOneBotToken).toHaveBeenCalledWith({ revision: 1 });
+    expect(api.deployOneBotToken).toHaveBeenCalledWith({ revision: '00000000000000000000000000000001' });
     expect(api.configSave).not.toHaveBeenCalled();
     expect(api.envSave).not.toHaveBeenCalled();
   });
@@ -354,7 +354,11 @@ describe('Deploy 分步配置', () => {
     expect(screen.queryByRole('button', { name: '刷新' })).not.toBeInTheDocument();
     vi.mocked(api.deployStatus).mockResolvedValue({
       ...success,
-      data: { ...deployment, revision: 2, values: { ...deployment.values, bot_nick_name: '服务端新昵称' } },
+      data: {
+        ...deployment,
+        revision: '00000000000000000000000000000002',
+        values: { ...deployment.values, bot_nick_name: '服务端新昵称' },
+      },
     });
     await advancePolling();
     expect(api.deployStatus).toHaveBeenCalledTimes(2);
@@ -399,7 +403,7 @@ describe('Deploy 分步配置', () => {
         ...success,
         data: {
           ...deployment,
-          revision: 99,
+          revision: '00000000000000000000000000000099',
           values: { ...deployment.values, bot_nick_name: '迟到的服务器值' },
           onebot: { ...deployment.onebot, url_local: 'ws://late.invalid/onebot' },
         },

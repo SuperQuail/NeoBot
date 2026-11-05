@@ -33,6 +33,11 @@ class HandlerRegistration:
     fullmatch: str | None = None
     rule: Callable[[dict[str, Any]], Any] | None = None
     command_prefix: str | None = None
+    permission: int | None = None
+    description: str = ""
+    post_type: str = "message"
+    notice_type: str | None = None
+    request_type: str | None = None
 
 
 @dataclass(slots=True)
@@ -79,8 +84,7 @@ def validate_plugin_name(name: str) -> str:
         # `__` 与工具命名空间分隔符（{plugin}__{tool}）冲突，
         # 最终全局名必然含 `__` 被 bind_tools 拒绝，这里尽早报错
         raise ValueError(
-            f"invalid plugin name: {name!r} (must not contain '__': "
-            f"conflicts with the tool namespace separator)"
+            f"invalid plugin name: {name!r} (must not contain '__': conflicts with the tool namespace separator)"
         )
     return name
 
@@ -92,11 +96,7 @@ def validate_agent_name(name: str) -> str:
 
 
 def validate_tool_name(name: str) -> str:
-    if (
-        not isinstance(name, str)
-        or not re.fullmatch(r"[A-Za-z0-9_]{1,64}", name)
-        or "__" in name
-    ):
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_]{1,64}", name) or "__" in name:
         raise ValueError(f"invalid tool name: {name!r}")
     return name
 
@@ -113,8 +113,7 @@ def validate_qualified_tool_name(plugin_name: str, tool_name: str) -> str:
     qualified = f"{plugin_name}__{tool_name}"
     if not isinstance(qualified, str) or not _QUALIFIED_TOOL_NAME_RE.fullmatch(qualified):
         raise ValueError(
-            f"invalid qualified tool name: {qualified!r} "
-            f"(plugin name {plugin_name!r} + tool name {tool_name!r})"
+            f"invalid qualified tool name: {qualified!r} (plugin name {plugin_name!r} + tool name {tool_name!r})"
         )
     return qualified
 
@@ -133,4 +132,3 @@ def validate_parse_error(value: str) -> None:
 
 def looks_like_context(value: Any) -> bool:
     return hasattr(value, "plugin_name") and hasattr(value, "hook_bus")
-

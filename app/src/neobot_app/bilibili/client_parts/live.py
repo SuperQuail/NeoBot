@@ -139,7 +139,6 @@ class _LiveMixin:
             )
             return False
         if not self._sessdata or not self._bili_jct:
-            self._logger.warning("B站直播弹幕发送失败：未登录")
             return False
         real_room_id = self._resolve_live_room_id(room_id)
         form: dict[str, Any] = {

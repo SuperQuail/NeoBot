@@ -1,16 +1,50 @@
 """回复事件创建与工具执行器释放。"""
+
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING
 from neobot_app.reply.event import ReplyEvent, ReplyState
 from ._runtime import asyncio, monotonic_seconds
+
 if TYPE_CHECKING:
     from neobot_adapter.model.message import GroupMessage, PrivateMessage
     from neobot_app.message.queue import MessageQueue
     from neobot_app.willing.models import WillingDecision
 
+
 class LifecycleStartMixin:
+    @property
+    def speaking_policy(self):
+        return getattr(getattr(self._adapter, "core", None), "speaking_policy", None)
+
+    async def wait_reply_delivery(self, event: ReplyEvent) -> bool:
+        """Wait only for this event, bounded by existing reply phase limits."""
+        task = next(
+            (task for task in self._tasks if task.get_name() == f"reply:{event.event_id}"),
+            None,
+        )
+        if task is None:
+            if event.speech_blocked is not None:
+                raise event.speech_blocked
+            return event.send_response is not None and not event.send_incomplete
+        if task is asyncio.current_task():
+            return False
+        timeout = (
+            self._get_prompt_timeout_seconds()
+            + self._get_model_response_timeout_seconds(event)
+            + self._get_io_timeout_seconds()
+        )
+        try:
+            await asyncio.wait_for(task, timeout=timeout)
+        except TimeoutError:
+            if event.speech_blocked is not None:
+                raise event.speech_blocked
+            return event.send_response is not None and not event.send_incomplete
+        if event.speech_blocked is not None:
+            raise event.speech_blocked
+        return event.send_response is not None and not event.send_incomplete
+
     def start_reply(
         self,
         *,
@@ -30,6 +64,7 @@ class LifecycleStartMixin:
         mode = self._resolve_mode()
         conversation_ref = self._build_conversation_ref(message, queue_key)
         from neobot_app.agent_tools.invocation import CURRENT_HUMAN_MESSAGE
+
         event = ReplyEvent(
             mode=mode,
             human_request=CURRENT_HUMAN_MESSAGE.get() and background_content is None,
@@ -85,7 +120,11 @@ class LifecycleStartMixin:
                 return None
 
         self._logger.info(
-            "创建回复事件",
+            "开始回复",
+            event="reply.started",
+            chat_flow_id=pipeline_key,
+            manager=decision.manager_name,
+            reasons=list(decision.reasons),
             event_id=event.event_id,
             conversation_id=queue_key,
             conversation_kind=getattr(event.conversation_ref, "kind", ""),
@@ -112,7 +151,9 @@ class LifecycleStartMixin:
             if shared_turn is not None:
                 runtime, context, history = shared_turn
                 try:
-                    runtime.finish_turn(context, history, cancelled=event.state in {ReplyState.CANCELLED, ReplyState.FAILED})
+                    runtime.finish_turn(
+                        context, history, cancelled=event.state in {ReplyState.CANCELLED, ReplyState.FAILED}
+                    )
                 except Exception as exc:
                     self._logger.warning("agent 目标续跑未能调度", error=str(exc))
             self._release_executor(event.event_id)
@@ -136,11 +177,12 @@ class LifecycleStartMixin:
 
                 callback_task.add_done_callback(_callback_done)
 
-        task = asyncio.create_task(self._run(event, queue, queue_key))
+        task = asyncio.create_task(self._run(event, queue, queue_key), name=f"reply:{event.event_id}")
         self._tasks.add(task)
         self._active_pipelines[pipeline_key] = task
         task.add_done_callback(_cleanup)
         return event
+
     def _release_executor(self, event_id: str) -> None:
         """释放某次回复创建的工具执行器。
 
@@ -166,9 +208,7 @@ class LifecycleStartMixin:
         except Exception as exc:
             # 同步异常绝不能冒泡到 done 回调：那会连带跳过 on_reply_done，
             # 让「回复中」标记永久残留。
-            self._logger.warning(
-                "回复工具执行器释放失败", event_id=event_id, error=str(exc)
-            )
+            self._logger.warning("回复工具执行器释放失败", event_id=event_id, error=str(exc))
             return
         self._callback_tasks.add(close_task)
 

@@ -13,6 +13,24 @@ const data: LogPayload = {
     { id: 2, module: 'drawing', level: 'ERROR', time: '10:00:01', message: '绘图请求失败' },
   ],
 };
+const structuredData: LogPayload = {
+  last_id: 3,
+  items: [
+    ...data.items!,
+    {
+      id: 3,
+      module: 'reply',
+      level: 'ERROR',
+      time: '10:00:02',
+      message: '上下文处理失败',
+      file: 'app/src/neobot_app/reply/orchestrator.py',
+      line: 42,
+      function: 'generate_reply',
+      fields: { conversation_id: 'fixture-group', request: { token: '***REDACTED***' } },
+      exception: { type: 'ValueError', message: '字段校验失败', traceback: 'Traceback: fixture-frame' },
+    },
+  ],
+};
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.logs).mockResolvedValue(data);
@@ -65,6 +83,54 @@ it('初次读取显示骨架，清屏后仍清楚显示当前模块筛选', asyn
   expect(screen.getByRole('combobox', { name: '日志模块' })).toHaveTextContent('agent');
   await chooseModule('全部模块');
   expect(screen.getByText('暂无日志')).toBeInTheDocument();
+});
+
+it('可展开调用位置、结构化字段与异常，并通过这些上下文搜索', async () => {
+  vi.mocked(api.logs).mockResolvedValue(structuredData);
+  render(<Logs />);
+  await screen.findByText('上下文处理失败', { exact: false });
+  fireEvent.click(screen.getByText('日志详情 · 异常'));
+  expect(screen.getByText('调用位置')).toBeVisible();
+  expect(screen.getByText('app/src/neobot_app/reply/orchestrator.py:42 · generate_reply')).toBeVisible();
+  expect(screen.getByText(/fixture-group/)).toBeVisible();
+  expect(screen.getByText(/Traceback: fixture-frame/)).toBeVisible();
+  for (const query of ['fixture-group', 'generate_reply', '字段校验失败', 'fixture-frame']) {
+    fireEvent.change(screen.getByRole('textbox', { name: '搜索日志' }), { target: { value: query } });
+    expect(screen.getByText('上下文处理失败', { exact: false })).toBeInTheDocument();
+    expect(screen.queryByText('Agent 正在处理请求', { exact: false })).not.toBeInTheDocument();
+  }
+});
+
+it('下载保留当前筛选日志的字段、调用位置和完整异常', async () => {
+  vi.mocked(api.logs).mockResolvedValue(structuredData);
+  const createObjectURL = vi.fn<(blob: Blob) => string>(() => 'blob:logs');
+  const revokeObjectURL = vi.fn();
+  vi.stubGlobal('URL', { createObjectURL, revokeObjectURL });
+  const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  try {
+    render(<Logs />);
+    await screen.findByText('上下文处理失败', { exact: false });
+    fireEvent.change(screen.getByRole('textbox', { name: '搜索日志' }), {
+      target: { value: 'fixture-group' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '下载' }));
+    const blob = createObjectURL.mock.calls[0][0] as Blob;
+    const text = await new Promise<string>((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.readAsText(blob);
+    });
+    expect(text).toContain('orchestrator.py:42 · generate_reply');
+    expect(text).toContain('fixture-group');
+    expect(text).toContain('***REDACTED***');
+    expect(text).toContain('ValueError: 字段校验失败');
+    expect(text).toContain('Traceback: fixture-frame');
+    expect(text).not.toContain('Agent 正在处理请求');
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:logs');
+  } finally {
+    click.mockRestore();
+    vi.unstubAllGlobals();
+  }
 });
 
 it('自动增量更新从最新游标继续，隐藏后暂停，恢复补读且卸载停止', async () => {

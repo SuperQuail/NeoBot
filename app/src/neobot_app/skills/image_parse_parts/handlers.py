@@ -8,6 +8,8 @@ import base64
 from pathlib import Path
 
 from neobot_app.utils.logger import get_module_logger
+from neobot_app.image.speaking import check_image_policy, pipeline_conversation
+from neobot_contracts.ports.speaking import SpeechBlocked
 
 from .helpers import _json
 
@@ -21,7 +23,6 @@ logger = get_module_logger("skills.image_parse")
 async def _handle_parse_image(self: ImageParseSkill, args: dict) -> str:
     if self._vision_provider is None:
         # 视觉模型不可用只写日志；不要把错误文案交给 agent/聊天流。
-        logger.warning("图片解析视觉模型未配置，跳过解析（仅记录日志）")
         return _json({"ok": True, "skipped": True, "note": ""})
     requirement = str(args.get("requirement") or "请简洁描述这张图片的主要内容。").strip()
     image_path = args.get("image_path")
@@ -34,6 +35,8 @@ async def _handle_parse_image(self: ImageParseSkill, args: dict) -> str:
     chat_flow_id = args.get("chat_flow_id")
     image_indices_arg = args.get("image_indices") or []
     pipeline_key = str(args.get("pipeline_key", "")).strip()
+    conversation = pipeline_conversation(pipeline_key)
+    check_image_policy(self._adapter, conversation)
 
     try:
         timeout_seconds = float(int(args.get("timeout_seconds", 300) or 300))
@@ -192,6 +195,7 @@ async def _handle_parse_image(self: ImageParseSkill, args: dict) -> str:
                 _add_image_part(single_image)
 
         # ── 调用 vision 模型 ──
+        check_image_policy(self._adapter, conversation)
         result = await self._vision_provider.chat([{"role": "user", "content": content_parts}])
         text = result.get("content", "") if isinstance(result, dict) else str(result)
 
@@ -213,6 +217,8 @@ async def _handle_parse_image(self: ImageParseSkill, args: dict) -> str:
                 "errors": errors or None,
             })
         return _json({"ok": True, "description": text[:2000]})
+    except SpeechBlocked:
+        raise
     except Exception as e:
         return _json({"ok": False, "error": f"{type(e).__name__}: {e}"})
 

@@ -4,6 +4,8 @@ from typing import Any
 
 from neobot_contracts.models import ConversationRef
 
+from neobot_modloader.message import normalize_message_payload
+
 
 class Bot:
     """适配器包装类，对外提供稳定的消息发送 API。
@@ -23,20 +25,20 @@ class Bot:
     async def send(self, conversation: ConversationRef, message: Any) -> Any:
         """将 *message* 发送到 *conversation*。
 
-        委托给 ``adapter.send(conversation, message)``。
+        将消息对象归一化后交给适配器，保持返回值和异常原样。
         """
-        return await self._adapter.send(conversation, message)
+        return await self._adapter.send(conversation, normalize_message_payload(message))
 
     async def send_private(self, user_id: int, message: Any) -> Any:
         """将 *message* 发送到由 *user_id* 标识的私聊。
 
-        委托给 ``adapter.send_private_msg(user_id, message)``。
+        将消息对象归一化后交给适配器，保持返回值和异常原样。
         """
-        return await self._adapter.send_private_msg(user_id, message)
+        return await self._adapter.send_private_msg(user_id, normalize_message_payload(message))
 
     async def send_group(self, group_id: int, message: Any) -> Any:
         """将 *message* 发送到由 *group_id* 标识的群聊。
 
-        委托给 ``adapter.send_group_msg(group_id, message)``。
+        将消息对象归一化后交给适配器，保持返回值和异常原样。
         """
-        return await self._adapter.send_group_msg(group_id, message)
+        return await self._adapter.send_group_msg(group_id, normalize_message_payload(message))

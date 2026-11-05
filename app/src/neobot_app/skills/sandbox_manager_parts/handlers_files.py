@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import base64
 from pathlib import Path
 
-from .common import _json
+from .common import _json, display_result_path
 
 if TYPE_CHECKING:
     from ..sandbox_manager_skill import SandboxManagerSkill
@@ -124,7 +124,10 @@ async def _handle_glob_files(self: SandboxManagerSkill, args: dict) -> str:
         "glob", args, owner=self._file_owner, chat_flow_id=args.get("chat_flow_id") or None)
     if result.get("ok"):
         base = Path(result["root"])
-        result["matches"] = [{"path": str(Path(p).relative_to(base)), "is_dir": False} for p in result["paths"]]
+        root = self._sandbox.root
+        result["matches"] = [
+            {"path": display_result_path(p, base, root), "is_dir": False} for p in result["paths"]
+        ]
     return _json(result)
 
 
@@ -140,8 +143,9 @@ async def _handle_grep_files(self: SandboxManagerSkill, args: dict) -> str:
         "grep", translated, owner=self._file_owner, chat_flow_id=args.get("chat_flow_id") or None)
     if result.get("ok"):
         base = Path(result["root"])
+        root = self._sandbox.root
         def relative(p):
-            return str(Path(p).relative_to(base)) if Path(p) != base else Path(p).name
+            return display_result_path(p, base, root)
         if mode == "content":
             result["results"] = [{"file": relative(m["path"]), "line": m["lineNumber"], "text": m["line"]}
                                  for m in result["matches"]]

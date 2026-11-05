@@ -131,9 +131,7 @@ class PluginControlFacade:
         start: bool = True,
         dry_run: bool = False,
     ) -> PluginOperationResult:
-        return await self._runtime.install_plugin(
-            repo, branch=branch, replace=replace, start=start, dry_run=dry_run
-        )
+        return await self._runtime.install_plugin(repo, branch=branch, replace=replace, start=start, dry_run=dry_run)
 
     def probe(self, name: str) -> dict[str, Any]:
         """探测插件 ID 是否已被占用（面板安装前的冲突探测）。"""
@@ -162,6 +160,30 @@ class PluginControlFacade:
 
     def snapshot_plugins(self) -> list[PluginSnapshot]:
         return self._runtime.snapshot_plugins()
+
+    def surface(self, name: str) -> dict[str, Any]:
+        """读取可供界面与开发工具共用的插件契约。"""
+        from neobot_modloader.sdk.runtime import describe_runtime_surface
+
+        return describe_runtime_surface(self._runtime, name)
+
+    async def invoke_action(self, name: str, action: str, values: Any, invocation: Any) -> Any:
+        """以宿主建立的身份调用当前插件代的业务动作。"""
+        from neobot_modloader.sdk.runtime import invoke_runtime_action
+
+        return await invoke_runtime_action(self._runtime, name, action, values, invocation)
+
+    def views(self, name: str) -> list[dict[str, Any]]:
+        """返回当前插件声明的页面，不暴露数据目录或主机路径。"""
+        from neobot_modloader.sdk.views import describe_runtime_views
+
+        return describe_runtime_views(self._runtime, name)
+
+    def view_asset(self, name: str, view: str, relative: str) -> Path:
+        """仅解析已声明页面的静态分发资源。"""
+        from neobot_modloader.sdk.views import resolve_runtime_view_asset
+
+        return resolve_runtime_view_asset(self._runtime, name, view, relative)
 
     @property
     def installer_available(self) -> bool:

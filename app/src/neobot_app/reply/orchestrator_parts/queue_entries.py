@@ -164,12 +164,6 @@ class QueueEntriesMixin:
                     timeout=self._get_dependency_timeout_seconds(),
                 )
                 if notification:
-                    self._logger.info(
-                        "orchestrator._poll_background_notifications 轮询到通知",
-                        pipeline_key=pipeline_key,
-                        source=notification.source,
-                        preview=notification.content[:120],
-                    )
                     return notification.content
                 return None
 

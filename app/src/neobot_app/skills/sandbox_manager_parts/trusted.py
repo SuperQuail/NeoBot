@@ -6,7 +6,7 @@ import base64
 from pathlib import Path
 from typing import Any
 
-from .common import _json
+from .common import _json, display_result_path
 from .dispatch import _HANDLERS
 
 class TrustedMixin:
@@ -89,8 +89,9 @@ class TrustedMixin:
                                   "note": "只读二进制预览；不可把预览作为完整文件覆盖。"})
                 if result.get("ok") and operation in {"glob", "grep"}:
                     base = Path(result["root"])
+                    root = self._sandbox.root
                     def relative(value):
-                        return str(Path(value).relative_to(base)) if Path(value) != base else Path(value).name
+                        return display_result_path(value, base, root)
                     if operation == "glob":
                         result["matches"] = [{"path": relative(p), "is_dir": False} for p in result["paths"]]
                     elif mode == "content":

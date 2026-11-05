@@ -17,6 +17,7 @@ from ..themes import register_minigame_themes
 from ..themes import unregister_minigame_themes
 
 from .constants import INTERACTION_TTL_SECONDS, KEYWORDS, TOOL_PREFIX
+from .registration import database as default_database
 from .registration import plugin, preactivate_for
 
 
@@ -50,7 +51,7 @@ class _PluginStateMixin:
             ctx, cache_days=int(self.config.bottle_avatar_cache_days)
         )
         self.service = MinigameService(
-            database=database if database is not None else globals()["database"],
+            database=database if database is not None else default_database,
             config=self.config,
             clock=clock,
             rng=self._rng,

@@ -65,7 +65,9 @@ class Transition:
     previous_status: int
 
 
-def detect_transition(previous_status: int | None, snapshot: RoomSnapshot) -> str | None:
+def detect_transition(
+    previous_status: int | None, snapshot: RoomSnapshot
+) -> str | None:
     """判断状态跳变；首次见到某房间（previous_status 为 None）只记录不通知。
 
     这样插件重启后不会把「已经在播」的房间误报成刚开播。
@@ -105,8 +107,27 @@ class LivePoller:
         self._interval = max(15.0, float(poll_interval))
         self._concurrency = max(1, int(concurrency))
         self._logger = logger
+        self._wake = asyncio.Event()
+        self.last_started_at: datetime | None = None
+        self.last_finished_at: datetime | None = None
+        self.last_success_at: datetime | None = None
+        self.last_stats = PollStats()
+        self.last_error = ""
 
-    async def _fetch(self, room_id: int, semaphore: asyncio.Semaphore) -> RoomSnapshot | None:
+    def request_check(self) -> None:
+        """新增订阅后唤醒主循环，仍由唯一轮询任务完成落库和跳变判断。"""
+        self._wake.set()
+
+    def _record_stats(self, stats: PollStats) -> None:
+        self.last_finished_at = datetime.now(UTC)
+        self.last_stats = stats
+        self.last_error = "；".join(stats.errors)
+        if stats.checked:
+            self.last_success_at = self.last_finished_at
+
+    async def _fetch(
+        self, room_id: int, semaphore: asyncio.Semaphore
+    ) -> RoomSnapshot | None:
         async with semaphore:
             try:
                 info = await self._client.fetch_live_room_info(room_id)
@@ -120,11 +141,13 @@ class LivePoller:
 
     async def poll_once(self) -> tuple[list[Transition], PollStats]:
         """检查一轮；返回本轮的状态跳变。"""
+        self.last_started_at = datetime.now(UTC)
         stats = PollStats()
         transitions: list[Transition] = []
         async with self._database.session() as session:
             room_ids = await db.distinct_room_ids(session)
         if not room_ids:
+            self._record_stats(stats)
             return transitions, stats
 
         semaphore = asyncio.Semaphore(self._concurrency)
@@ -136,10 +159,15 @@ class LivePoller:
             for room_id, snapshot in zip(room_ids, snapshots, strict=True):
                 if snapshot is None:
                     stats.failed += 1
+                    stats.errors.append(
+                        f"直播间 {room_id} 检查失败，请检查平台连接后重试。"
+                    )
                     continue
                 stats.checked += 1
                 previous = await db.get_room_state(session, room_id)
-                previous_status = int(previous.live_status) if previous is not None else None
+                previous_status = (
+                    int(previous.live_status) if previous is not None else None
+                )
                 kind = detect_transition(previous_status, snapshot)
                 row = await db.upsert_room_state(
                     session,
@@ -165,6 +193,7 @@ class LivePoller:
                         )
                     )
                     stats.transitions += 1
+        self._record_stats(stats)
         return transitions, stats
 
     async def refresh(self, room_ids: list[int]) -> dict[int, RoomSnapshot]:
@@ -192,13 +221,18 @@ class LivePoller:
     ) -> None:
         """轮询主循环，直到 stop 被设置。"""
         while not stop.is_set():
+            self._wake.clear()
             try:
                 transitions, stats = await self.poll_once()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 log_at(self._logger, "warning", f"轮询周期异常: {exc!r}")
-                transitions, stats = [], PollStats()
+                transitions, stats = (
+                    [],
+                    PollStats(errors=["轮询未完成，请检查插件数据与平台连接。"]),
+                )
+                self._record_stats(stats)
             if stats.checked or stats.failed:
                 log_at(
                     self._logger,
@@ -216,8 +250,19 @@ class LivePoller:
                         "warning",
                         f"处理跳变失败 ({transition.kind} {transition.room_id}): {exc!r}",
                     )
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=self._interval)
-            except TimeoutError:
-                continue
+            await self._wait_next(stop)
 
+    async def _wait_next(self, stop: asyncio.Event) -> None:
+        """关停和新增订阅都能结束等待，取消时收回两个短期等待任务。"""
+        waiters = (
+            asyncio.create_task(stop.wait()),
+            asyncio.create_task(self._wake.wait()),
+        )
+        try:
+            await asyncio.wait(
+                waiters, timeout=self._interval, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            for task in waiters:
+                task.cancel()
+            await asyncio.gather(*waiters, return_exceptions=True)
