@@ -77,17 +77,6 @@ _DEDUPE_KEYS_BY_SCOPE: dict[Scope, frozenset[str]] = {
 }
 
 
-def _insert_after_marker(text: str, marker: str | None, block_text: str) -> str | None:
-    """把块插到最后一个标记之后；没有标记时返回 None（由调用方决定兜底）。"""
-    if not marker:
-        return None
-    index = text.rfind(marker)
-    if index == -1:
-        return None
-    end = index + len(marker)
-    return f"{text[:end]}\n{block_text}\n{text[end:].lstrip(chr(13) + chr(10))}"
-
-
 class PromptComposer:
     """按注册表组合提示词。"""
 
@@ -160,11 +149,26 @@ class PromptComposer:
         return self.render_block(block, ctx)
 
     def build_system(self, ctx: PromptContext) -> SystemPrompt:
-        """拼 system：主模板 → 定点插入 → 末尾追加。"""
+        """拼 system：cot 前缀 → 主模板 → 末尾追加。"""
         ctx, fragment_placeholders = self._with_fragments(ctx)
         rendered: list[str] = []
         skipped: list[tuple[str, str]] = []
         consumed: set[str] = set(fragment_placeholders)
+
+        # 全局 cot 板块必须在最前面；各子块按 order 拼接后整体放在主模板之前。
+        prefix_parts: list[str] = []
+        for block in blocks_for(Stage.SYSTEM_PREFIX, ctx.scope):
+            reason = self.block_skip_reason(block, ctx)
+            if reason:
+                skipped.append((block.id, reason))
+                continue
+            part = self.render_block(block, ctx)
+            if not part:
+                skipped.append((block.id, "渲染为空"))
+                continue
+            prefix_parts.append(part)
+            consumed |= self._consumed_placeholders(block, ctx)
+            rendered.append(block.id)
 
         main_parts: list[str] = []
         for block in blocks_for(Stage.SYSTEM_MAIN, ctx.scope):
@@ -175,32 +179,12 @@ class PromptComposer:
             main_parts.append(part)
             consumed |= self._consumed_placeholders(block, ctx)
             rendered.append(block.id)
-        text = _merge(*main_parts)
+        text = _merge(*prefix_parts, *main_parts)
 
         # 编号格式是给模型的固定约定：模板漏写时补回 system（与模板无关的兜底）
         guide = str(ctx.values.get("numbering_guide") or "").strip()
         if guide and "numbering_guide" not in consumed:
             text = _merge(text, f"<消息编号说明>\n{guide}\n</消息编号说明>")
-
-        for block in blocks_for(Stage.SYSTEM_INSERT, ctx.scope):
-            reason = self.block_skip_reason(block, ctx)
-            if reason:
-                skipped.append((block.id, reason))
-                continue
-            part = self.render_block(block, ctx)
-            if not part:
-                skipped.append((block.id, "渲染为空"))
-                continue
-            consumed |= self._consumed_placeholders(block, ctx)
-            inserted = _insert_after_marker(text, block.insert_marker, part)
-            if inserted is None:
-                if block.insert_fallback == "skip":
-                    skipped.append((block.id, f"模板缺少锚点 {block.insert_marker}"))
-                    continue
-                text = _merge(text, part)
-            else:
-                text = inserted
-            rendered.append(block.id)
 
         for block in blocks_for(Stage.SYSTEM_APPEND, ctx.scope):
             reason = self.block_skip_reason(block, ctx)

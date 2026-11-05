@@ -107,13 +107,39 @@ def test_orders_are_unique_within_stage_and_scope(stage: Stage):
 @pytest.mark.parametrize(
     ("stage", "scope", "expected"),
     [
+        # system 最前面的全局 cot 板块（子块顺序即注入顺序）
+        (
+            Stage.SYSTEM_PREFIX,
+            Scope.GROUP,
+            (
+                "cot_intro",
+                "cot_at_mention",
+                "gentle_language",
+                "cot_avoid_bot_chat",
+                "cot_no_bluffing",
+                "cot_no_game_topics",
+                "cot_no_echo_images",
+                "cot_outro",
+            ),
+        ),
+        (
+            Stage.SYSTEM_PREFIX,
+            Scope.PRIVATE,
+            (
+                "cot_intro",
+                "cot_at_mention",
+                "gentle_language",
+                "cot_avoid_bot_chat",
+                "cot_no_bluffing",
+                "cot_no_game_topics",
+                "cot_no_echo_images",
+                "cot_outro",
+            ),
+        ),
         # 主模板：每个会话作用域各自一个
         (Stage.SYSTEM_MAIN, Scope.GROUP, ("group_chat",)),
         (Stage.SYSTEM_MAIN, Scope.PRIVATE, ("friend_chat",)),
         (Stage.SYSTEM_MAIN, Scope.LIVE, ("live_chat",)),
-        # 人设块之后的定点插入
-        (Stage.SYSTEM_INSERT, Scope.GROUP, ("gentle_language",)),
-        (Stage.SYSTEM_INSERT, Scope.PRIVATE, ("gentle_language",)),
         # system 末尾追加（group 有 @ 提示，private 有私聊提示）
         (
             Stage.SYSTEM_APPEND,

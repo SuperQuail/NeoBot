@@ -25,10 +25,10 @@ def _group_ctx(store, config, **kwargs):
     return make_context(config=config, store=store, scope=Scope.GROUP, **kwargs)
 
 
-# ── system：主模板 → 人设后插入 → 末尾追加 ──────────────────────────────────
+# ── system：cot 前缀 → 主模板 → 末尾追加 ────────────────────────────────────
 
 
-def test_system_order_main_then_insert_then_append(prompt_store, bot_config):
+def test_system_order_prefix_then_main_then_append(prompt_store, bot_config):
     composer = PromptComposer(prompt_store)
     ctx = _group_ctx(
         prompt_store,
@@ -39,18 +39,24 @@ def test_system_order_main_then_insert_then_append(prompt_store, bot_config):
     )
     system = composer.build_system(ctx)
 
+    prefix_ids = tuple(block.id for block in blocks_for(Stage.SYSTEM_PREFIX, Scope.GROUP))
     append_ids = tuple(block.id for block in blocks_for(Stage.SYSTEM_APPEND, Scope.GROUP))
-    # 构建元信息即顺序契约：主模板 → 人设后插入 → 按 order 的追加
-    assert system.rendered == ("group_chat", "gentle_language", *append_ids)
+    # 构建元信息即顺序契约：cot 前缀 → 主模板 → 按 order 的追加
+    assert system.rendered == (*prefix_ids, "group_chat", *append_ids)
+
+    assert system.text.startswith("<cot>")
+    prefix_parts = [composer.render_block(block_by_id(block_id), ctx) for block_id in prefix_ids]
+    assert all(prefix_parts), "默认配置下 cot 子块都应有内容"
+    prefix_positions = [system.text.index(part) for part in prefix_parts]
+    assert prefix_positions == sorted(prefix_positions)
+    assert system.text.index("</cot>") < system.text.index("<你是谁>")
 
     parts = {block_id: composer.render_block(block_by_id(block_id), ctx) for block_id in append_ids}
     assert all(parts.values()), "本用例的上下文应让全部追加块都有内容"
     positions = [system.text.index(parts[block_id]) for block_id in append_ids]
     assert positions == sorted(positions)
     assert len(set(positions)) == len(positions)
-
-    gentle_position = system.text.index(composer.render_block(block_by_id("gentle_language"), ctx))
-    assert gentle_position < positions[0]  # 人设块内的插入早于 system 末尾追加
+    assert max(prefix_positions) < positions[0]
     assert system.text.index("<你是谁>") < system.text.index("</你是谁>") < positions[0]
 
 

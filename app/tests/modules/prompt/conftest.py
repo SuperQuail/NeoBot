@@ -31,7 +31,7 @@ def prompt_store(prompt_root: Path) -> PromptStore:
 
 @pytest.fixture()
 def bot_config() -> BotConfig:
-    """默认配置（gentle_language_enabled 等开关均为默认值）。"""
+    """默认配置（prompt_optimizations 等开关均为默认值）。"""
     return BotConfig()
 
 

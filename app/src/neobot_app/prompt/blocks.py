@@ -9,8 +9,8 @@
 
 阶段（从上到下即一次请求里的顺序）
 ----------------------------------
+``SYSTEM_PREFIX``   system 最前面的全局 cot 板块（``<cot>`` … ``</cot>``）
 ``SYSTEM_MAIN``     场景主模板（群聊 / 私聊 / 直播间）
-``SYSTEM_INSERT``   定点插入（默认插在人设块 ``</你是谁>`` 之后）
 ``SYSTEM_APPEND``   稳定内容追加到 system 末尾
 ``CONTEXT``         每次构建的上下文 user 块（system 之后、聊天记录之前）
 ``RUNTIME_DATA``    会话中途的动态内容（通知 / 新消息 / 新档案 / 图片说明）
@@ -37,8 +37,8 @@ Requirement = Callable[[PromptContext], "str | None"]
 
 
 class Stage(str, Enum):
+    SYSTEM_PREFIX = "system_prefix"
     SYSTEM_MAIN = "system_main"
-    SYSTEM_INSERT = "system_insert"
     SYSTEM_APPEND = "system_append"
     #: 不直接注入，供其它模板通过 ``{块id}`` 占位符引用的共享片段
     FRAGMENT = "fragment"
@@ -52,9 +52,6 @@ class Stage(str, Enum):
     STATUS = "status"
     SUBAGENT = "subagent"
 
-
-#: 人设块结束标记：``SYSTEM_INSERT`` 阶段的默认锚点。
-PERSONA_END = "</你是谁>"
 
 ALL_SCOPES = frozenset(Scope)
 CHAT_SCOPES = BOTH_CHATS
@@ -153,8 +150,6 @@ class Block:
     key: str = "template"
     #: 同分区内的其它键（如 problem_solver 的 description），供校验/面板展示
     extra_keys: tuple[str, ...] = ()
-    insert_marker: str | None = None
-    insert_fallback: str = "append"
     requires: tuple[Requirement, ...] = ()
     text: Callable[[PromptContext], str] | None = None
     #: 由编排器每轮决定内容的 system 块（内容经 dynamic 传入，不交给 builder）
@@ -224,15 +219,89 @@ BLOCKS: tuple[Block, ...] = (
         order=10,
         note="B站直播弹幕 system 提示词（独立场景，QQ 侧不受影响）",
     ),
-    # ── 定点插入（人设块之后） ──
+    # ── system 最前面的全局 cot 板块（群聊 / 私聊共用） ──
+    # 总开关 prompt_optimizations.cot_enabled 管整段；子块再各有一个开关。
     Block(
-        "gentle_language",
-        Stage.SYSTEM_INSERT,
+        "cot_intro",
+        Stage.SYSTEM_PREFIX,
         CHAT_SCOPES,
         order=10,
-        insert_marker=PERSONA_END,
-        requires=(config_flag("chat.gentle_language_enabled"), section_enabled("gentle_language")),
-        note="温和语言风格，插在人设块之后；自定义模板没有锚点时追加到末尾",
+        requires=(config_flag("prompt_optimizations.cot_enabled"),),
+        note="cot 板块开头（<cot>）：要求在该块内完成 think 思维链",
+    ),
+    Block(
+        "cot_at_mention",
+        Stage.SYSTEM_PREFIX,
+        CHAT_SCOPES,
+        order=20,
+        requires=(
+            config_flag("prompt_optimizations.cot_enabled"),
+            config_flag("prompt_optimizations.at_mention_reply"),
+        ),
+        note="cot 子块：优先回复最新 @ 消息，并判断是否已经回复过",
+    ),
+    Block(
+        "gentle_language",
+        Stage.SYSTEM_PREFIX,
+        CHAT_SCOPES,
+        order=30,
+        requires=(
+            config_flag("prompt_optimizations.cot_enabled"),
+            config_flag("prompt_optimizations.gentle_language"),
+        ),
+        note="cot 子块1：温和语言风格（原 chat.gentle_language_enabled 迁移到此处）",
+    ),
+    Block(
+        "cot_avoid_bot_chat",
+        Stage.SYSTEM_PREFIX,
+        CHAT_SCOPES,
+        order=40,
+        requires=(
+            config_flag("prompt_optimizations.cot_enabled"),
+            config_flag("prompt_optimizations.avoid_bot_chat"),
+        ),
+        note="cot 子块：没有真人参与时避免与 Bot 闲聊（省部署者资金）",
+    ),
+    Block(
+        "cot_no_bluffing",
+        Stage.SYSTEM_PREFIX,
+        CHAT_SCOPES,
+        order=50,
+        requires=(
+            config_flag("prompt_optimizations.cot_enabled"),
+            config_flag("prompt_optimizations.no_bluffing"),
+        ),
+        note="cot 子块：禁止不懂装懂，不确定就说不清楚或不回复",
+    ),
+    Block(
+        "cot_no_game_topics",
+        Stage.SYSTEM_PREFIX,
+        CHAT_SCOPES,
+        order=60,
+        requires=(
+            config_flag("prompt_optimizations.cot_enabled"),
+            config_flag("prompt_optimizations.no_game_topics"),
+        ),
+        note="cot 子块：没人主动叫你时不参与游戏话题、不猜游戏机制",
+    ),
+    Block(
+        "cot_no_echo_images",
+        Stage.SYSTEM_PREFIX,
+        CHAT_SCOPES,
+        order=70,
+        requires=(
+            config_flag("prompt_optimizations.cot_enabled"),
+            config_flag("prompt_optimizations.no_echo_images"),
+        ),
+        note="cot 子块：不复述别人的话再评论，不主动描述图片",
+    ),
+    Block(
+        "cot_outro",
+        Stage.SYSTEM_PREFIX,
+        CHAT_SCOPES,
+        order=80,
+        requires=(config_flag("prompt_optimizations.cot_enabled"),),
+        note="cot 板块结尾（</cot>），其后接主模板",
     ),
     # ── system 末尾追加（稳定内容） ──
     Block(
@@ -718,10 +787,6 @@ def validate_blocks() -> list[str]:
         seen[block.id] = block
         if block.stage is not Stage.SYSTEM_MAIN and block.template_section is None and block.text is None:
             problems.append(f"{block.id}: 既没有 TOML 分区也没有 text 提供者")
-        if block.stage is Stage.SYSTEM_INSERT and not block.insert_marker:
-            problems.append(f"{block.id}: SYSTEM_INSERT 阶段必须给 insert_marker")
-        if block.insert_fallback not in ("append", "skip"):
-            problems.append(f"{block.id}: insert_fallback 只能是 append/skip")
         if not block.scopes:
             problems.append(f"{block.id}: scopes 不能为空")
     # per_round 块由编排器在 builder 之后追加；若 order 落在稳定追加块中间会静默乱序
