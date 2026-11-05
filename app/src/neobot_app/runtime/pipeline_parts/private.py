@@ -38,18 +38,14 @@ class _PipelinePrivateMixin:
         if await self._handle_agent_tool_input(message, kind="private", queue_key=queue_key, queue=self._friend_queue):
             return
         await self._handle_inbound_raw_event(event)
-        replied_messages = await self._fetch_replied_messages(
-            message, self._friend_queue, queue_key
-        )
+        replied_messages = await self._fetch_replied_messages(message, self._friend_queue, queue_key)
 
         # 命令系统处理:入队之前解析;命令命中则拦截回复管线并标记消息。
         # (私聊无需 @;未命中时消息按普通消息继续走管线)
         command_consumed = False
         command_background: str | None = None
         if self._command_service is not None:
-            result = await self._command_service.handle_message(
-                message, kind="private", queue_key=queue_key
-            )
+            result = await self._command_service.handle_message(message, kind="private", queue_key=queue_key)
             if result is not None and result.consumed:
                 command_consumed = True
                 command_background = result.background
@@ -62,18 +58,14 @@ class _PipelinePrivateMixin:
             command_consumed = True
             command_background = str(agent_intent.get("background") or "") or None
             agent_preactivate = tuple(agent_intent.get("preactivate") or ())
-        if self._skip_while_standby(
-            kind="private", queue_key=queue_key, message=message
-        ):
+        if self._skip_while_standby(kind="private", queue_key=queue_key, message=message):
             return
 
         # 消息始终入队(命令消息作为上下文保留),但命令消息打上"已消费"标记,
         # 挂起中的回复管线(_collect_new_entries)不会把它当作新消息再次注入回复
         self._friend_queue.push(queue_key, message, replied_messages=replied_messages)
         if command_consumed:
-            self._friend_queue.mark_command_consumed(
-                queue_key, getattr(message, "message_id", None)
-            )
+            self._friend_queue.mark_command_consumed(queue_key, getattr(message, "message_id", None))
 
         await self._refresh_profile_for_message(message)
         await self._maybe_refresh_avatar(message)
@@ -89,22 +81,25 @@ class _PipelinePrivateMixin:
         )
         if queue_key:
             await self._maybe_warmup_friend_chat(queue_key)
-        self._logger.info(f"收到私聊消息: {text}")
 
         # 命令已消费:回复管线在此拦截(不再进入延迟回复/意愿判断);
         # sync_reply 命令额外以命令结果为背景触发回复管线
         if command_consumed:
             if command_background or agent_preactivate:
                 self._start_command_sync_reply(
-                    message=message, queue=self._friend_queue,
-                    queue_key=queue_key, background=command_background or "",
+                    message=message,
+                    queue=self._friend_queue,
+                    queue_key=queue_key,
+                    background=command_background or "",
                     preactivate=agent_preactivate,
                 )
             return
 
         # 凭据签发:管理员发送凭据文本
         if self._credential_manager is not None and await self._try_issue_credential(
-            message, kind="private", queue_key=queue_key,
+            message,
+            kind="private",
+            queue_key=queue_key,
             queue=self._friend_queue,
         ):
             return
@@ -115,9 +110,7 @@ class _PipelinePrivateMixin:
 
         ai_reply_blocked = self._consume_ai_reply_block(message)
         if skip_ai_reply or ai_reply_blocked:
-            self._logger.info(
-                "插件监听器已阻止本条私聊消息触发 AI 回复", queue_key=queue_key
-            )
+            self._logger.info("插件监听器已阻止本条私聊消息触发 AI 回复", queue_key=queue_key)
             return
 
         await self._handle_private_reply(message=message, queue_key=queue_key)
@@ -200,9 +193,7 @@ class _PipelinePrivateMixin:
                 delay = float(val)
 
         if delay > 0:
-            self._logger.debug(
-                "私聊延迟回复等待中", queue_key=queue_key, delay_seconds=delay
-            )
+            self._logger.debug("私聊延迟回复等待中", queue_key=queue_key, delay_seconds=delay)
             await asyncio.sleep(delay)
 
         if self._reply_orchestrator is None:
@@ -216,8 +207,10 @@ class _PipelinePrivateMixin:
             should_reply=True,
             reasons=("私聊直接回复（跳过意愿管理器）",),
         )
-        self._logger.info(
-            "私聊触发回复",
+        self._logger.debug(
+            "私聊消息准备触发回复",
+            event="reply.decided",
+            chat_flow_id=f"private:{queue_key}",
             queue_key=queue_key,
             delay_seconds=delay,
         )
@@ -247,15 +240,24 @@ class _PipelinePrivateMixin:
                 )
             except asyncio.TimeoutError:
                 self._logger.warning(
-                    "获取被回复消息超时",
+                    "被引用消息获取超时，本轮缺少引用上下文",
+                    event="message.quote_failed",
+                    chat_flow_id=(
+                        f"group:{queue_key}" if isinstance(message, GroupMessage) else f"private:{queue_key}"
+                    ),
                     message_id=message_id,
                     queue_key=queue_key,
                     timeout_seconds=self._get_dependency_timeout_seconds(),
                 )
                 continue
             except Exception as exc:
-                self._logger.debug(
-                    "获取被回复消息失败",
+                self._logger.warning(
+                    "被引用消息获取失败，本轮缺少引用上下文",
+                    event="message.quote_failed",
+                    chat_flow_id=(
+                        f"group:{queue_key}" if isinstance(message, GroupMessage) else f"private:{queue_key}"
+                    ),
+                    error_type=type(exc).__name__,
                     message_id=message_id,
                     error=str(exc),
                 )
@@ -277,9 +279,7 @@ class _PipelinePrivateMixin:
             if message.sender.nickname:
                 observed_fields["nick_name"] = message.sender.nickname
             if message.sender.sex is not None:
-                observed_fields["sex"] = getattr(
-                    message.sender.sex, "value", message.sender.sex
-                )
+                observed_fields["sex"] = getattr(message.sender.sex, "value", message.sender.sex)
 
         try:
             await asyncio.wait_for(
@@ -316,9 +316,7 @@ class _PipelinePrivateMixin:
         try:
             await store.maybe_refresh(str(user_id))
         except Exception as exc:
-            self._logger.debug(
-                "头像刷新判定失败", user_id=str(user_id), error=str(exc)
-            )
+            self._logger.debug("头像刷新判定失败", user_id=str(user_id), error=str(exc))
 
     def _consume_ai_reply_block(self, message: PrivateMessage | GroupMessage) -> bool:
         if self._reply_block_registry is None:

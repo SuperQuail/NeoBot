@@ -161,7 +161,13 @@ class BilibiliVideoService:
             )
             return True
         except Exception as exc:
-            self._logger.debug(f"B站视频转写档案写入失败: {exc}")
+            self._logger.warning(
+                "B站视频转写档案写入失败，完整转写未保存",
+                bvid=bvid,
+                source=source,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
             return False
 
     # ── 内部 ──

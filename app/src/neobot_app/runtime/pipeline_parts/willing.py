@@ -23,15 +23,16 @@ class _PipelineWillingMixin:
         chat_type: str,
     ) -> bool:
         """睡眠中的群消息处理:仅被@可唤醒回复,其余消息只入队不触发回复。"""
-        at_mentioned = (
-            self._willing_service is not None
-            and self._willing_service.is_at_mentioned(message)
-        )
+        at_mentioned = self._willing_service is not None and self._willing_service.is_at_mentioned(message)
         if not at_mentioned:
-            self._logger.info(
-                "睡眠中,消息仅入队不触发回复",
-                会话类型=chat_type,
-                会话ID=queue_key,
+            self._logger.debug(
+                "睡眠中，消息已入队",
+                event="reply.decided",
+                should_reply=False,
+                reason="sleeping",
+                chat_flow_id=f"group:{queue_key}",
+                conversation_kind="group",
+                conversation_id=queue_key,
             )
             return False
 
@@ -42,13 +43,16 @@ class _PipelineWillingMixin:
                 queue_key=queue_key,
             )
             if block_reason:
-                self._logger.info(
-                    "回复意愿",
-                    会话类型=chat_type,
-                    会话ID=queue_key,
-                    概率="0.000",
-                    决策="不回复",
-                    详情=f"原因: 已屏蔽: {block_reason}",
+                self._logger.debug(
+                    "回复意愿判定",
+                    event="reply.decided",
+                    chat_flow_id=f"group:{queue_key}",
+                    message_id=message.message_id,
+                    conversation_kind="group",
+                    conversation_id=queue_key,
+                    probability=0.0,
+                    should_reply=False,
+                    reasons=f"原因: 已屏蔽: {block_reason}",
                 )
                 return False
 
@@ -82,13 +86,16 @@ class _PipelineWillingMixin:
             should_reply=True,
             reasons=("睡眠中被@唤醒,直接回复",),
         )
-        self._logger.info(
-            "回复意愿",
-            会话类型=chat_type,
-            会话ID=queue_key,
-            概率="1.000",
-            决策="回复",
-            详情="原因: 睡眠中被@唤醒,注入唤醒提示词",
+        self._logger.debug(
+            "回复意愿判定",
+            event="reply.decided",
+            chat_flow_id=f"group:{queue_key}",
+            message_id=message.message_id,
+            conversation_kind="group",
+            conversation_id=queue_key,
+            probability=1.0,
+            should_reply=True,
+            reasons="原因: 睡眠中被@唤醒,注入唤醒提示词",
         )
         if self._reply_orchestrator is None:
             return False
@@ -144,11 +151,8 @@ class _PipelineWillingMixin:
             return
 
         for msg in pending:
-            if (
-                queue_key in self._replying_queues
-                and not self._has_active_reply_pipeline("group", queue_key)
-            ):
-                self._logger.warning(
+            if queue_key in self._replying_queues and not self._has_active_reply_pipeline("group", queue_key):
+                self._logger.debug(
                     "已清理过期的回复中队列状态",
                     queue_key=queue_key,
                     kind="group",
@@ -158,14 +162,10 @@ class _PipelineWillingMixin:
                 # 已在回复中，剩余消息放入 post-reply 队列
                 idx = pending.index(msg)
                 if idx >= 0:
-                    self._post_reply_willing.setdefault(queue_key, []).extend(
-                        pending[idx:]
-                    )
+                    self._post_reply_willing.setdefault(queue_key, []).extend(pending[idx:])
                 break
 
-            triggered = await self._handle_willing_decision(
-                message=msg, queue=self._group_queue, queue_key=queue_key
-            )
+            triggered = await self._handle_willing_decision(message=msg, queue=self._group_queue, queue_key=queue_key)
             if triggered:
                 break
 
@@ -181,27 +181,23 @@ class _PipelineWillingMixin:
             if isinstance(val, (int, float)) and val >= 0:
                 timeout = float(val)
 
-        self._logger.info(
-            "开始处理回复后队列",
+        self._logger.debug(
+            "处理回复期间积压的消息",
+            chat_flow_id=f"group:{queue_key}",
             queue_key=queue_key,
             count=len(pending),
         )
 
         for msg in pending:
-            if (
-                queue_key in self._replying_queues
-                and not self._has_active_reply_pipeline("group", queue_key)
-            ):
-                self._logger.warning(
+            if queue_key in self._replying_queues and not self._has_active_reply_pipeline("group", queue_key):
+                self._logger.debug(
                     "已清理过期的回复中队列状态",
                     queue_key=queue_key,
                     kind="group",
                 )
                 self._replying_queues.discard(queue_key)
             if queue_key in self._replying_queues:
-                self._post_reply_willing.setdefault(queue_key, []).extend(
-                    pending[pending.index(msg) :]
-                )
+                self._post_reply_willing.setdefault(queue_key, []).extend(pending[pending.index(msg) :])
                 return
 
             if timeout > 0 and self._is_message_stale(msg, timeout):
@@ -216,6 +212,4 @@ class _PipelineWillingMixin:
                 self._pending_image_willing.setdefault(queue_key, []).append(msg)
                 await self._process_pending_image_willing(queue_key)
             else:
-                await self._handle_willing_decision(
-                    message=msg, queue=self._group_queue, queue_key=queue_key
-                )
+                await self._handle_willing_decision(message=msg, queue=self._group_queue, queue_key=queue_key)

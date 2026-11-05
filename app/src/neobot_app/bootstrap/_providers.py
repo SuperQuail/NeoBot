@@ -6,11 +6,27 @@ from typing import Any
 
 from neobot_chat import create_provider
 from neobot_chat.providers.native_vision import NativeVisionFallbackProvider
+from neobot_chat.schema.exceptions import ValidationError
 from neobot_app.assembly.agents import resolve_agent_model_name
 from neobot_app.config.schemas.bot import BotConfig as BotConfigSchema
 
 
 VISION_MODEL_NAME = "vision_model"
+_VISION_UNSET = object()
+
+
+def _log_creation_failure(logger: Any, model_name: str, role: str, exc: Exception) -> None:
+    """配置缺失已由加载器汇总；真正的初始化异常保留错误和堆栈。"""
+    fields = {
+        "event": "provider.unavailable",
+        "model_ref": model_name,
+        "role": role,
+        "error": str(exc),
+    }
+    if isinstance(exc, ValidationError):
+        logger.debug("模型尚未就绪，保留配置诊断", **fields)
+    else:
+        logger.exception("模型服务初始化异常", **fields)
 
 
 def resolve_vision_model_name(config: BotConfigSchema) -> str:
@@ -27,7 +43,7 @@ def build_main_provider(
     *,
     config: BotConfigSchema,
     logger: Any,
-    vision_provider: Any = None,
+    vision_provider: Any = _VISION_UNSET,
 ) -> tuple[Any, str | None]:
     """创建主对话 provider。返回 (provider, error_message)。
 
@@ -42,6 +58,14 @@ def build_main_provider(
     main_model_name = resolve_agent_model_name(config, "main_agent", default_index=0)
     vision_model_name = resolve_vision_model_name(config)
     provider = None
+    unexpected_failure = False
+
+    def vision_fallback() -> Any:
+        # 显式传入 None 表示装配层已尝试创建；不要再次构造并重复记录相同失败。
+        if vision_provider is not _VISION_UNSET:
+            return vision_provider
+        return build_vision_provider(logger=logger, model_name=vision_model_name)
+
     main_config = (
         config.models.get(main_model_name)
         if hasattr(config.models, "get")
@@ -52,16 +76,16 @@ def build_main_provider(
         try:
             provider = create_provider(main_model_name)
         except Exception as exc:
-            logger.error(f"无法创建主对话原生视觉 provider({main_model_name}): {exc}")
+            _log_creation_failure(logger, main_model_name, "main_agent", exc)
+            unexpected_failure = not isinstance(exc, ValidationError)
             startup_reason = "配置的原生视觉 provider 无法创建"
         if provider is not None and not getattr(provider, "native_vision", False):
             startup_reason = "配置启用了原生视觉，但实际 provider 未暴露图片发送能力"
-        fallback = vision_provider or build_vision_provider(
-            logger=logger, model_name=vision_model_name
-        )
+        fallback = vision_fallback()
         if fallback is None:
             error = "视觉模型不可用，无法建立原生视觉回退；请检查 vision_model 分配与配置"
-            logger.error(error)
+            log = logger.debug if unexpected_failure else logger.warning
+            log(error, event="provider.main_unavailable", model_ref=main_model_name)
             return None, error
         provider = NativeVisionFallbackProvider(
             provider, fallback, logger=logger,
@@ -72,13 +96,12 @@ def build_main_provider(
         try:
             provider = create_provider(main_model_name)
         except Exception as exc:
-            logger.error(f"无法创建主对话 chat provider({main_model_name}): {exc}")
+            _log_creation_failure(logger, main_model_name, "main_agent", exc)
+            unexpected_failure = not isinstance(exc, ValidationError)
 
     if provider is None:
         # 主模型不可用：自动回退到视觉模型（而不是让用户手选另一个模型）
-        fallback = vision_provider or build_vision_provider(
-            logger=logger, model_name=vision_model_name
-        )
+        fallback = vision_fallback()
         if fallback is not None:
             logger.warning(f"主对话模型不可用，已自动回退到视觉模型({vision_model_name})")
             return fallback, None
@@ -88,7 +111,8 @@ def build_main_provider(
         error_message = (
             f"当前主回复模型不可用（{main_model_name}），请检查 [models] 配置与对应平台的 API Key"
         )
-        logger.error(error_message)
+        log = logger.debug if unexpected_failure else logger.warning
+        log(error_message, event="provider.main_unavailable", model_ref=main_model_name)
         return None, error_message
 
     return provider, None
@@ -99,7 +123,7 @@ def build_vision_provider(*, logger: Any, model_name: str = VISION_MODEL_NAME) -
     try:
         return create_provider(model_name)
     except Exception as exc:
-        logger.warning(f"无法创建视觉模型 provider({model_name}): {exc}")
+        _log_creation_failure(logger, model_name, "vision_model", exc)
         return None
 
 
@@ -115,7 +139,6 @@ def build_optional_agent_provider(
     try:
         return create_provider(model_name)
     except Exception as exc:
-        logger.warning(
-            f"无法创建 {agent_name} provider({model_name})，回退到主回复 provider: {exc}"
-        )
+        _log_creation_failure(logger, model_name, agent_name, exc)
+        logger.debug("可选 Agent 沿用主回复模型", agent_name=agent_name, model_ref=model_name)
         return fallback_provider

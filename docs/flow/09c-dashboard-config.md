@@ -11,8 +11,8 @@ covers:
   - app/src/neobot_app/config/chat_writer.py
   - app/src/neobot_app/config/hot_reload.py
   - app/src/neobot_app/config/loader/backup.py
-verified_against: 8320053
-verified_hash: f918ad30c97f
+verified_against: d525a5b
+verified_hash: 083e6483eed4
 ---
 
 # 09c 面板配置编辑：三条写入通道 · diff 与掩码 · 前端编辑器数据流

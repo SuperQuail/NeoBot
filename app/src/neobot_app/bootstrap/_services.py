@@ -156,6 +156,7 @@ def build_memory_services(
         uow_factory=uow_factory,
         group_message_queue=group_queue,
         friend_message_queue=friend_queue,
+        bot_config=config,
     )
     archive_memory_service = build_archive_memory_service(
         uow_factory=uow_factory,
@@ -241,12 +242,15 @@ def build_tts_service(*, config: BotConfigSchema, logger_factory: Any) -> Any:
         api_config = EnvConfig.get_api_platform_config("HuoShan")
         api_key = api_config.api_key
         if not api_key:
-            tts_logger.error("火山引擎 TTS 缺少 HuoShan_APIKey 环境变量，TTS 已禁用")
+            tts_logger.warning(
+                "TTS 凭据未配置，语音功能未启用",
+                event="tts.disabled",
+                provider=provider,
+                missing_variable="HuoShan_APIKey",
+            )
             return None
         app_id = EnvConfig._get_env_value("HuoShan_AppId") or ""
-        tts_logger.info(
-            f"TTS 提供商: 火山引擎 (Volcengine) - {'旧版控制台鉴权' if app_id else '新版控制台鉴权'}"
-        )
+        tts_logger.info(f"TTS 提供商: 火山引擎 (Volcengine) - {'旧版控制台鉴权' if app_id else '新版控制台鉴权'}")
         return VolcengineTTSService(
             config=config.tts,
             api_key=api_key,
@@ -257,10 +261,15 @@ def build_tts_service(*, config: BotConfigSchema, logger_factory: Any) -> Any:
     if provider != "siliconflow":
         tts_logger.warning(f"未知的 tts_provider '{provider}'，回退到硅基流动 TTS")
     from neobot_chat import get_model_registry
+
     tts_model_name = resolve_tts_model_name(config)
     if tts_model_name not in get_model_registry().names:
-        tts_logger.error(
-            f"TTS 模型未注册（{tts_model_name}：检查 [models.assignments].tts_model 与平台 APIKey），TTS 已禁用"
+        tts_logger.warning(
+            "TTS 模型不可用，语音功能未启用",
+            event="tts.disabled",
+            provider="siliconflow",
+            model=tts_model_name,
+            reason="model_not_registered",
         )
         return None
     tts_logger.info(f"TTS 提供商: 硅基流动 (SiliconFlow)，模型 {tts_model_name}")

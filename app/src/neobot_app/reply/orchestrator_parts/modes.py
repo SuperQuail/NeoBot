@@ -1,4 +1,5 @@
 """回复管线入口：common / agent 两种模式的分派与执行。"""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -6,12 +7,12 @@ from neobot_chat.runtime.agent import SILENT_HEARTBEAT
 from neobot_contracts.ports.speaking import SpeechBlocked
 from neobot_app.reply.event import ReplyEvent, ReplyState
 from ._runtime import asyncio, monotonic_seconds
+
 if TYPE_CHECKING:
     from neobot_app.message.queue import MessageQueue
 
+
 class ModesMixin:
-
-
     def _record_reply_delivered(
         self,
         event: ReplyEvent,
@@ -56,25 +57,17 @@ class ModesMixin:
                 decision = policy.evaluate(event.conversation_ref)
                 if not decision.allowed:
                     raise SpeechBlocked(decision.reason)
-            before_decide = await self._emit_runtime_event(
-                "reply.decide.before", event, queue_key=queue_key
-            )
+            before_decide = await self._emit_runtime_event("reply.decide.before", event, queue_key=queue_key)
             if before_decide.consumed:
                 event.error = "reply lifecycle consumed before decision"
                 event.transition(ReplyState.CANCELLED)
-                await self._emit_runtime_event(
-                    "reply.cancel", event, queue_key=queue_key
-                )
+                await self._emit_runtime_event("reply.cancel", event, queue_key=queue_key)
                 return
-            start_envelope = await self._emit_runtime_event(
-                "reply.decide.after", event, queue_key=queue_key
-            )
+            start_envelope = await self._emit_runtime_event("reply.decide.after", event, queue_key=queue_key)
             if start_envelope.consumed:
                 event.error = "reply lifecycle consumed before run"
                 event.transition(ReplyState.CANCELLED)
-                await self._emit_runtime_event(
-                    "reply.cancel", event, queue_key=queue_key
-                )
+                await self._emit_runtime_event("reply.cancel", event, queue_key=queue_key)
                 return
             self._set_flow_active(event, queue_key, True)
             if event.mode == "agent":
@@ -84,24 +77,34 @@ class ModesMixin:
             self._set_flow_active(event, queue_key, False)
             self._normalize_delivered_terminal(event, queue_key=queue_key)
             if event.state == ReplyState.CANCELLED:
-                self._record_debug("cancelled", event, queue_key=queue_key)
-                await self._emit_runtime_event(
-                    "reply.cancel", event, queue_key=queue_key
+                self._logger.info(
+                    "本轮未发送回复",
+                    event="reply.cancelled",
+                    event_id=event.event_id,
+                    chat_flow_id=(
+                        f"{event.conversation_ref.kind}:{queue_key}" if event.conversation_ref else queue_key
+                    ),
+                    reason=event.error,
+                    duration_seconds=round(monotonic_seconds() - started_at, 3),
                 )
+                self._record_debug("cancelled", event, queue_key=queue_key)
+                await self._emit_runtime_event("reply.cancel", event, queue_key=queue_key)
                 return
             if event.state == ReplyState.FAILED:
                 # 管线内部判定失败（例如模型空轮次）。必须走失败收尾：旧实现
                 # 一路记成 completed，日志里看不出「这条消息根本没回复」。
-                self._logger.warning(
-                    "回复事件失败（管线内部判定）",
+                self._logger.error(
+                    "回复未完成",
+                    event="reply.failed",
                     event_id=event.event_id,
+                    chat_flow_id=(
+                        f"{event.conversation_ref.kind}:{queue_key}" if event.conversation_ref else queue_key
+                    ),
                     mode=event.mode,
                     error=event.error,
                 )
                 self._record_debug("failed", event, queue_key=queue_key)
-                await self._emit_runtime_event(
-                    "reply.fail", event, queue_key=queue_key, error=event.error
-                )
+                await self._emit_runtime_event("reply.fail", event, queue_key=queue_key, error=event.error)
                 return
             # 冷却与 last_reply_position 已在每条消息发出时更新；这里只补事件终态。
             if event.state is ReplyState.GENERATING and event.send_response is not None:
@@ -109,17 +112,17 @@ class ModesMixin:
             elapsed = monotonic_seconds() - started_at
             self._logger.info(
                 "回复事件结束",
+                event="reply.completed",
                 event_id=event.event_id,
+                chat_flow_id=(f"{event.conversation_ref.kind}:{queue_key}" if event.conversation_ref else queue_key),
                 mode=event.mode,
                 state=event.state.name,
-                duration=f"{elapsed:.1f}s",
+                duration_seconds=round(elapsed, 3),
                 reply_preview=event.generated_text[:80] if event.generated_text else "",
             )
             self._record_debug("completed", event, queue_key=queue_key)
             completion_started = True
-            await self._emit_runtime_event(
-                "reply.complete", event, queue_key=queue_key, duration_seconds=elapsed
-            )
+            await self._emit_runtime_event("reply.complete", event, queue_key=queue_key, duration_seconds=elapsed)
         except SpeechBlocked as exc:
             event.speech_blocked = exc
             self._set_flow_active(event, queue_key, False)
@@ -146,7 +149,13 @@ class ModesMixin:
                     event.transition(ReplyState.CANCELLED)
                 except RuntimeError:
                     pass
-            self._logger.warning("回复事件被取消", event_id=event.event_id)
+            self._logger.debug(
+                "回复任务已取消",
+                event="reply.cancelled",
+                event_id=event.event_id,
+                chat_flow_id=(f"{event.conversation_ref.kind}:{queue_key}" if event.conversation_ref else queue_key),
+                reason="task_cancelled",
+            )
             self._normalize_delivered_terminal(event, queue_key=queue_key)
             if event.send_response is not None:
                 self._record_debug("completed", event, queue_key=queue_key)
@@ -169,16 +178,23 @@ class ModesMixin:
                 event.state = ReplyState.COMPLETED
                 event.error = None
                 self._logger.warning(
-                    "回复已发出，后续异常按完成收尾",
+                    "回复已送达，后续处理异常",
+                    event="reply.post_delivery_failed",
                     event_id=event.event_id,
+                    chat_flow_id=(
+                        f"{event.conversation_ref.kind}:{queue_key}" if event.conversation_ref else queue_key
+                    ),
                     original_state=original_state,
-                    error=f"{type(exc).__name__}: {exc}",
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                    exc_info=True,
                 )
                 self._record_debug(
                     "post_reply_terminal_normalized",
                     event,
                     queue_key=queue_key,
                     original_state=original_state,
+                    original_error=f"{type(exc).__name__}: {exc}",
                 )
                 await self._emit_runtime_event(
                     "reply.complete",
@@ -191,21 +207,22 @@ class ModesMixin:
                 event.transition(ReplyState.FAILED)
             except RuntimeError:
                 pass
-            event.error = f"{type(exc).__name__}: {exc}"
+            event.error = event.error or f"{type(exc).__name__}: {exc}"
             self._logger.error(
                 "回复事件失败",
+                event="reply.failed",
                 event_id=event.event_id,
+                chat_flow_id=(f"{event.conversation_ref.kind}:{queue_key}" if event.conversation_ref else queue_key),
                 mode=event.mode,
+                error_type=type(exc).__name__,
                 error=event.error,
+                exc_info=True,
             )
             self._record_debug("failed", event, queue_key=queue_key)
             await self._emit_runtime_event("reply.fail", event, queue_key=queue_key, error=event.error)
             await self._handle_runtime_failure(event, exc)
 
-
-    def _normalize_delivered_terminal(
-        self, event: ReplyEvent, *, queue_key: str
-    ) -> bool:
+    def _normalize_delivered_terminal(self, event: ReplyEvent, *, queue_key: str) -> bool:
         """已经真实发出回复后，后续的取消/失败不能撤销“已回复”事实。
 
         语义：send_reply 是普通工具，回复发出后模型仍可能继续执行工具，
@@ -218,26 +235,37 @@ class ModesMixin:
         if event.state not in (ReplyState.CANCELLED, ReplyState.FAILED):
             if event.error:
                 self._logger.warning(
-                    "回复已发出，忽略后续错误标记",
+                    "回复已送达，后续处理未完成",
+                    event="reply.post_delivery_failed",
                     event_id=event.event_id,
+                    chat_flow_id=(
+                        f"{event.conversation_ref.kind}:{queue_key}" if event.conversation_ref else queue_key
+                    ),
                     state=event.state.name,
                     error=event.error,
                 )
                 event.error = None
             return False
         original_state = event.state.name
+        original_error = event.error
         event.state = ReplyState.COMPLETED
         event.error = None
-        self._logger.warning(
-            "回复已发出，后续取消/失败按完成收尾",
-            event_id=event.event_id,
-            original_state=original_state,
-        )
+        # 模型调用 cancel 是正常收尾；FAILED 表示送达后的真实故障，仍须可见。
+        if original_state == ReplyState.FAILED.name:
+            self._logger.warning(
+                "回复已送达，后续处理失败",
+                event="reply.post_delivery_failed",
+                event_id=event.event_id,
+                chat_flow_id=(f"{event.conversation_ref.kind}:{queue_key}" if event.conversation_ref else queue_key),
+                original_state=original_state,
+                error=original_error,
+            )
         self._record_debug(
             "post_reply_terminal_normalized",
             event,
             queue_key=queue_key,
             original_state=original_state,
+            original_error=original_error,
         )
         return True
 
@@ -266,53 +294,35 @@ class ModesMixin:
             context_blocks=context_messages,
         )
         self._record_flow_prompt(event, queue_key, prompt)
-        self._record_debug(
-            "base_prompt_built", event, queue_key=queue_key, prompt=prompt
-        )
+        self._record_debug("base_prompt_built", event, queue_key=queue_key, prompt=prompt)
 
         # pre-reply hooks：可短路跳过 AI 生成
         reply_text = await self._apply_pre_reply_hooks(event)
         if reply_text is None:
-            reply_text = await self._generate_reply(
-                event, prompt, role_messages, context_messages
-            )
+            reply_text = await self._generate_reply(event, prompt, role_messages, context_messages)
 
-        self._record_debug(
-            "reply_generated", event, queue_key=queue_key, reply_text=reply_text
-        )
+        self._record_debug("reply_generated", event, queue_key=queue_key, reply_text=reply_text)
 
         before_message_id = queue.get_last_message_id(queue_key)
-        delivered = await self._send_reply(
-            event, reply_text, self_sent=self._self_sent_sink(queue, queue, queue_key)
-        )
+        delivered = await self._send_reply(event, reply_text, self_sent=self._self_sent_sink(queue, queue, queue_key))
         if delivered is not False:
-            self._record_reply_delivered(
-                event, queue, queue_key, before_message_id=before_message_id
-            )
+            self._record_reply_delivered(event, queue, queue_key, before_message_id=before_message_id)
+
     async def _run_agent_mode(
         self,
         event: ReplyEvent,
         queue: MessageQueue,
         queue_key: str,
     ) -> None:
-        is_group = (
-            event.conversation_ref is not None
-            and event.conversation_ref.kind == "group"
-        )
-        silent_timeout = (
-            self._get_group_agent_silent_timeout_seconds() if is_group else 0.0
-        )
-        silent_deadline = (
-            monotonic_seconds() + silent_timeout if silent_timeout > 0 else 0.0
-        )
+        is_group = event.conversation_ref is not None and event.conversation_ref.kind == "group"
+        silent_timeout = self._get_group_agent_silent_timeout_seconds() if is_group else 0.0
+        silent_deadline = monotonic_seconds() + silent_timeout if silent_timeout > 0 else 0.0
 
         def reset_silent_deadline(extra_seconds: float = 0.0) -> None:
             nonlocal silent_deadline
             if silent_timeout <= 0:
                 return
-            silent_deadline = (
-                monotonic_seconds() + silent_timeout + max(0.0, extra_seconds)
-            )
+            silent_deadline = monotonic_seconds() + silent_timeout + max(0.0, extra_seconds)
 
         def silent_remaining() -> float | None:
             if silent_timeout <= 0:
@@ -320,10 +330,7 @@ class ModesMixin:
             return silent_deadline - monotonic_seconds()
 
         def cancel_for_silence(phase: str) -> None:
-            event.error = (
-                f"群聊 agent 管线静默超过 {silent_timeout:.0f} 秒，"
-                f"已强制关闭（阶段：{phase}）"
-            )
+            event.error = f"群聊 agent 管线静默超过 {silent_timeout:.0f} 秒，已强制关闭（阶段：{phase}）"
             if not event.is_terminal:
                 event.transition(ReplyState.CANCELLED)
             self._logger.warning(

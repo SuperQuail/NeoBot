@@ -24,10 +24,12 @@ from neobot_contracts.models.scheduled_task import (
 )
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.unit_of_work import UnitOfWorkFactory
-from neobot_app.time_context import now_utc, to_local, to_utc
+from neobot_app.time_context import monotonic_seconds, now_utc, to_local, to_utc
 
 #: 单页拉取活跃任务的数量（仓库 list_active 的默认上限，避免一次载入过多行）。
 _ACTIVE_TASK_PAGE_SIZE = 500
+_FAILURE_LOG_INTERVAL_SECONDS = 300.0
+_MAX_FAILURE_LOG_STATES = 128
 
 
 @dataclass(frozen=True)
@@ -121,6 +123,49 @@ class ScheduledTaskManager:
         self._notification_hub = notification_hub
         self._runner: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
+        self._failure_logs: dict[tuple[str, str, str], tuple[str, float, int]] = {}
+
+    def _log_poll_failure(
+        self,
+        operation: str,
+        exc: Exception,
+        *,
+        task_id: str = "",
+        pipeline_key: str = "",
+    ) -> None:
+        """同一轮询故障首次告警，持续故障每五分钟汇总重复次数。"""
+        key = (operation, task_id, pipeline_key)
+        signature = f"{type(exc).__name__}: {exc}"
+        now = monotonic_seconds()
+        previous = self._failure_logs.get(key)
+        if previous is not None:
+            previous_error, logged_at, suppressed = previous
+            if previous_error == signature and now - logged_at < _FAILURE_LOG_INTERVAL_SECONDS:
+                self._failure_logs[key] = (signature, logged_at, suppressed + 1)
+                return
+        else:
+            suppressed = 0
+        if key not in self._failure_logs and len(self._failure_logs) >= _MAX_FAILURE_LOG_STATES:
+            self._failure_logs.pop(next(iter(self._failure_logs)))
+        self._failure_logs[key] = (signature, now, 0)
+        self._logger.warning(
+            f"定时任务{operation}失败",
+            task_id=task_id,
+            pipeline_key=pipeline_key,
+            error_type=type(exc).__name__,
+            error=str(exc),
+            suppressed_count=suppressed,
+        )
+
+    def _log_poll_recovery(self, operation: str, *, task_id: str = "", pipeline_key: str = "") -> None:
+        previous = self._failure_logs.pop((operation, task_id, pipeline_key), None)
+        if previous is not None:
+            self._logger.info(
+                f"定时任务{operation}已恢复",
+                task_id=task_id,
+                pipeline_key=pipeline_key,
+                suppressed_count=previous[2],
+            )
 
     @property
     def enabled(self) -> bool:
@@ -256,13 +301,11 @@ class ScheduledTaskManager:
 
     async def start(self) -> None:
         if not self.enabled:
-            self._logger.info("定时任务管理器已禁用")
             return
         if self._runner is not None and not self._runner.done():
             return
         self._stopping.clear()
         self._runner = asyncio.create_task(self._run_loop())
-        self._logger.info("定时任务管理器已启动")
 
     async def shutdown(self) -> None:
         self._stopping.set()
@@ -273,7 +316,7 @@ class ScheduledTaskManager:
         self._notification_queues.clear()
         self._last_reminder_at.clear()
         self._reminder_attempts.clear()
-        self._logger.info("定时任务管理器已停止")
+        self._failure_logs.clear()
 
     async def poll_notification(self, pipeline_key: str) -> str | None:
         if self._notification_hub is not None:
@@ -287,11 +330,6 @@ class ScheduledTaskManager:
             return None
         try:
             notification = queue.get_nowait()
-            self._logger.info(
-                "已轮询定时任务通知",
-                pipeline_key=pipeline_key,
-                notification_preview=notification[:120],
-            )
             return notification
         except asyncio.QueueEmpty:
             return None
@@ -301,7 +339,9 @@ class ScheduledTaskManager:
             try:
                 await self.scan_due_tasks()
             except Exception as exc:
-                self._logger.warning("定时任务扫描失败", error=str(exc))
+                self._log_poll_failure("扫描", exc)
+            else:
+                self._log_poll_recovery("扫描")
             await asyncio.sleep(self._config.poll_interval_seconds)
 
     async def scan_due_tasks(self, now: datetime | None = None) -> None:
@@ -324,12 +364,13 @@ class ScheduledTaskManager:
             try:
                 plan = self._plan_task_scan(task, now)
             except Exception as exc:
-                self._logger.warning(
-                    "定时任务扫描规划失败",
+                self._log_poll_failure(
+                    "扫描规划",
+                    exc,
                     task_id=task.task_uuid,
-                    error=str(exc),
                 )
                 continue
+            self._log_poll_recovery("扫描规划", task_id=task.task_uuid)
             if plan is not None:
                 plans.append(plan)
 
@@ -341,25 +382,22 @@ class ScheduledTaskManager:
             except SpeechBlocked:
                 plan.notified = False
                 plan.finalize_requires_notified = False
-                plan.finalize = ("archive" if plan.task.recurrence == ScheduledTaskRecurrence.ONCE else "mark_completed")
+                plan.finalize = "archive" if plan.task.recurrence == ScheduledTaskRecurrence.ONCE else "mark_completed"
                 plan.finalize_reason = "speaking_policy_skipped"
             except Exception as exc:
-                self._logger.warning(
-                    "定时任务提醒派发失败",
+                self._log_poll_failure(
+                    "提醒派发",
+                    exc,
                     task_id=plan.task.task_uuid,
-                    error=str(exc),
                 )
                 plan.notified = False
+            else:
+                self._log_poll_recovery("提醒派发", task_id=plan.task.task_uuid)
 
         for plan in plans:
             if plan.finalize == "none":
                 continue
             if plan.finalize_requires_notified and not plan.notified:
-                self._logger.info(
-                    "跳过定时任务收尾：提醒未送达",
-                    task_id=plan.task.task_uuid,
-                    window_key=plan.window.key,
-                )
                 continue
             try:
                 async with self._uow_factory() as uow:
@@ -379,11 +417,13 @@ class ScheduledTaskManager:
                         )
                     await uow.commit()
             except Exception as exc:
-                self._logger.warning(
-                    "定时任务收尾失败",
+                self._log_poll_failure(
+                    "收尾",
+                    exc,
                     task_id=plan.task.task_uuid,
-                    error=str(exc),
                 )
+            else:
+                self._log_poll_recovery("收尾", task_id=plan.task.task_uuid)
 
     async def _list_active_tasks(self) -> list[ScheduledTaskRecord]:
         """分页取回全部活跃任务。
@@ -543,13 +583,19 @@ class ScheduledTaskManager:
                 blocked = exc
                 reminded = False
             except Exception as exc:
-                self._logger.warning(
-                    "定时任务提醒绑定失败",
+                self._log_poll_failure(
+                    "提醒绑定",
+                    exc,
                     task_id=task.task_uuid,
                     pipeline_key=f"{binding.kind}:{binding.id}",
-                    error=str(exc),
                 )
                 reminded = False
+            else:
+                self._log_poll_recovery(
+                    "提醒绑定",
+                    task_id=task.task_uuid,
+                    pipeline_key=f"{binding.kind}:{binding.id}",
+                )
             notified = reminded or notified
         if blocked is not None:
             # A denied binding completes this window even if another binding
@@ -598,17 +644,28 @@ class ScheduledTaskManager:
                 )
                 if confirms_delivery and not delivered:
                     self._last_reminder_at.pop(reminder_key, None)
+                    self._log_poll_failure(
+                        "通知发布",
+                        RuntimeError("通知中心未确认送达"),
+                        task_id=task.task_uuid,
+                        pipeline_key=pipeline_key,
+                    )
                     return False
+                self._log_poll_recovery(
+                    "通知发布",
+                    task_id=task.task_uuid,
+                    pipeline_key=pipeline_key,
+                )
                 return True
             except SpeechBlocked:
                 self._last_reminder_at.pop(reminder_key, None)
                 raise
             except Exception as exc:
-                self._logger.warning(
-                    "定时任务通知发布失败",
+                self._log_poll_failure(
+                    "通知发布",
+                    exc,
                     task_id=task.task_uuid,
                     pipeline_key=pipeline_key,
-                    error=str(exc),
                 )
                 # Do not treat a failed delivery as a successful reminder; clear
                 # the cooldown marker so the next scan retries this binding.
@@ -626,22 +683,22 @@ class ScheduledTaskManager:
                         reasons=["scheduled task reminder"],
                     )
                     if result is not None:
+                        self._log_poll_recovery(
+                            "后台回复",
+                            task_id=task.task_uuid,
+                            pipeline_key=pipeline_key,
+                        )
                         return True
                 except Exception as exc:
-                    self._logger.warning(
-                        "定时任务后台回复失败",
+                    self._log_poll_failure(
+                        "后台回复",
+                        exc,
                         task_id=task.task_uuid,
                         pipeline_key=pipeline_key,
-                        error=str(exc),
                     )
 
         queue = self._notification_queues.setdefault(pipeline_key, asyncio.Queue())
         await queue.put(prompt)
-        self._logger.info(
-            "定时任务提醒已入队",
-            task_id=task.task_uuid,
-            pipeline_key=pipeline_key,
-        )
         return True
 
     def _build_reminder_prompt(

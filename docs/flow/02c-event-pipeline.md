@@ -3,8 +3,8 @@ flow: 02c-event-pipeline
 covers:
   - app/src/neobot_app/runtime/event_pipeline.py
   - app/src/neobot_app/message/queue.py
-verified_against: 2d7925b
-verified_hash: 7ff85c067a9a
+verified_against: d525a5b
+verified_hash: 81fc3d682423
 ---
 
 # 02c 事件管道：去重 · 命令 · 入队 · 挂起 · 通知

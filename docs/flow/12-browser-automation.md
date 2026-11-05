@@ -3,8 +3,8 @@ flow: 12-browser-automation
 covers:
   - app/src/neobot_app/browser/
   - app/src/neobot_app/runtime/browser_lifecycle.py
-verified_against: 528fe18
-verified_hash: 2023badcb160
+verified_against: 5e1a42cf
+verified_hash: b59c4c5d7fd1
 ---
 
 # 12 浏览器自动化：DrissionPage 会话管理 · 动作集 · per-chat-flow 生命周期
@@ -64,7 +64,10 @@ verified_hash: 2023badcb160
 flowchart TD
     A["build_browser_components / bootstrap/_runtime.py:121"] --> B{"agent.browser.enabled?"}
     B -- 否 --> B1["UnavailableScreenshots：render/save 抛 ScreenshotUnavailable"]
-    B -- 是 --> C{"_find_chrome_binary() 命中?"}
+    B -- 是 --> BP{"显式 browser_path 可访问?"}
+    BP -- 是 --> D
+    BP -- 否 --> BW["有无效配置时告警并清空"]
+    BW --> C{"_find_chrome_binary() 命中?"}
     C -- 否 --> C1["_auto_install_chromium: playwright install chromium，timeout 300s"]
     C1 --> C2{"再查仍为空?"}
     C2 -- 是 --> B1
@@ -173,15 +176,17 @@ flowchart TD
     A["_find_chrome_binary / manager.py:105"] --> B{"CHROME_PATH 环境变量?"}
     B -- 有 --> Z["直接返回"]
     B -- 无 --> C["_playwright_chromium_path / manager.py:86"]
-    C --> C1["Win: ms-playwright/chromium-*/chrome-win/chrome.exe"]
-    C --> C2["Linux: chrome-linux 或 chrome-linux64"]
-    C --> C3["macOS: chrome-mac/Chromium.app/..."]
-    C1 --> C4["sorted()[−1] 取字典序最后一个"]
+    C --> C1["Win: chromium-*/chrome-win*/chrome.exe"]
+    C --> C2["Linux: chrome-linux / chrome-linux64 / chrome-linux-arm64"]
+    C --> C3["macOS: chrome-mac / arm64 / x64<br/>Chromium 或 Google Chrome for Testing.app"]
+    C1 --> C4["只保留文件，按数字 revision 取最新构建"]
+    C2 --> C4
+    C3 --> C4
     C4 --> D{"命中?"}
     D -- 是 --> Z
     D -- 否 --> E["系统候选列表"]
-    E --> E1["Windows: which(msedge)/which(chrome) 插到最前"]
-    E1 --> E2["再试 Program Files 的 Chrome / Chromium / Edge 与 LOCALAPPDATA"]
+    E --> E1["Windows: Chrome 的 PATH / 注册表 / 安装目录"]
+    E1 --> E2["再试 Edge 的同类来源，最后 Chromium 安装目录"]
     E2 --> E3["Linux/macOS 固定路径"]
     E3 --> F{"存在?"}
     F -- 是 --> Z
@@ -194,25 +199,40 @@ flowchart TD
     H4 -- 否 --> H6["--start-maximized/--window-size=1280,800 + 9 个 GPU 与后台节能开关"]
 ```
 
-**实测（本机 `%LOCALAPPDATA%/ms-playwright`）**：同时存在 `chromium-1148/chrome-win/chrome.exe`
-与 `chromium-1223/chrome-win64/chrome.exe`，而 `_playwright_chromium_path()` 的 Windows glob
-只认 `chrome-win`，所以自动检测拿到的是**旧构建 r1148**；`chrome-win64` 那一份永远匹配不到。
-同理 `sorted(candidates)[-1]` 是按字符串排序，`chromium-999` 会排在 `chromium-1000` 之后，
-"取最新 revision" 只在位数相同时成立。
+缓存根目录由 `manager_parts/process.py:_playwright_cache_directory` 与安装器规则保持一致：
+`PLAYWRIGHT_BROWSERS_PATH` 优先，值为 `0` 时使用 Python Playwright 包的
+`driver/package/.local-browsers`；相对路径以 `INIT_CWD` 或当前目录解析，并在查找前消除 `.`、`..` 路径段。
+Linux 默认使用 `$XDG_CACHE_HOME/ms-playwright`，未设置时回退 `~/.cache/ms-playwright`。
+Windows 默认使用 `%LOCALAPPDATA%/ms-playwright`，未设置时才回退用户目录下的 `AppData/Local`。
+发现缓存后冷启动直接复用；缺失时安装一次，随后启动再次使用同一目录。构建号按数字比较，
+因此 r1000 优先于 r999，目录占位不会被当成可执行文件。
 
-文档写"Chrome > Edge > Chromium"，实际 Windows 上 `shutil.which("msedge")` 被 `insert(0)`
-到最前，**PATH 里有 Edge 就用 Edge**；而 Playwright Chromium 又整体优先于系统 Chrome。
+已缓存的 Playwright Chromium 优先于系统候选；Windows 系统候选按 Chrome > Edge > Chromium
+选择，注册表和 PATH 中的 Edge 不会抢先覆盖可用的 Chrome。
 </details>
 
 <details>
 ### 启动、探活与整机重建：3 次重试与"任何异常都重启"
+
+DrissionPage 4.1 的局部兼容逻辑集中在 `agent_browser/_drissionpage41.py`，由 `_compat.py`
+导入时安装一次。上游因 headless 不一致或 `new_env` 重启时，新的 browser id 同步到 CDP
+WebSocket 地址；成功后按新 id 登记 Chromium，并移除旧驱动缓存。构造异常时仅移除该对象
+及其驱动，停止连接线程，让 `start()` 后续重试重新初始化；其它浏览器实例的缓存保持不变。
+直接配置 `ws_address` 时始终保留原地址，即使 HTTP 探测可用，也不能把 browserContextId
+当成 endpoint id 替换。兼容逻辑只作用于 4.1 系列，不改依赖版本。
+
+Windows 残留清理识别 `chrome.exe`、`msedge.exe`、`chromium.exe`，仅匹配完整的
+`--user-data-dir` 参数。相似前缀目录、日志路径和其它 profile 均不会触发清理；
+同一 profile 仍有其它存活管理器时，继续跳过所有清理。
+实例注册、注销、存活判断和进程匹配共用规范化目录键；外部进程的相对 profile 参数
+因工作目录未知而跳过，不使用 NeoBot 的当前目录猜测归属。
 
 ```mermaid
 flowchart TD
     A["BrowserManager.start / manager.py:239"] --> B["_kill_orphaned_chrome / manager.py:198"]
     B --> B1{"Windows 且无其它存活实例?"}
     B1 -- 否 --> C
-    B1 -- 是 --> B2["psutil 扫 cmdline 含该 user_data_dir 的 chrome 进程 kill + wait(3)"]
+    B1 -- 是 --> B2["psutil 扫 Chrome / Edge / Chromium<br/>完整绝对 profile 参数匹配后 kill + wait(3)"]
     B2 --> C["attempt = 0"]
     C --> D["asyncio.to_thread(_start_sync): ChromiumPage(ChromiumOptions)"]
     D --> E["记 _chrome_pid（取不到就 None）"]

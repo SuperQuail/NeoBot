@@ -152,7 +152,7 @@ class BingSearchEngine(BaseSearchEngine):
                 resp = await client.get(url, params=params, headers=self._navigation_headers())
                 logger.debug("Bing 预热 %s -> %s", url, resp.status_code)
             except Exception as exc:  # 预热失败不致命
-                logger.debug("Bing 预热失败(忽略) %s: %s", url, exc)
+                logger.debug("Bing 预热未完成，后续搜索将按需连接 %s: %s", url, exc)
 
     def _navigation_headers(self) -> dict[str, str]:
         headers = dict(BROWSER_HEADERS)

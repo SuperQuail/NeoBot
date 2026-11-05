@@ -54,8 +54,8 @@ class _SkillManager:
     def __init__(self, skill) -> None:
         self._skill = skill
 
-    def all_skills(self):
-        return [self._skill] if self._skill is not None else []
+    def get(self, name):
+        return self._skill if name == "reminder" else None
 
 
 class _ScheduledTaskManager:
@@ -81,18 +81,18 @@ def _flow_registry() -> ChatFlowRegistry:
         "group:888",
         messages=[
             {"role": "system", "content": "system"},
-            {"role": "assistant", "content": "", "tool_calls": [
-                {"id": "c1", "function": {"name": "send_reply", "arguments": '{"text":"hi"}'}}
-            ]},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "c1", "function": {"name": "send_reply", "arguments": '{"text":"hi"}'}}],
+            },
             {"role": "tool", "tool_call_id": "c1", "content": "已发送 1 条消息"},
         ],
         model="deepseek-chat",
         iteration=2,
     )
     registry.set_active("group:888", True)
-    registry.register_task_provider(
-        "scheduled_task", lambda key: {"scheduled_task_notifications_pending": 1}
-    )
+    registry.register_task_provider("scheduled_task", lambda key: {"scheduled_task_notifications_pending": 1})
     return registry
 
 
@@ -106,9 +106,9 @@ async def _start_management_panel(tmp_path: Path, *, services=None):
 
     server = DashboardServer(
         plugin_name="dashboard",
-        config=__import__(
-            "neobot_app.builtin_plugins.dashboard.config", fromlist=["DashboardConfig"]
-        ).DashboardConfig(host="127.0.0.1", port=_free_port()),
+        config=__import__("neobot_app.builtin_plugins.dashboard.config", fromlist=["DashboardConfig"]).DashboardConfig(
+            host="127.0.0.1", port=_free_port()
+        ),
         data_dir=data_dir,
         logger=_NullLogger(),
         adapter=_FakeAdapter(),
@@ -179,9 +179,7 @@ async def test_prompts_endpoint_requires_login(managed_panel) -> None:
 async def test_prompts_endpoint_lists_sections(managed_panel) -> None:
     token, _ = await _login(managed_panel["base"])
     async with httpx.AsyncClient() as client:
-        response = await client.get(
-            managed_panel["base"] + "/api/prompts", headers={"X-Token": token}
-        )
+        response = await client.get(managed_panel["base"] + "/api/prompts", headers={"X-Token": token})
 
     assert response.status_code == 200
     payload = response.json()
@@ -292,12 +290,8 @@ async def test_chat_flows_lists_and_shows_detail(managed_panel) -> None:
 
     async with httpx.AsyncClient() as client:
         listing = await client.get(base + "/api/chat-flows", headers=headers)
-        detail = await client.get(
-            base + "/api/chat-flows/detail", headers=headers, params={"key": "group:888"}
-        )
-        missing = await client.get(
-            base + "/api/chat-flows/detail", headers=headers, params={"key": "group:1"}
-        )
+        detail = await client.get(base + "/api/chat-flows/detail", headers=headers, params={"key": "group:888"})
+        missing = await client.get(base + "/api/chat-flows/detail", headers=headers, params={"key": "group:1"})
 
     assert listing.status_code == 200
     items = listing.json()["items"]
@@ -320,9 +314,7 @@ async def test_chat_flows_lists_and_shows_detail(managed_panel) -> None:
 async def test_chat_flows_detail_requires_key(managed_panel) -> None:
     token, _ = await _login(managed_panel["base"])
     async with httpx.AsyncClient() as client:
-        response = await client.get(
-            managed_panel["base"] + "/api/chat-flows/detail", headers={"X-Token": token}
-        )
+        response = await client.get(managed_panel["base"] + "/api/chat-flows/detail", headers={"X-Token": token})
 
     assert response.status_code == 400
 
@@ -426,9 +418,7 @@ async def test_management_endpoints_report_missing_services(tmp_path: Path) -> N
         async with httpx.AsyncClient() as client:
             prompts = await client.get(base + "/api/prompts", headers={"X-Token": token})
             flows = await client.get(base + "/api/chat-flows", headers={"X-Token": token})
-            tasks = await client.get(
-                base + "/api/scheduled-tasks", headers={"X-Token": token}
-            )
+            tasks = await client.get(base + "/api/scheduled-tasks", headers={"X-Token": token})
     finally:
         await server.stop()
 

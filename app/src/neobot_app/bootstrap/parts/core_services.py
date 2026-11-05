@@ -10,7 +10,7 @@ from neobot_app.bootstrap._runtime import build_browser_components, build_creato
 from neobot_app.bootstrap._services import build_adapter_service, build_context_recorder, build_debug_recorder, build_emoji_service, build_file_server, build_memory_services, build_message_queues
 from neobot_app.bootstrap._usage import build_usage_components
 from neobot_app.core import DATA_DIR, SRC_DATA_DIR
-from neobot_app.observability.logging import LoguruLoggerFactory, configure_loguru
+from neobot_app.observability.logging import LoguruLoggerFactory, configure_loguru, set_console_show_module
 from neobot_app.prompt.store import PromptStore, sync_default_prompts
 from neobot_app.runtime.adapter_supervisor import AdapterSupervisor
 from neobot_app.runtime.hot_reload_registry import HotReloadRegistry
@@ -26,6 +26,7 @@ def _build_core_services(state: _BuildState) -> None:
     _run_once("loguru", lambda: configure_loguru(DATA_DIR / "logs", runtime_events=True))
     logger_factory = _reuse_or("logger_factory", LoguruLoggerFactory)
     config = _load_config_for_reuse()
+    set_console_show_module(getattr(getattr(config, "debug", None), "console_show_module", False))
 
     sync_data_files(SRC_DATA_DIR, DATA_DIR)
     sync_default_prompts(DATA_DIR, logger=logger_factory.get_logger("app.prompt"))

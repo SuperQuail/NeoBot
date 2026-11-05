@@ -6,8 +6,8 @@ covers:
   - app/src/neobot_app/runtime/notifications.py
   - app/src/neobot_app/runtime/temp_cleaner.py
   - app/src/neobot_app/builtin_plugins/speaking_schedule/
-verified_against: 528fe18
-verified_hash: 45c1da44a78c
+verified_against: d525a5b
+verified_hash: 5d9e62fd232f
 ---
 
 # 16 定时任务 · 睡眠 · 后台通知 · 临时清理
@@ -165,7 +165,8 @@ flowchart TD
     E -- 否 --> F["置睡眠状态 + wake_up_at"]
     F --> G["ticker() 起 _ticker_loop"]
     G --> H{"到 wake_up_at?"}
-    H -- 否 --> I["_log_remaining 周期性记录剩余"]
+    H -- 否 --> I["_check_sleep_expiry 继续检查，不逐分钟播报"]
+    I --> G
     H -- 是 --> J["wake(reason='timer')"]
     K["事件管道被@"] --> L["wake(reason='at_mention_event')"]
     L --> M["wake_prompt() 生成唤醒提示词"]

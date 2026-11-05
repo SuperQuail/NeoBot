@@ -316,7 +316,6 @@ class _ClientCoreMixin:
         """需要登录态的操作前检查：缺 cookie 时直接失败，避免请求打到风控。"""
         if self._sessdata and self._bili_jct:
             return True
-        self._logger.warning(f"B站{action}失败：未登录")
         return False
 
     def _rate_limit_wait(self) -> None:

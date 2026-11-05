@@ -14,6 +14,12 @@ from markdown_it import MarkdownIt
 _MAX_FORMULA = 8192
 _MAX_INPUT = 100_000
 
+#: 单个 ``$`` 的公式里出现这些字符时，KaTeX（``strict: 'error'``）必然报错：
+#: 数学模式下不接受 CJK 字形，未转义的 ``%`` 会被当成注释吞掉行尾。
+#: 与其把正文渲染成红字错误，不如按普通文本处理 —— 想写它们请用 ``\text{元}`` / ``\%``。
+_CJK_CHARS = re.compile(r"[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]")
+_UNESCAPED_PERCENT = re.compile(r"(?<!\\)%")
+
 
 def _protect(text: str, replace: Callable[[str, bool, str], str]) -> str:
     """Scan without recursion; delimiter searches have a fixed upper bound."""
@@ -65,10 +71,17 @@ def _protect(text: str, replace: Callable[[str, bool, str], str]) -> str:
             valid = bool(source.strip())
             if opening == "$":
                 valid = valid and not source[0].isspace() and not source[-1].isspace()
-                valid = valid and not re.fullmatch(r"[\d,.]+", source) and "\n" not in source
+                valid = valid and "\n" not in source
                 valid = valid and not (end + 1 < len(text) and text[end + 1].isdigit())
+                # 数字开头只拦「跨反引号」这种价格/代码混排。这里**不再要求**出现
+                # 运算符：$42$ / $0.33$ / $2m$ 这类短公式同样合法，旧规则把它们
+                # 全判成金额，导致数字开头的公式只能写 \(42\) 才生效。
                 if source and source[0].isdigit():
-                    valid = valid and any(char in source for char in "^_+-=*/<>\\{}")
+                    valid = valid and "`" not in source
+                # KaTeX 在数学模式下必然报错的字形交给普通文本路径；显式写了
+                # 反斜杠（\text{元} / 100\%）说明是作者的 TeX 意图，照常渲染。
+                valid = valid and not (_CJK_CHARS.search(source) and "\\" not in source)
+                valid = valid and not _UNESCAPED_PERCENT.search(source)
             if end >= 0 and valid:
                 output.append(replace(source, opening in ("$$", r"\["), text[pos : end + len(closing)]))
                 pos = end + len(closing)

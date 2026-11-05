@@ -14,6 +14,7 @@ import SelectControl from '../components/ui/SelectControl';
 import { PanelSkeleton } from '../components/ui/PageSkeleton';
 import { startAutoRefresh } from '../data/autoRefresh';
 import { POLL } from '../data/queryKeys';
+import { formatLogExport, logException, logFields, logLocation, logSearchText } from './logs/logPresentation';
 
 const MAX_ROWS = 2000;
 const NEAR_BOTTOM = 12;
@@ -85,7 +86,7 @@ export default function Logs() {
       if (!levelOn[mapTag(it.level)]) return false;
       if (moduleFilter && it.module !== moduleFilter) return false;
       if (textFilter) {
-        const t = ((it.message || '') + ' ' + (it.module || '')).toLowerCase();
+        const t = logSearchText(it).toLowerCase();
         if (!t.includes(textFilter)) return false;
       }
       return true;
@@ -179,12 +180,7 @@ export default function Logs() {
   };
 
   const download = () => {
-    const lines = logs
-      .filter(passes)
-      .map(
-        (it) =>
-          `[${it.datetime || it.time}] [${(it.level || '').toUpperCase()}] [${it.module || '-'}] ${it.message}`,
-      );
+    const lines = logs.filter(passes).map(formatLogExport);
     const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -253,7 +249,7 @@ export default function Logs() {
           <input
             className="input"
             aria-label="搜索日志"
-            placeholder="搜索日志…"
+            placeholder="搜索日志、字段或异常…"
             value={textFilter}
             onChange={(e) => setTextFilter(e.target.value.trim().toLowerCase())}
           />
@@ -270,9 +266,38 @@ export default function Logs() {
             <div className="lv-row" key={it.id} title={it.datetime || it.time}>
               <span className="lv-time">{it.time}</span>
               <span className={'lv-level ' + mapTag(it.level)}>{it.level}</span>
-              <span className="lv-msg">
+              <div className="lv-msg">
                 <span className="lv-module">[{it.module || '—'}]</span> {highlight(it.message, textFilter)}
-              </span>
+              </div>
+              {(logLocation(it) || logFields(it) || it.exception) && (
+                <details className="lv-details">
+                  <summary>日志详情{it.exception ? ' · 异常' : ''}</summary>
+                  <dl className="lv-context">
+                    {logLocation(it) && (
+                      <div>
+                        <dt>调用位置</dt>
+                        <dd>{highlight(logLocation(it), textFilter)}</dd>
+                      </div>
+                    )}
+                    {logFields(it) && (
+                      <div>
+                        <dt>结构化字段</dt>
+                        <dd>
+                          <pre>{highlight(logFields(it), textFilter)}</pre>
+                        </dd>
+                      </div>
+                    )}
+                    {it.exception && (
+                      <div>
+                        <dt>异常详情</dt>
+                        <dd>
+                          <pre>{highlight(logException(it), textFilter)}</pre>
+                        </dd>
+                      </div>
+                    )}
+                  </dl>
+                </details>
+              )}
             </div>
           ))}
         </div>

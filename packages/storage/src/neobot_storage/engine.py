@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from pathlib import Path
 from typing import Union
 
@@ -48,7 +50,7 @@ def sqlite_url(path: Union[str, Path]) -> str:
 
 
 def run_migrations(db_url: str) -> None:
-    """使用 Alembic 自动迁移到最新版本"""
+    """使用 Alembic 自动迁移到最新版本，沿用宿主已配置的日志出口。"""
     from alembic import command
     from alembic.config import Config
 
@@ -57,6 +59,12 @@ def run_migrations(db_url: str) -> None:
     ini_path = pkg_dir / "alembic.ini"
 
     cfg = Config(str(ini_path))
+    cfg.attributes["configure_logging"] = False
     cfg.set_main_option("sqlalchemy.url", db_url)
     cfg.set_main_option("script_location", str(alembic_dir))
+    started_at = time.monotonic()
     command.upgrade(cfg, "head")
+    logging.getLogger("neobot.storage").info(
+        "数据库迁移检查完成",
+        extra={"duration_seconds": round(time.monotonic() - started_at, 3)},
+    )

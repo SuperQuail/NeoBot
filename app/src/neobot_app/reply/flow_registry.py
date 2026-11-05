@@ -101,8 +101,14 @@ class ChatFlowRegistry:
             if conversation_id:
                 state.conversation_id = conversation_id
             state.updated_at = time.time()
-        except Exception:
-            self._logger.debug("记录聊天流提示词失败(忽略)", pipeline_key=pipeline_key)
+        except Exception as exc:
+            self._logger.warning(
+                "面板聊天流提示词快照未更新",
+                event="chat_flow.snapshot_failed",
+                chat_flow_id=pipeline_key,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
 
     def record_request(
         self,
@@ -124,29 +130,30 @@ class ChatFlowRegistry:
             if model:
                 state.model = model
             state.updated_at = time.time()
-        except Exception:
-            self._logger.debug("记录聊天流请求失败(忽略)", pipeline_key=pipeline_key)
+        except Exception as exc:
+            self._logger.warning(
+                "面板聊天流请求快照未更新",
+                event="chat_flow.snapshot_failed",
+                chat_flow_id=pipeline_key,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
 
     def set_active(self, pipeline_key: str, active: bool) -> None:
         """标记该聊天流当前是否有回复管线在运行。"""
         state = self._state(pipeline_key)
         if state is None:
             return
-        try:
-            state.active = bool(active)
-            if active and not state.started_at:
-                state.started_at = time.time()
-            if not active:
-                state.started_at = 0.0
-            state.updated_at = time.time()
-        except Exception:
-            self._logger.debug("记录聊天流状态失败(忽略)", pipeline_key=pipeline_key)
+        state.active = bool(active)
+        if active and not state.started_at:
+            state.started_at = time.time()
+        if not active:
+            state.started_at = 0.0
+        state.updated_at = time.time()
 
     # ── 后台任务 provider ──
 
-    def register_task_provider(
-        self, name: str, provider: Callable[[str], Any]
-    ) -> None:
+    def register_task_provider(self, name: str, provider: Callable[[str], Any]) -> None:
         """注册后台任务来源：provider(pipeline_key) -> dict（可为协程）。"""
         key = str(name or "").strip()
         if not key or not callable(provider):
@@ -171,13 +178,9 @@ class ChatFlowRegistry:
                 "prompt_chars": len(state.system_prompt),
                 "updated_at": state.updated_at,
                 "age_seconds": round(now - state.updated_at, 1) if state.updated_at else None,
-                "stale": bool(
-                    state.updated_at and now - state.updated_at > STALE_AFTER_SECONDS
-                ),
+                "stale": bool(state.updated_at and now - state.updated_at > STALE_AFTER_SECONDS),
             }
-            for state in sorted(
-                self._flows.values(), key=lambda item: item.updated_at, reverse=True
-            )
+            for state in sorted(self._flows.values(), key=lambda item: item.updated_at, reverse=True)
         ]
         return items
 
@@ -225,9 +228,7 @@ class ChatFlowRegistry:
             "prompt_chars": len(state.system_prompt),
             "updated_at": state.updated_at,
             "age_seconds": round(now - state.updated_at, 1) if state.updated_at else None,
-            "stale": bool(
-                state.updated_at and now - state.updated_at > STALE_AFTER_SECONDS
-            ),
+            "stale": bool(state.updated_at and now - state.updated_at > STALE_AFTER_SECONDS),
         }
 
     def _state(self, pipeline_key: str) -> ChatFlowState | None:
@@ -244,9 +245,7 @@ class ChatFlowRegistry:
     def _evict_if_needed(self) -> None:
         if len(self._flows) < self._max_flows:
             return
-        oldest = min(
-            self._flows.values(), key=lambda item: item.updated_at or 0.0, default=None
-        )
+        oldest = min(self._flows.values(), key=lambda item: item.updated_at or 0.0, default=None)
         if oldest is not None:
             self._flows.pop(oldest.pipeline_key, None)
 
@@ -288,9 +287,7 @@ class ChatFlowRegistry:
                 {
                     "id": str(call.get("id") or "") if isinstance(call, dict) else "",
                     "name": _tool_call_name(call),
-                    "arguments": _clip(
-                        _tool_call_arguments(call), 400
-                    )[0],
+                    "arguments": _clip(_tool_call_arguments(call), 400)[0],
                 }
                 for call in tool_calls
             ]

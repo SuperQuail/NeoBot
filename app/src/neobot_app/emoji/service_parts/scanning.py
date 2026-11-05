@@ -27,15 +27,19 @@ class _ScanningMixin:
 
         image_files = self._list_image_files()
         if not image_files:
-            self._logger.info("表情包目录为空")
+            if not self._empty_scan_reported:
+                self._logger.info("表情包目录为空", directory=str(self._emoji_dir))
+                self._empty_scan_reported = True
             self._entries.clear()
             with self._disk_sync_lock:
                 self._last_dir_snapshot = snapshot_before
             await self._cleanup_stale_emoji_records({})
             return
+        self._empty_scan_reported = False
 
         hash_to_path: dict[str, Path] = {}
         path_to_hash: dict[Path, str] = {}
+        duplicates_removed = 0
         for file_path in image_files:
             try:
                 prepared = await prepare_local_image_async(file_path)
@@ -43,20 +47,15 @@ class _ScanningMixin:
                     existing = hash_to_path[prepared.file_hash]
                     # 保留较旧的文件
                     if file_path.stat().st_mtime < existing.stat().st_mtime:
-                        self._logger.info(
-                            f"表情包去重: 保留较旧文件 {file_path.name}，删除 {existing.name}"
-                        )
                         existing.unlink(missing_ok=True)
                         existing.with_suffix(".txt").unlink(missing_ok=True)
                         hash_to_path[prepared.file_hash] = file_path
                         path_to_hash[file_path] = prepared.file_hash
                         path_to_hash.pop(existing, None)
                     else:
-                        self._logger.info(
-                            f"表情包去重: 保留较旧文件 {existing.name}，删除 {file_path.name}"
-                        )
                         file_path.unlink(missing_ok=True)
                         file_path.with_suffix(".txt").unlink(missing_ok=True)
+                    duplicates_removed += 1
                 else:
                     hash_to_path[prepared.file_hash] = file_path
                     path_to_hash[file_path] = prepared.file_hash
@@ -70,6 +69,8 @@ class _ScanningMixin:
         use_counts: dict[str, int] = {}
         records_by_hash: dict[str, EmojiRecord] = {}
         to_parse: list[tuple[str, Path]] = []
+        lookup_failures = 0
+        first_lookup_error: Exception | None = None
 
         async with self._uow_factory() as uow:
             for file_path in image_files:
@@ -82,7 +83,9 @@ class _ScanningMixin:
                 try:
                     record = await uow.emojis.get_by_hash(file_hash)
                 except Exception as exc:
-                    self._logger.error(f"查询表情包数据库失败: {exc}")
+                    lookup_failures += 1
+                    if first_lookup_error is None:
+                        first_lookup_error = exc
                     record = None
                 if txt_text:
                     record = await uow.emojis.set(
@@ -119,11 +122,20 @@ class _ScanningMixin:
                     records_by_hash[file_hash] = record
                     use_counts[file_hash] = record.use_count
 
+            if lookup_failures:
+                self._logger.error(
+                    "表情包数据库查询失败，本轮部分描述无法读取",
+                    failed_count=lookup_failures,
+                    total_count=len(path_to_hash),
+                    error_type=type(first_lookup_error).__name__,
+                    error=str(first_lookup_error),
+                )
             await uow.commit()
 
+        parsed_count = 0
         if to_parse:
-            self._logger.info(f"发现 {len(to_parse)} 个需要解析的表情包，开始并发解析")
             new_results = await self._parse_batch(to_parse)
+            parsed_count = len(new_results)
             try:
                 async with self._uow_factory() as uow:
                     for file_hash, file_path, analysis_text in new_results:
@@ -153,6 +165,13 @@ class _ScanningMixin:
             use_counts,
             records_by_hash,
         )
+        if to_parse or duplicates_removed or snapshot_before != self._last_dir_snapshot:
+            self._logger.info(
+                "表情包目录扫描完成",
+                file_count=len(path_to_hash),
+                parsed_count=parsed_count,
+                duplicates_removed=duplicates_removed,
+            )
         with self._disk_sync_lock:
             self._last_dir_snapshot = snapshot_before
         await self._cleanup_stale_emoji_records(hash_to_path)
@@ -199,6 +218,7 @@ class _ScanningMixin:
             return [(h, p, "[未配置视觉模型]") for h, p in items]
 
         semaphore = asyncio.Semaphore(self._max_concurrency)
+        failures: list[tuple[str, Exception]] = []
 
         async def parse_one(file_hash: str, file_path: Path) -> tuple[str, Path, str]:
             async with semaphore:
@@ -222,15 +242,26 @@ class _ScanningMixin:
                     )
                     content = response.get("content", "")
                     text = content.strip() if isinstance(content, str) else str(content)
+                    if not text:
+                        failures.append((file_path.name, ValueError("视觉模型返回空描述")))
                     result_text = text if text else "[解析失败]"
-                    self._logger.debug(f"解析表情包 {file_path.name}: {result_text[:40]}")
                     return (file_hash, file_path, result_text)
                 except Exception as exc:
-                    self._logger.error(f"解析表情包失败 {file_path.name}: {exc}")
+                    failures.append((file_path.name, exc))
                     return (file_hash, file_path, "[解析失败]")
 
         tasks = [parse_one(h, p) for h, p in items]
-        return list(await asyncio.gather(*tasks))
+        results = list(await asyncio.gather(*tasks))
+        if failures:
+            self._logger.warning(
+                "表情包视觉解析失败，已保留失败标记",
+                failed_count=len(failures),
+                total_count=len(items),
+                sample_files=[name for name, _ in failures[:5]],
+                error_type=type(failures[0][1]).__name__,
+                error=str(failures[0][1]),
+            )
+        return results
 
     def _list_image_files(self) -> list[Path]:
         """列出表情包目录下的所有图片文件"""

@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from unittest.mock import Mock
 
 from neobot_app.config.loader.env import load_env
 from neobot_app.config.schemas.env import EnvConfig
@@ -29,6 +30,25 @@ def _use_env_file(monkeypatch, tmp_path) -> Path:
     env_file = tmp_path / ".env"
     monkeypatch.setattr("neobot_app.config.loader.env.ENV_FILE", env_file)
     return env_file
+
+
+def test_template_expansion_is_one_result_record_without_errors(monkeypatch, tmp_path):
+    """缺少模板字段只表示模板需扩展；功能是否可用由实际模型配置检查。"""
+    _clear_platform_env(monkeypatch)
+    env_file = _use_env_file(monkeypatch, tmp_path)
+    env_file.write_text("# empty template\n", encoding="utf-8")
+    logger = Mock()
+    monkeypatch.setattr("neobot_app.config.loader.env.logger", logger)
+
+    load_env()
+
+    logger.error.assert_not_called()
+    logger.warning.assert_not_called()
+    logger.info.assert_called_once()
+    fields = logger.info.call_args.kwargs
+    assert fields["event"] == "config.env_extended"
+    assert "DeepSeek_APIKey" in fields["added_keys"]
+    assert fields["path"] == str(env_file)
 
 
 def test_load_env_reads_all_keys_and_keeps_file_unchanged(monkeypatch, tmp_path):

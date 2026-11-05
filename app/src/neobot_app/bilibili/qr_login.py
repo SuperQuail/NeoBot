@@ -239,10 +239,8 @@ class BilibiliQrLogin:
                 last_error = ""
                 await _notify(on_status, result)
                 if result.state in _QR_TERMINAL_STATES:
-                    self._logger.info(f"B站扫码登录结束: {result.state}")
                     return result
             if time.monotonic() >= deadline:
-                self._logger.info("B站扫码登录超时（未扫码或未确认）")
                 timeout_result = QrPollResult(
                     state=QR_STATE_EXPIRED, raw_code=-1, message="二维码登录超时"
                 )

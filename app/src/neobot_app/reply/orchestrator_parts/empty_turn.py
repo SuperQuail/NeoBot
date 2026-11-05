@@ -1,4 +1,5 @@
 """空轮次/未发送正文的判定与收尾处理。"""
+
 from __future__ import annotations
 
 import json
@@ -8,6 +9,8 @@ from neobot_app.reply.event import ReplyEvent, ReplyState
 EMPTY_TURN_TRUNCATED = "truncated"
 #: 空轮次成因：模型没给正文也没调工具，且不是长度截断。
 EMPTY_TURN_NO_OUTPUT = "empty"
+
+
 def _extract_finish_reason(response: object) -> str:
     """读取 provider 透出的结束原因（缺失时返回空串）。"""
     if not isinstance(response, dict):
@@ -17,6 +20,8 @@ def _extract_finish_reason(response: object) -> str:
         return ""
     value = extensions.get("finish_reason")
     return value.strip() if isinstance(value, str) else ""
+
+
 def _extract_usage_summary(response: object) -> dict[str, object]:
     """取出这一轮的 output / reasoning token 数（缺失时为 None）。
 
@@ -31,6 +36,8 @@ def _extract_usage_summary(response: object) -> dict[str, object]:
         "output_tokens": usage.get("output_tokens"),
         "reasoning_tokens": details.get("reasoning_tokens"),
     }
+
+
 def _classify_empty_turn(response: object) -> str:
     """给「正文为空且没有工具调用」的一轮定性。
 
@@ -42,17 +49,17 @@ def _classify_empty_turn(response: object) -> str:
         return EMPTY_TURN_TRUNCATED
     return EMPTY_TURN_NO_OUTPUT
 
+
 class EmptyTurnMixin:
     @staticmethod
     def _tool_failure_key(name: str, args: object) -> str:
         """同工具 + 同参数的失败指纹（参数不可序列化时退化为 repr）。"""
         try:
-            payload = json.dumps(
-                args, ensure_ascii=False, sort_keys=True, default=str
-            )
+            payload = json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
         except (TypeError, ValueError, RecursionError):
             payload = repr(args)
         return f"{name}|{payload}"
+
     @staticmethod
     def _tool_repeat_failure_hint(name: str, failures: int) -> str:
         """软提示：说明重复失败，但仍允许继续调用（工具不会被永久摘除）。"""
@@ -61,19 +68,16 @@ class EmptyTurnMixin:
             "若判断是环境或权限问题，请不要再重复尝试，改用其它工具或直接向用户说明；"
             "如果确认问题已经修复，可以继续调用。"
         )
+
     @staticmethod
-    def _build_empty_turn_error(
-        reason: str, finish_reason: str, output_tokens: object
-    ) -> str:
+    def _build_empty_turn_error(reason: str, finish_reason: str, output_tokens: object) -> str:
         if reason == EMPTY_TURN_TRUNCATED:
             return (
                 "模型输出被输出上限截断：本轮没有正文也没有工具调用"
                 f"（finish_reason=length, output_tokens={output_tokens}）"
             )
-        return (
-            "模型返回空输出：本轮没有正文也没有工具调用"
-            f"（finish_reason={finish_reason or '未提供'}）"
-        )
+        return f"模型返回空输出：本轮没有正文也没有工具调用（finish_reason={finish_reason or '未提供'}）"
+
     def _handle_unsent_prose(
         self,
         event: ReplyEvent,
@@ -118,6 +122,7 @@ class EmptyTurnMixin:
             review_pending=review_pending,
             finish_reason=_extract_finish_reason(response) or None,
         )
+
     def _handle_empty_turn(
         self,
         event: ReplyEvent,
@@ -138,17 +143,15 @@ class EmptyTurnMixin:
         output_tokens = counters["output_tokens"]
         reasoning_tokens = counters["reasoning_tokens"]
 
-        event.error = self._build_empty_turn_error(
-            reason, finish_reason, output_tokens
-        )
+        event.error = self._build_empty_turn_error(reason, finish_reason, output_tokens)
         if not event.is_terminal:
             try:
                 event.transition(ReplyState.FAILED)
             except RuntimeError:
                 pass
 
-        self._logger.warning(
-            "模型空轮次：该轮没有正文也没有工具调用，回复未发出",
+        self._logger.debug(
+            "模型空轮次详情",
             event_id=event.event_id,
             queue_key=queue_key,
             iteration=iteration,

@@ -144,7 +144,7 @@ class _ContentMixin:
             return []
         up_mid = self.my_uid
         if up_mid <= 0:
-            self._logger.warning("B站收藏夹读取失败：未取到自己的 UID")
+            self._logger.debug("B站收藏夹读取失败：未取到自己的 UID")
             return []
         try:
             payload = self._fetch("GET", _FAV_FOLDER_LIST_URL, params={"up_mid": up_mid})

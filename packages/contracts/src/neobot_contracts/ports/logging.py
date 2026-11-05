@@ -7,7 +7,12 @@ from typing import Any, Protocol, runtime_checkable
 
 @runtime_checkable
 class Logger(Protocol):
-    """日志记录器接口"""
+    """单 Bot 日志接口。
+
+    msg 是供人阅读的事实摘要；kw 和 bind 上下文是独立的结构化字段。
+    常用字段为 event、event_id、chat_flow_id、task_id、plugin_name；
+    同名字段以本次调用为准。业务层无需感知 Loguru 或终端颜色。
+    """
 
     def bind(self, **ctx: Any) -> Logger: ...
     def debug(self, msg: str, **kw: Any) -> None: ...

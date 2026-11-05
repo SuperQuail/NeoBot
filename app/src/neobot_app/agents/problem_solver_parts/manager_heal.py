@@ -197,9 +197,7 @@ class ProblemSolverManagerHealMixin:
             return
 
         if self._orchestrator is None:
-            self._logger.warning(
-                "通知推送失败：orchestrator 为空", task_id=task.task_id
-            )
+            self._logger.warning("解题通知未交付：未配置通知中心或回复调度器", task_id=task.task_id)
             return
 
         pipeline_active = self._orchestrator.is_pipeline_key_active(task.pipeline_key)
@@ -215,7 +213,7 @@ class ProblemSolverManagerHealMixin:
                     return
             except Exception as exc:
                 self._logger.warning(
-                    "启动后台回复管线失败",
+                    "解题结果通知启动回复失败，已转入待处理队列",
                     task_id=task.task_id,
                     error=str(exc),
                 )

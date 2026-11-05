@@ -9,8 +9,8 @@ covers:
   - app/src/neobot_app/screenshot.py
   - app/src/neobot_app/image_pool.py
   - packages/contracts/src/neobot_contracts/ports/screenshot.py
-verified_against: 6233322
-verified_hash: 013aefbbb6e6
+verified_against: ac061570
+verified_hash: 4ca6f280062a
 ---
 
 # 13 渲染与卡片：自包含 HTML 卡片 · /help 预渲染缓存 · Markdown 转图 · 截图链路 · 图片暂存池
@@ -278,10 +278,10 @@ flowchart TD
     D --> E["attempts：element 等字体, element 不等, full_page 等, full_page 不等 / html_card.py:1763"]
     E --> F["每档构造 RenderOptions 并带 selector=main.card format=png wait_for_images=False"]
     F --> G{"port.render 抛异常?"}
-    G -- 是 --> G1["记 last_error 仅在字体校验那档 warning 后 continue / html_card.py:1785"]
+    G -- 是 --> G1["保留实际 last_error 并继续尝试"]
     G -- 否 --> H{"result.data 为空?"}
     H -- 是 --> H1["warning：未返回渲染数据 立刻 return None 不再试下一档"]
-    H -- 否 --> I["return bytes(data)"]
+    H -- 否 --> I["备用方案成功时汇总原因与方案；返回 bytes(data)"]
     G1 --> J{"还有下一档?"}
     J -- 是 --> F
     J -- 否 --> K["warning：卡片渲染失败已降级 返回 None"]
@@ -483,7 +483,10 @@ flowchart TD
   orchestrator.py:1601-1612）；回复管线外层再包 `_MARKDOWN_RENDER_TIMEOUT_SECONDS = 60.0`（sender.py:25、377）；
   这里**没有「切分」步骤**：整段清洗后的正文渲染成**一张**图，超限需要调用方拆分；
 * `convert` 按内容哈希命名；不同转换器实例经同一个截图后端的 `operation_lock` 串行化；
-* `math_markdown.py` 使用 CommonMark 的代码块范围保持引用、列表中的代码不变；金额不作为单美元公式。
+* `math_markdown.py` 使用 CommonMark 的代码块范围保持引用、列表中的代码不变。
+  单美元公式支持纯数字、小数及数字开头的短公式，如 `$42$`、`$0.33$`、`$2m$`；
+  首尾空格、跨行、未闭合定界符、闭合符后紧跟数字及数字开头跨反引号的文本仍保留原文。
+  含 CJK 且没有反斜杠，或含未转义 `%` 的单美元内容也保留原文；`$\text{元}$`、`$100\%$` 可正常渲染。
   原始 HTML 显示为文字，图片只显示替代文字；公式坏语法局部保留源码。降级不调用系统 TeX；
 * 清理：6h 巡检删 24h 前的 png/jpg/jpeg/webp/html（`_CLEANUP_INTERVAL_SECONDS` 与 `_TMP_MAX_AGE_SECONDS`，154-155），
   `stop()` 时 `_cleanup_all` 全删（`_CLEANUP_ALL_ON_STOP = True`）；

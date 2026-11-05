@@ -405,16 +405,20 @@ def _log_tool_failure(context: Any, tool_name: str, exc: Exception) -> None:
             warning(
                 "插件工具执行失败",
                 tool=tool_name,
+                plugin=getattr(context, "plugin_name", None),
                 error_type=type(exc).__name__,
+                error=str(exc),
             )
             return
     except Exception:
         pass
     try:
         _LOGGER.warning(
-            "插件工具执行失败：tool=%s error_type=%s",
+            "插件工具执行失败：plugin=%s tool=%s error_type=%s error=%s",
+            getattr(context, "plugin_name", None),
             tool_name,
             type(exc).__name__,
+            str(exc),
         )
     except Exception:
         pass

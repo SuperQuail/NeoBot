@@ -14,13 +14,15 @@ covers:
   - app/src/neobot_app/runtime/instance_lease.py
   - app/src/neobot_app/runtime/local_control.py
   - app/src/neobot_app/runtime/connection_readiness.py
-verified_against: e0c9636
-verified_hash: e93671dc25c3
+verified_against: d525a5b
+verified_hash: a5848fc326a1
 ---
 
 # 01 启动装配 / 停机 / 软重启 / 待机
 
 ## 范围
+
+CLI 先展示 NEOBOT 字符画并安装脱敏 Rich 异常钩子。基础插件与面板可用后立即打印全宽地址卡，再启动 Bot 并观察 OneBot 连接；卡片明确标记 Bot 正在初始化。最终失败或待机显示实际状态，正常启动不重复地址卡。
 
 `cli.main` 明确设置 argparse 的 `prog="neobot"`，保证直接入口与模块调用的 `--version` 输出使用同一个公开命令名，版本值仍动态读取。
 
@@ -94,7 +96,7 @@ flowchart TD
     F -- 否 --> G["StandbyController｜cli.py:75<br/>runtime_factory=create_application"]
     G --> H["standby_service.set_hooks｜cli.py:84<br/>on_enter/on_resume/on_onebot_change"]
     H --> HC["LocalControlServer.start<br/>本机随机端口 + 原子发现文件"]
-    HC --> I["startup 任务<br/>plugin load/start -> controller.start"]
+    HC --> I["startup 任务<br/>plugin load/start -> WebUI 就绪卡 -> controller.start"]
     I --> J["run_entry_loop｜cli.py:144<br/>poll_interval=0.5s"]
     J --> K{"state 的 stopping 或 restart_signal.requested ?"}
     K -- 是 --> L["controller.request_shutdown<br/>-> shutdown 观察窗口 20s"]

@@ -319,7 +319,15 @@ async def test_cli_retains_status_and_instance_lock_until_plugin_cleanup_finishe
         await arguments["startup_task"]
         return False
 
-    values = {"plugin_runtime": runtime, "standby_service": SimpleNamespace(set_hooks=lambda **_kwargs: None)}
+    startup_failures = []
+    values = {
+        "plugin_runtime": runtime,
+        "standby_service": SimpleNamespace(
+            set_hooks=lambda **_kwargs: None,
+            is_standby=lambda: False,
+            record_failure=startup_failures.append,
+        ),
+    }
     monkeypatch.setattr(cli, "DATA_DIR", data)
     monkeypatch.setattr(cli, "get_cached_core", values.get)
     monkeypatch.setattr(cli, "create_application", lambda **_kwargs: object())
@@ -328,6 +336,7 @@ async def test_cli_retains_status_and_instance_lock_until_plugin_cleanup_finishe
     monkeypatch.setattr(asyncio.BaseEventLoop, "add_signal_handler", lambda *_args: None)
     monkeypatch.setattr(runtime, "stop_all", stop_core)
     assert await cli.run() is False
+    assert startup_failures == []
     assert observed == ["cleanup"]
     assert not discovery.exists()
     with InstanceLease(data):

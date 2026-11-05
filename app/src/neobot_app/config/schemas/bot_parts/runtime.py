@@ -90,6 +90,10 @@ class Debug:
         default=10,
         metadata={"description": "调试数据保留天数（默认 10）：data/debug/log 下更早的分片与回复事件明细会被自动清理"},
     )
+    console_show_module: bool = field(
+        default=False,
+        metadata={"description": "在控制台日志中显示模块名称（默认关闭，修改后重启进程生效）"},
+    )
 
 
 @dataclass

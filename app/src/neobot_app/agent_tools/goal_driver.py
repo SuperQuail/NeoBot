@@ -192,11 +192,23 @@ class GoalDriver:
                 self._settle(run, "cancelled")
             elif task.exception() is not None:
                 self._settle(run, "error")
-                _LOG.error("目标驱动器任务失败（%s）", type(task.exception()).__name__)
+                _LOG.error(
+                    "目标驱动器任务失败", extra={**self._log_scope(run), "error_type": type(task.exception()).__name__}
+                )
         except Exception as exc:
-            _LOG.error("目标驱动器清理失败（%s）", type(exc).__name__)
+            _LOG.error("目标驱动器清理失败", extra={**self._log_scope(run), "error_type": type(exc).__name__})
         finally:
             self._remove(run)
+
+    @staticmethod
+    def _log_scope(run: _Run) -> dict[str, Any]:
+        # 只记录宿主标识；异常正文可能含模型输出或凭据。
+        return {
+            "owner": run.context.owner,
+            "chat_flow_id": run.context.chat_flow_id,
+            "agent_id": run.context.agent_id,
+            "round_id": run.round_id,
+        }
 
     def _settle(self, run: _Run, outcome: str) -> dict | None:
         round_id = run.round_id
@@ -286,19 +298,29 @@ class GoalDriver:
         except Exception as exc:
             outcome = "error"
             # Never log exception text, provider payloads, source or credentials.
-            _LOG.warning("目标续跑已停止（%s）", type(exc).__name__)
+            _LOG.warning("目标续跑因执行失败停止", extra={**self._log_scope(run), "error_type": type(exc).__name__})
             if not notification_attempted:
                 try:
                     snapshot = await self.state.execute("get_goal", {}, run.context)
-                    await self.notify(run.context, {
-                        "status": "waiting_for_human", "outcome": "error", "reason": "invocation_failed",
-                        "round_id": run.round_id, "messages": [], **snapshot, "completion_basis": _BASIS,
-                    })
+                    await self.notify(
+                        run.context,
+                        {
+                            "status": "waiting_for_human",
+                            "outcome": "error",
+                            "reason": "invocation_failed",
+                            "round_id": run.round_id,
+                            "messages": [],
+                            **snapshot,
+                            "completion_basis": _BASIS,
+                        },
+                    )
                 except asyncio.CancelledError:
                     outcome = "cancelled"
                     raise
                 except Exception as notify_exc:
-                    _LOG.warning("目标停止通知失败（%s）", type(notify_exc).__name__)
+                    _LOG.warning(
+                        "目标停止通知未交付", extra={**self._log_scope(run), "error_type": type(notify_exc).__name__}
+                    )
         finally:
             run.invoking = False
             self._settle(run, "cancelled" if run.stopping else outcome)

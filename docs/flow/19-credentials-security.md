@@ -5,7 +5,7 @@ covers:
   - app/src/neobot_app/panel_auth.py
   - app/src/neobot_app/panel_web.py
 verified_against: fb703fe5
-verified_hash: 90a9f55353ec
+verified_hash: efb2096bce97
 ---
 
 # 19 凭据、面板鉴权与安全边界
@@ -36,12 +36,21 @@ flowchart TD
     F -- 否 --> I["回固定文案：不要重试，先请求凭据"]
     D -- 否 --> I
     I --> J["管理员在群里发码"]
-    J --> K["try_issue(chat_flow, code, issuer_id)"]
-    K --> L{"签发者级别够?"}
-    L -- 否 --> M["拒绝 + _record_issue_failure"]
-    L -- 是 --> N{"该会话签发失败 >= 5 次?"}
-    N -- 是 --> O["is_issue_blocked：冷却中"]
-    N -- 否 --> P["create：生成码 + 设时限"]
+    J --> J1{"会话有 pending/active 凭据?"}
+    J1 -- 否 --> X1["直接按普通消息处理（不进 try_issue）"]
+    J1 -- 是 --> K["try_issue(chat_flow, code, issuer_id)"]
+    K --> J2{"该会话在冷却中?"}
+    J2 -- 是 --> Z["rate_limited：looks_like_code 且能签发者收到「太频繁」（每窗口一次）"]
+    J2 -- 否 --> K1{"码存在且属于本会话?"}
+    K1 -- 否 --> K2{"looks_like_code 且发送者能签发?"}
+    K2 -- 是 --> K3["_record_issue_failure 计数 +1"]
+    K2 -- 否 --> X
+    K3 --> K4{"failures >= 5?"}
+    K4 -- 是 --> O["is_issue_blocked：冷却中"]
+    K4 -- 否 --> X
+    K1 -- 是 --> L{"签发者级别够?"}
+    L -- 否 --> M["拒绝：permission_denied（不计数）"]
+    L -- 是 --> P["pending → active 签发"]
     P --> Q["_clear_issue_failures"]
     Q --> D
     R["面板请求"] --> S["panel_auth 登录态判定"]
@@ -57,6 +66,7 @@ sequenceDiagram
     autonumber
     participant AG as AI/用户
     participant CM as CredentialManager
+    participant RT as 入站管线
     participant AD as 管理员
     participant ACT as 危险动作
     participant PA as panel_auth
@@ -64,9 +74,13 @@ sequenceDiagram
     AG->>CM: has_active(chat_flow, action)?
     CM-->>AG: False
     AG-->>AD: 提示需要凭据
-    AD->>CM: try_issue(chat_flow, code, issuer_id)
-    CM->>CM: 校验级别 + 失败计数
-    CM-->>AD: 签发结果（码 + 时限）
+    AD->>RT: 在会话里发送文本
+    RT->>CM: has_pending_or_active(chat_flow)?
+    CM-->>RT: 没有 → 按普通消息处理
+    RT->>CM: try_issue(chat_flow, code, issuer_id)
+    CM->>CM: 冷却判定 → 查表 → 仅「可签发者的格式合法未命中」计数
+    CM-->>RT: 签发结果（码 + 时限 / rate_limited）
+    RT-->>AD: 首次签发回执；冷却期内格式像码且可签发者才提示「太频繁」（每窗口一次）
     AG->>CM: get(code) + consume
     CM-->>AG: 有效则放行
     AG->>ACT: 执行
@@ -96,8 +110,8 @@ flowchart TD
 ```
 
 四种状态要分清（`credentials/service.py`）：**不存在 / 已过期 / 已消费（一次性）/ 有效**。
-`is_expired`（`model.py:72`）只看时间；`consume`（`service.py:213`）负责把一次性凭据置为已用。
-`cleanup`（`:239`）是清理入口，但不保证被周期调用 —— 长期不清理不会导致功能错误（`get` 会判过期），
+`is_expired`（`model.py:72`）只看时间；`consume`（`service.py:266`）负责把一次性凭据置为已用。
+`cleanup`（`:306`）是清理入口，但不保证被周期调用 —— 长期不清理不会导致功能错误（`get` 会判过期），
 只是内存里会留垃圾项。
 </details>
 
@@ -107,21 +121,33 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["try_issue(chat_flow, code, issuer_id)"] --> B{"该会话在冷却中?"}
-    B -- 是 --> C["拒绝：is_issue_blocked"]
-    B -- 否 --> D["校验签发者级别"]
-    D --> E{"级别够?"}
-    E -- 否 --> F["_record_issue_failure：失败计数 +1"]
-    F --> G{"failures >= _ISSUE_MAX_FAILURES=5?"}
-    G -- 是 --> H["进入冷却（约 300s）"]
-    G -- 否 --> I["返回失败，允许再试"]
-    E -- 是 --> J["create 签发"]
-    J --> K["_clear_issue_failures 清零"]
+    B -- 是 --> C["rate_limited：冷却期内猜中也不签发"]
+    B -- 否 --> D{"码存在且属于本会话?"}
+    D -- 否 --> E{"looks_like_code 且发送者可签发?"}
+    E -- 是 --> F["_record_issue_failure：失败计数 +1"]
+    E -- 否 --> G["返回 not_found（不计数）"]
+    F --> H{"failures >= _ISSUE_MAX_FAILURES=5?"}
+    H -- 是 --> I["进入冷却（约 300s）"]
+    H -- 否 --> G2["返回 not_found（本次已计数）"]
+    D -- 是 --> J{"状态与签发者级别?"}
+    J -- 过期 / 非 pending --> K["expired / invalid_status"]
+    J -- active 且有权限 --> K2["ok：幂等重发，不新建"]
+    J -- 无签发权限 --> L["permission_denied（不计数）"]
+    J -- pending 且级别够 --> M["pending → active 签发"]
+    M --> N["_clear_issue_failures 清零"]
 ```
 
 `ToolPermissions` 在 `agent.tools.admin_self_authorize=true` 时对**超管本人的请求**直接放行，不会进入 `try_issue`；默认只放行私聊，群聊需列入 `admin_self_authorize_chats`。签发流程只服务其他人发起的请求。
 
 `_ISSUE_MAX_FAILURES = 5`（`service.py:26`）与冷却窗口是**防爆破**设计：
 失败 5 次后该会话在冷却期内无法再尝试签发。
+计数口径是「格式与凭据码一致、且发送者本来就能签发本会话 pending 凭据的未命中」：
+`looks_like_code` 为假（长度不等于 `code_length` 或含字符集外字符）只返回 `not_found`；
+发送者没有签发权限同样不计数——他猜中也会 `permission_denied`，计他的数没有安全收益，
+反而让普通成员能用 `hahaha` 这类恰好满足格式的日常词把签发挡住。
+管线侧（`runtime/pipeline_parts/credential.py`）在会话没有 pending/active 凭据时直接短路，
+普通聊天不会进入 `try_issue`。冷却期内格式合法的码由管线回「签发尝试太频繁」提示，
+但只回给能签发的人、且每个冷却窗口只提示一次（`take_rate_limit_notice`）。
 注意冷却键是 **chat_flow**（会话维度）不是全局 —— 一个群被冷却不影响其它群。
 </details>
 
@@ -138,7 +164,7 @@ flowchart LR
     E --> F
 ```
 
-`credentials/model.py:23` 是唯一映射表，`required_level_for`（`service.py:277`）是唯一读法。
+`credentials/model.py:23` 是唯一映射表，`required_level_for`（`service.py:331`）是唯一读法。
 新增危险动作**必须**同时加表项与调用点，否则会落到 `DEFAULT_REQUIRED_LEVEL` —— 表现为
 「该拦的没拦」。回执文案里明确写了「不要重试」（见 FINDINGS 06 节的凭据语义）。
 </details>
@@ -216,7 +242,7 @@ flowchart TD
 | 状态 | 谁置位 | 谁清理 | 失败时停在哪 |
 |---|---|---|---|
 | 凭据项 | `create` | `consume` / `revoke` / `cleanup` | 过期与已消费都按无效处理 |
-| 签发失败计数 | `_record_issue_failure` | `_clear_issue_failures`（成功签发时） | 达 5 次进入冷却，冷却按 chat_flow 维度 |
+| 签发失败计数 | `_record_issue_failure` | `_clear_issue_failures`（成功签发时） | 只有「格式合法 + 发送者可签发」的未命中才计数，达 5 次进入冷却（chat_flow 维度） |
 | 面板登录态 | `panel_auth` 登录 | 登出、过期或成功改密后撤销全部会话 | 未登录/版本过期 401，无权限/旧密码错误 403 |
 | 密钥 | `.env` + `EnvConfig` | 改 `.env` 需 reload 才重建注册表 | 平台名/密钥缺一即不注册该模型 |
 
@@ -226,6 +252,14 @@ flowchart TD
 * **凭据不是重试型错误**：无凭据时每次同样失败，必须先 `credential__request`；
   一次性凭据一消费就 USED，时限凭据持续有效不消费（FINDINGS 06 节）。
 * **签发冷却按会话**：一个群被冷却不影响其它群，但同一群内所有动作一起被挡。
+* **权限门是「能签任一条 pending」粒度**：同一 chat_flow 里同时存在不同级别的待签发凭据时，
+  只要发送者能签其中任意一条就会计数——例如次级管理员（能签 `willing_global`）连发像码文本，
+  会把同群的 `kick` 凭据一起挡进冷却。这是有意为之的粗粒度（按会话冷却），不要误读成
+  「只有目标动作的签发者才计数」。
+* **失败计数只认「可签发者发的、像码的文本」**：`looks_like_code` 为假（长度或字符集不符）
+  或发送者没有签发权限都不进 `_issue_failures`，无凭据会话更是在管线处直接短路——别用
+  「每句话都算一次猜测」的直觉得出「聊几句就冷却」的结论；`hahaha`/`233333` 这类词恰好
+  满足长度与字符集，真正的防线是发送者权限门与无凭据短路。
 * **新增危险动作必须登记 `ACTION_REQUIRED_LEVEL`**：漏登记会落到默认级别，表现为「该拦的没拦」。
 * **面板登录态与凭据不通兑**：两套体系独立判定。
 * **密钥只从 `.env` 来**：面板保存后需要 reload 才让注册表用上新密钥。

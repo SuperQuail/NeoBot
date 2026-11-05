@@ -58,7 +58,6 @@ class EventGateway:
             self._event_source.subscribe("meta_event", self.handle),
         ]
         self._started = True
-        self._logger.info("事件入口已启动")
 
     def stop(self) -> None:
         if not self._started:
@@ -67,7 +66,6 @@ class EventGateway:
             subscription.unsubscribe()
         self._subscriptions.clear()
         self._started = False
-        self._logger.info("事件入口已停止")
 
     # ── main entry-point ─────────────────────────────────────
 

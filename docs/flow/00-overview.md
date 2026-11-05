@@ -7,8 +7,8 @@ covers:
   - app/src/neobot_app/reply/
   - app/src/neobot_app/message/
   - packages/adapter/src/neobot_adapter/
-verified_against: e0c9636
-verified_hash: d5a22a8bcb84
+verified_against: 31683ddf
+verified_hash: c638c4333772
 ---
 
 # 00 全局视图：进程启动 -> 入站 -> 处理 -> 出站 -> 停机
@@ -153,6 +153,11 @@ flowchart LR
 Markdown 图片转换器在 `bootstrap/parts/core_services.py` 中接收浏览器组件提供的
 `screenshots`，与卡片和浏览器技能共用操作锁。`send_long_reply` 的公式经本地 KaTeX
 排版、等待字体后截 PNG；浏览器失败时保留公式源码降级。详见 `13-render-cards.md`。
+
+单美元定界符支持 `$42$`、`$0.33$`、`$2m$` 等短公式；价格分隔、跨行及未转义的百分号仍走文本路径。
+维护服务的 `ProviderReloadConsumer` 使用类型检查导入，实际构造时再延迟导入，不改变装配顺序。
+浏览器装配先检查显式 `browser_path`：有效时直接复用；不存在或不可访问时告警并清空，
+随后自动检测已有浏览器，确实缺失时才安装 Chromium，避免把无效路径继续传入运行实例。
 </details>
 
 <details>
@@ -287,6 +292,9 @@ flowchart TD
 </details>
 
 ## 关键状态
+
+凭据入口只在当前会话有待签发或可用凭据时尝试匹配；无目标时直接进入普通消息管线。
+冷却提示仅发送给具备签发权限、提交了码格式文本的用户，且每轮冷却只提示一次；其余未命中消息继续正常处理。
 
 | 状态 | 谁置位 | 谁清理 | 失败时停在哪 |
 |---|---|---|---|

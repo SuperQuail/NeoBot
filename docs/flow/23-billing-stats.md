@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/statistics/
   - app/src/neobot_app/observability/
   - app/src/neobot_app/cache/
-verified_against: 5d6c775
-verified_hash: 483217613f61
+verified_against: d525a5b
+verified_hash: d6ff44685aae
 ---
 
 # 23 计费、用量统计与可观测性
@@ -204,19 +204,19 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["configure_loguru(data/logs, runtime_events=True)"] --> B["控制台 sink"]
-    A --> C["文件 sink neobot.log"]
-    A --> D["运行时事件 sink（面板日志页）"]
-    A --> E["自修复 sink：ERROR 级 -> SelfHealManager.record"]
+    A["Loguru 记录：正文、字段、调用位置与异常"] --> S["统一有界脱敏快照"]
+    S --> B["Rich 控制台 INFO：时分秒 / 四字符级别"]
+    S --> C["文件 DEBUG：完整时间、上下文与安全异常"]
+    S --> D["运行时事件 INFO：有界主循环投递"]
+    S --> E["自修复 ERROR：独立有界投递"]
     E --> F{"来自 app.self_heal 自己?"}
     F -- 是 --> F1["丢弃，防自激"]
     F -- 否 --> F2["进环形缓冲，按三重门槛触发"]
-    B --> G["脱敏：密钥类字段掩码"]
-    C --> G
-    D --> G
+    D --> G["消费者上下文拒绝同出口反馈；每 64 条让出主循环"]
+    E --> G
 ```
 
-自修复的完整触发链见 `04-agent-loop.md`。脱敏在写入前做（面板只读会话另有裁剪，见 `09b`）。
+自修复的完整触发链见 `04-agent-loop.md`。四个出口共用快照；异常不读取源码或局部变量。API 计数另用 metric 事件，不依赖 DEBUG 日志正文。关闭最多冲刷 2 秒，队列容量、丢弃与失败计数可诊断。
 </details>
 
 <details>

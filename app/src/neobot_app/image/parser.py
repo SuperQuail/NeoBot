@@ -186,12 +186,10 @@ class ImageParseService:
                 # 拉不到的图不再笼统报「解析失败」：说清是过期，并把以前留过的描述带上，
                 # 让模型知道这张图大概是什么内容（见 image/unavailable.py）。
                 return f"[图片：{expired_inline_text(await describe(expired_key))}]"
-            self._logger.warning("图片下载失败，跳过该图片")
             return ""
 
         image_bytes = _resize_image_if_too_small(image_bytes, logger=self._logger)
         if image_bytes is None:
-            self._logger.warning("图片尺寸异常，跳过该图片")
             return ""
 
         file_hash = hashlib.md5(image_bytes).hexdigest()
@@ -211,12 +209,10 @@ class ImageParseService:
 
         # 调用视觉模型
         if self._vision_provider is None:
-            self._logger.warning("视觉模型未配置，跳过图片解析（仅记录日志）")
             return ""
 
         description = await self._call_vision_model(image_bytes)
         if description is None:
-            self._logger.warning("视觉模型未返回描述，跳过该图片（仅记录日志）")
             return ""
 
         # 存入数据库
@@ -355,6 +351,12 @@ class ImageParseService:
             )
             content = response.get("content", "")
             text = content.strip() if isinstance(content, str) else str(content)
+            if not text:
+                self._logger.warning(
+                    "视觉模型返回空图片描述",
+                    image_hash=hashlib.md5(image_bytes).hexdigest()[:16],
+                    image_bytes_len=len(image_bytes),
+                )
             return text if text else None
         except asyncio.TimeoutError:
             self._logger.warning(

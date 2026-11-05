@@ -6,8 +6,8 @@ covers:
   - packages/chat/src/neobot_chat/schema/exceptions.py
   - app/src/neobot_app/bootstrap/_providers.py
 
-verified_against: 264696d
-verified_hash: aad370f717e4
+verified_against: d525a5b
+verified_hash: 26b08c90efbf
 ---
 
 # 05b Provider 实现与原生视觉降级：注册表 · 三种供应商 · 异常契约 · 包装器
