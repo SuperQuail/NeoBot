@@ -313,3 +313,78 @@ describe('Usage 用量页悬停提示', () => {
     expect(screen.getByText('用量数据库暂不可用')).toBeInTheDocument();
   });
 });
+
+it('区分未计价与小额费用，并显示最近调用的缓存用量', async () => {
+  seriesUsage.mockResolvedValue({
+    ok: true,
+    data: { ...PAYLOAD, totals: { ...PAYLOAD.totals, cost_cny: 0.0008, unpriced_calls: 1 } },
+    error: null,
+    status: 200,
+  });
+  usageRecords.mockResolvedValue({
+    ok: true,
+    data: {
+      items: [
+        {
+          module: 'agent:memory',
+          model_name: 'flash',
+          input_tokens: 1200,
+          output_tokens: 3,
+          cache_hit_tokens: 900,
+          cost_cny: 0,
+          cost_source: 'unpriced',
+        },
+      ],
+    },
+    error: null,
+    status: 200,
+  });
+  render(<Usage />);
+  expect(await screen.findByText('¥0.0008', { selector: 'dd' })).toBeInTheDocument();
+  expect(screen.getByText(/1 次未计价/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '最近调用' }));
+  const table = screen.getByRole('region', { name: '最近调用明细' });
+  expect(within(table).getByText('档案总结')).toBeInTheDocument();
+  expect(within(table).getByText('1,200')).toBeInTheDocument();
+  expect(within(table).getByText('900')).toBeInTheDocument();
+  expect(within(table).getByText('未配置价格')).toBeInTheDocument();
+});
+
+it('部分单价待核对时保留已计价小计并标出分项', async () => {
+  const row = {
+    calls: 1,
+    input_tokens: 1000000,
+    output_tokens: 100000,
+    cost_cny: 0.7,
+    partial_calls: 1,
+  };
+  seriesUsage.mockResolvedValue({
+    ok: true,
+    data: { ...PAYLOAD, totals: row, points: [{ ...row, at: '2026-09-27T13:00:00Z' }] },
+    error: null,
+    status: 200,
+  });
+  const item = { module: 'agent:memory', cost_source: 'partial', cost_cny: 0.7 };
+  usageRecords.mockImplementation(async (_hours, _limit, details) => ({
+    ok: true,
+    status: 200,
+    error: null,
+    data: {
+      items: [
+        details
+          ? {
+              ...item,
+              cost_detail: { components: { cache_hit: 0, output: 0.3 }, unpriced_components: ['cache_hit'] },
+            }
+          : item,
+      ],
+    },
+  }));
+  render(<Usage />);
+  expect(await screen.findByText('¥0.70', { selector: 'dd' })).toBeInTheDocument();
+  expect(screen.getByText('1 次部分待核价')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '最近调用' }));
+  fireEvent.click(screen.getByRole('button', { name: '查看分项' }));
+  const dialog = screen.getByRole('dialog', { name: '调用计费详情' });
+  expect(await within(dialog).findByText('待核价', { exact: true })).toBeInTheDocument();
+});

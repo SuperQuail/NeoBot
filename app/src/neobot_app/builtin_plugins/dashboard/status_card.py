@@ -226,11 +226,15 @@ async def _collect_usage(ctx: Any, console: Any) -> list[dict[str, Any]]:
         output_tokens = sum(int(point.get("output_tokens") or 0) for point in points)
         cache_tokens = sum(int(point.get("cache_hit_tokens") or 0) for point in points)
         cost = sum(float(point.get("cost_cny") or 0.0) for point in points)
+        unknown = sum(int(point.get("unpriced_calls", 0)) + int(point.get("unverified_zero_calls", 0)) for point in points)
+        pending = unknown + sum(int(point.get("partial_calls", 0)) for point in points)
+        amount = "—" if unknown and unknown == calls else _format_amount(cost)
+        amount_label = f"已计价金额（{pending} 次待核价）" if pending else "金额"
         parts.append(
             _kv(
                 title,
                 [
-                    ("金额", _format_amount(cost)),
+                    (amount_label, amount),
                     ("输入 Token", _format_int(input_tokens)),
                     ("输出 Token", _format_int(output_tokens)),
                     ("缓存命中 Token", _format_int(cache_tokens)),

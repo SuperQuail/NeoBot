@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import replace
 from typing import Any, Iterable, Mapping
 
 from .constants import (
@@ -12,6 +13,7 @@ from .constants import (
     SOURCE_ERROR,
     SOURCE_TIMEOUT,
     BILLING_MAX_INFLIGHT,
+    _BUILTIN_PATH,
 )
 from .core import (
     BillingSettings,
@@ -184,6 +186,8 @@ class EvaluateMixin:
             settings=settings,
             elapsed_ms=elapsed,
         )
+        if policy.path == _BUILTIN_PATH:
+            outcome = replace(outcome, uses_price_table=True)
         self._record_eval(name, outcome)
         return outcome
 

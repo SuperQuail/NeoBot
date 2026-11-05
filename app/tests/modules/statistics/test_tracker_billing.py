@@ -182,7 +182,9 @@ async def test_disabled_matches_legacy_formula(tmp_path, session_factory):
     assert len(records) == 1
     assert records[0].cost_cny == expected_builtin()
     assert records[0].cost_source == "builtin"
-    assert records[0].cost_detail is None
+    assert json.loads(records[0].cost_detail)["components"] == {
+        "cache_hit": 0.0, "cache_miss": 1.0, "output": 2.0,
+    }
 
 
 async def test_no_billing_service_matches_legacy(tmp_path, session_factory):
@@ -431,3 +433,74 @@ async def test_unknown_model_is_skipped(tmp_path, session_factory):
     tracker = UsageTracker(session_factory, logger=RecordingLogger(), billing=make_billing())
     await tracker.record(model_name="ghost", **RECORD_ARGS)
     assert await fetch_records(session_factory) == []
+
+
+@pytest.mark.parametrize(
+    ("price", "output_price", "expected_cost", "expected_source"),
+    [(0.0, 0.0, 0.0, "unpriced"), (0.0, 2.0, 0.0, "unpriced"), (2.0, 0.0, 2000.0, "builtin")],
+)
+async def test_billion_tokens_are_priced_or_reported_as_unpriced(
+    session_factory, price, output_price, expected_cost, expected_source
+):
+    from neobot_storage.repositories.usage import SqlAlchemyUsageRepository
+
+    register_model("billion", input_price=price, output_price=output_price)
+    tracker = UsageTracker(session_factory)
+    await tracker.record(
+        module="agent:memory",
+        model_name="deepseek-flash",
+        registered_key="billion",
+        input_tokens=1_000_000_000,
+        output_tokens=0,
+    )
+    record, = await fetch_records(session_factory)
+    assert record.cost_cny == expected_cost
+    assert record.cost_source == expected_source
+    async with session_factory() as session:
+        point, = await SqlAlchemyUsageRepository(session).series_since()
+    assert point["input_tokens"] == 1_000_000_000
+    assert point["cost_cny"] == expected_cost
+    assert point["unpriced_calls"] == int(expected_source == "unpriced")
+
+
+async def test_full_cache_hit_is_not_charged_as_uncached(session_factory):
+    register_model("cache")
+    tracker = UsageTracker(session_factory)
+    await tracker.record(
+        module="agent:memory",
+        model_name="deepseek-flash",
+        registered_key="cache",
+        input_tokens=1_000_000,
+        output_tokens=100_000,
+        cache_hit_tokens=1_000_000,
+        cache_miss_tokens=0,
+    )
+    record, = await fetch_records(session_factory)
+    assert record.input_tokens == record.cache_hit_tokens
+    assert record.cost_cny == pytest.approx(0.2)
+
+
+
+@pytest.mark.parametrize("script", ["", "deepseek_peak_valley"])
+async def test_partial_price_preserves_subtotal_and_marks_missing_cache_rate(session_factory, script):
+    register_model("partial", billing_script=script, input_price=2.0, output_price=3.0)
+    tracker = UsageTracker(session_factory, billing=make_billing())
+    await tracker.record(
+        module="agent:memory",
+        model_name="deepseek-flash",
+        registered_key="partial",
+        input_tokens=1_000_000,
+        output_tokens=100_000,
+        cache_hit_tokens=800_000,
+    )
+    record, = await fetch_records(session_factory)
+    assert record.cost_source == "partial"
+    assert record.cost_cny in (pytest.approx(0.35), pytest.approx(0.7))
+    assert json.loads(record.cost_detail)["unpriced_components"] == ["cache_hit"]
+    from neobot_storage.repositories.usage import SqlAlchemyUsageRepository
+
+    async with session_factory() as session:
+        point, = await SqlAlchemyUsageRepository(session).series_since()
+    assert point["partial_calls"] == 1
+    assert point["unpriced_calls"] == 0
+    assert point["cost_cny"] == record.cost_cny

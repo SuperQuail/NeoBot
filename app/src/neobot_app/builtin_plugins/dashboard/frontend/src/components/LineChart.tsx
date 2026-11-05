@@ -26,6 +26,7 @@ export interface LineChartProps {
   name?: string;
   /** 工作台图表随可用空间伸缩；其它页面保持原有高度。 */
   fit?: boolean;
+  leftPadding?: number;
   /** 在图内显示稀疏日期刻度，完整标签仍显示在提示中。 */
   showXAxis?: boolean;
   /** 独立格式化轴标签，悬停仍保留完整时间。 */
@@ -60,6 +61,7 @@ export default function LineChart({
   fmtValue,
   name,
   fit = false,
+  leftPadding = PAD.l,
   showXAxis = false,
   xTickFormatter,
   extraRows,
@@ -114,9 +116,9 @@ export default function LineChart({
   }, [fit]);
 
   // 保证 innerW 不为负
-  const W = Math.max(PAD.l + PAD.r + 1, width);
+  const W = Math.max(leftPadding + PAD.r + 1, width);
   const H = fit ? height : DEFAULT_H;
-  const innerW = W - PAD.l - PAD.r;
+  const innerW = W - leftPadding - PAD.r;
   const innerH = H - PAD.t - PAD.b;
 
   const numeric = values.map(toNumber);
@@ -125,7 +127,7 @@ export default function LineChart({
   const stepX = n > 1 ? innerW / (n - 1) : 0;
 
   /** 数据点序号 → 绘图区 x 坐标（与 pts 同一口径） */
-  const xOf = (index: number) => PAD.l + index * stepX;
+  const xOf = (index: number) => leftPadding + index * stepX;
 
   // 公共 svg 属性：宽度跟随容器，高度固定，viewBox 用实测宽度
   const ariaLabel = (() => {
@@ -162,7 +164,7 @@ export default function LineChart({
     const py = event.clientY - rect.top;
     const scale = rect.width / W;
     const vx = px / scale;
-    const raw = stepX > 0 ? Math.round((vx - PAD.l) / stepX) : 0;
+    const raw = stepX > 0 ? Math.round((vx - leftPadding) / stepX) : 0;
     const index = Math.min(n - 1, Math.max(0, raw));
     setHover({ index, px, py, vy: event.clientY });
   };
@@ -215,11 +217,21 @@ export default function LineChart({
     started = true;
   }
 
-  // 面积
-  const vpts = pts.filter((p): p is [number, number] => p != null);
-  let dArea = 'M' + vpts.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' L');
-  dArea += ` L${vpts[vpts.length - 1][0].toFixed(1)},${zeroY}`;
-  dArea += ` L${vpts[0][0].toFixed(1)},${zeroY} Z`;
+  // 分段填色，未知用量所在的区间保持断开。
+  let dArea = '';
+  let startX: number | null = null;
+  let endX = 0;
+  for (const point of [...pts, null]) {
+    if (point) {
+      const [x, y] = point;
+      dArea += `${startX === null ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)} `;
+      startX ??= x;
+      endX = x;
+    } else if (startX !== null) {
+      dArea += `L${endX.toFixed(1)},${zeroY} L${startX.toFixed(1)},${zeroY} Z `;
+      startX = null;
+    }
+  }
 
   const yTicks = min < 0 ? Array.from(new Set([min, 0, max])) : [0, max / 2, max];
 
@@ -279,8 +291,8 @@ export default function LineChart({
             const y = PAD.t + (1 - (v - min) / (max - min || 1)) * innerH;
             return (
               <g key={i}>
-                <line x1={PAD.l} y1={y} x2={W - PAD.r} y2={y} />
-                <text x={PAD.l - 6} y={y + 3} textAnchor="end">
+                <line x1={leftPadding} y1={y} x2={W - PAD.r} y2={y} />
+                <text x={leftPadding - 6} y={y + 3} textAnchor="end">
                   {fmtTick(v)}
                 </text>
               </g>

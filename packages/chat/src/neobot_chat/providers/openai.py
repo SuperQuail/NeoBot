@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from typing import Any
+from urllib.parse import urlsplit
 
 from neobot_chat.providers.base import (
     BaseHTTPProvider,
@@ -103,6 +104,8 @@ class OpenAIProvider(BaseHTTPProvider):
         }
         if stream:
             payload["stream"] = True
+            if urlsplit(self.base_url).hostname == "api.openai.com":
+                payload["stream_options"] = {"include_usage": True}
         self._apply_payload_options(
             payload,
             temperature=self.temperature,
@@ -118,6 +121,27 @@ class OpenAIProvider(BaseHTTPProvider):
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
         return payload
+
+    @staticmethod
+    def _parse_usage(usage: object) -> dict[str, Any] | None:
+        if not isinstance(usage, dict) or not usage:
+            return None
+        result = {
+            "input_tokens": usage.get("prompt_tokens", 0),
+            "output_tokens": usage.get("completion_tokens", 0),
+        }
+        details = usage.get("prompt_tokens_details")
+        hit = usage.get("prompt_cache_hit_tokens")
+        if hit is None and isinstance(details, dict):
+            hit = details.get("cached_tokens")
+        if hit is not None:
+            result["cache_hit_tokens"] = hit
+        if usage.get("prompt_cache_miss_tokens") is not None:
+            result["cache_miss_tokens"] = usage["prompt_cache_miss_tokens"]
+        completion = usage.get("completion_tokens_details")
+        if isinstance(completion, dict):
+            result["completion_tokens_details"] = completion
+        return result
 
     async def chat(
         self, messages: list[Message], tools: list[ToolDefinition] | None = None
@@ -154,13 +178,10 @@ class OpenAIProvider(BaseHTTPProvider):
 
         set_finish_reason(result, raw_choice.get("finish_reason"))
 
-        usage = data.get("usage")
-        if isinstance(usage, dict):
+        usage = self._parse_usage(data.get("usage"))
+        if usage is not None:
             extensions = dict(result.get("extensions") or {})
-            extensions["usage"] = {
-                "input_tokens": usage.get("prompt_tokens", 0),
-                "output_tokens": usage.get("completion_tokens", 0),
-            }
+            extensions["usage"] = usage
             result["extensions"] = extensions
 
         return result
@@ -175,6 +196,7 @@ class OpenAIProvider(BaseHTTPProvider):
         content_parts: list[str] = []
         tool_calls_map: dict[int, ToolCall] = {}
         finish_reason: str | None = None
+        stream_usage: dict[str, Any] | None = None
 
         async for line in self._stream_with_retry(
             "POST", "/chat/completions", json=payload
@@ -190,6 +212,9 @@ class OpenAIProvider(BaseHTTPProvider):
                 data = json.loads(data_str)
             except json.JSONDecodeError:
                 continue
+            usage = self._parse_usage(data.get("usage"))
+            if usage is not None:
+                stream_usage = usage
             choices = data.get("choices", [])
             if not choices:
                 continue
@@ -234,4 +259,8 @@ class OpenAIProvider(BaseHTTPProvider):
             message["tool_calls"] = normalized_tool_calls(
                 [tool_calls_map[i] for i in sorted(tool_calls_map)]
             )
+        if stream_usage is not None:
+            extensions = dict(message.get("extensions") or {})
+            extensions["usage"] = stream_usage
+            message["extensions"] = extensions
         yield ChatChunk(message=message)

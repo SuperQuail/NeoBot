@@ -8,6 +8,13 @@ from aiohttp import web
 from ._common import _json_ok, _json_error, _parse_cost_detail
 
 
+def _usage_totals(rows: list[dict[str, Any]]) -> dict[str, int | float]:
+    keys = ("calls", "input_tokens", "output_tokens", "cache_hit_tokens", "unpriced_calls", "partial_calls", "unverified_zero_calls")
+    totals: dict[str, int | float] = {key: sum(int(row.get(key, 0)) for row in rows) for key in keys}
+    totals["cost_cny"] = sum(float(row["cost_cny"]) for row in rows)
+    return totals
+
+
 class StatsMixin:
     async def series_usage(self, request: web.Request) -> web.Response:
         """用量图表：按小时/天汇总金额与 Token，并给出模型/模块排行。"""
@@ -53,13 +60,6 @@ class StatsMixin:
                     "error": str(exc),
                 }
             )
-        totals = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_cny": 0.0}
-        for point in points:
-            totals["calls"] += int(point["calls"])
-            totals["input_tokens"] += int(point["input_tokens"])
-            totals["output_tokens"] += int(point["output_tokens"])
-            totals["cost_cny"] += float(point["cost_cny"])
-        totals["cost_cny"] = round(totals["cost_cny"], 6)
         return _json_ok(
             {
                 "available": True,
@@ -69,7 +69,7 @@ class StatsMixin:
                 "points": points,
                 "models": models,
                 "modules": modules,
-                "totals": totals,
+                "totals": _usage_totals(points),
             }
         )
 
@@ -86,32 +86,12 @@ class StatsMixin:
             cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=hours)
             async with session_factory() as session:
                 repo = SqlAlchemyUsageRepository(session)
-                records = await repo.stats_since(cutoff)
+                groups = await repo.breakdown_by_module_since(cutoff, limit=None)
         except Exception as exc:
             self.logger.warning(f"读取模型用量失败: {exc}")
             return _json_ok({"available": False, "items": [], "totals": {}, "error": str(exc)})
-        by_module: dict[str, dict[str, float]] = {}
-        totals = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_cny": 0.0}
-        for record in records:
-            group = by_module.setdefault(
-                str(record.module_name), {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_cny": 0.0}
-            )
-            group["calls"] += 1
-            group["input_tokens"] += int(record.input_tokens or 0)
-            group["output_tokens"] += int(record.output_tokens or 0)
-            group["cost_cny"] += float(record.cost_cny or 0.0)
-            totals["calls"] += 1
-            totals["input_tokens"] += int(record.input_tokens or 0)
-            totals["output_tokens"] += int(record.output_tokens or 0)
-            totals["cost_cny"] += float(record.cost_cny or 0.0)
-        items = [
-            {"module": module, **values}
-            for module, values in sorted(
-                by_module.items(), key=lambda item: item[1]["cost_cny"], reverse=True
-            )
-        ]
-        totals["cost_cny"] = round(totals["cost_cny"], 6)
-        return _json_ok({"available": True, "hours": hours, "totals": totals, "items": items})
+        items = [{"module": group.pop("module_name"), **group} for group in groups]
+        return _json_ok({"available": True, "hours": hours, "totals": _usage_totals(items), "items": items})
 
     # ------------------------------------------------------------------
     # 计费（spec(4) Part A）
@@ -326,13 +306,13 @@ class StatsMixin:
             cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=hours)
             async with session_factory() as session:
                 repo = SqlAlchemyUsageRepository(session)
-                records = await repo.stats_since(cutoff)
+                records = await repo.stats_since(cutoff, limit=limit)
         except Exception as exc:
             self.logger.warning(f"读取用量明细失败: {exc}")
             return _json_ok({"available": False, "items": [], "error": str(exc)})
 
         items: list[dict[str, Any]] = []
-        for record in records[:limit]:
+        for record in records:
             source = str(getattr(record, "cost_source", "") or "builtin")
             item: dict[str, Any] = {
                 "at": record.created_at.isoformat() if record.created_at else "",
@@ -345,10 +325,16 @@ class StatsMixin:
                 "cache_miss_tokens": int(record.cache_miss_tokens or 0),
                 "cost_cny": float(record.cost_cny or 0.0),
                 "cost_source": source,
+                "unverified_zero": (
+                    source == "builtin"
+                    and not record.cost_detail
+                    and not record.cost_cny
+                    and bool(record.input_tokens or record.output_tokens)
+                ),
                 "cost_source_kind": (
                     "script"
                     if source.startswith("script:")
-                    else ("fallback" if source.startswith("fallback:") else "builtin")
+                    else ("fallback" if source.startswith("fallback:") else source)
                 ),
                 "negative": float(record.cost_cny or 0.0) < 0,
             }

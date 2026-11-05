@@ -20,6 +20,7 @@ from .constants import (
     _DEEPSEEK_OFF_PEAK_RATIO,
 )
 
+
 def builtin_deepseek_peak_valley(ctx: Mapping[str, Any]) -> dict[str, Any]:
     """DeepSeek 峰谷计价（**内置**脚本）。
 
@@ -37,21 +38,21 @@ def builtin_deepseek_peak_valley(ctx: Mapping[str, Any]) -> dict[str, Any]:
     """
     occurred_at = datetime.fromisoformat(str(ctx["occurred_at"]))
     now = occurred_at.astimezone(timezone(timedelta(hours=8)))
-    is_peak = now.weekday() < 5 and any(
-        start <= now.time() < end for start, end in _DEEPSEEK_PEAK_WINDOWS
-    )
+    is_peak = now.weekday() < 5 and any(start <= now.time() < end for start, end in _DEEPSEEK_PEAK_WINDOWS)
     ratio = 1.0 if is_peak else _DEEPSEEK_OFF_PEAK_RATIO
 
     usage = ctx.get("usage") or {}
     pricing = ctx.get("pricing") or {}
     hit = usage.get("cache_hit_tokens") or 0
-    miss = usage.get("cache_miss_tokens") or usage.get("input_tokens") or 0
+    miss = uncached_input_tokens(usage.get("input_tokens") or 0, hit, usage.get("cache_miss_tokens") or 0)
     out = usage.get("output_tokens") or 0
     parts = {
         "cache_hit": hit * float(pricing.get("cache_hit_price_per_mtokens") or 0.0) / 1e6,
         "cache_miss": miss * float(pricing.get("input_price_per_mtokens") or 0.0) / 1e6,
         "output": out * float(pricing.get("output_price_per_mtokens") or 0.0) / 1e6,
     }
+    if (hit or miss or out) and not any(parts.values()):
+        raise ValueError("DeepSeek 峰谷计费需要配置本次用量对应的模型单价")
     window = "高峰" if is_peak else "空闲 ×0.5"
     return {
         "cost_cny": sum(parts.values()) * ratio,
@@ -66,6 +67,11 @@ BUILTIN_SCRIPTS: Mapping[str, Callable[[Mapping[str, Any]], Any]] = {
 }
 
 
+def uncached_input_tokens(input_tokens: int, cache_hit_tokens: int, cache_miss_tokens: int) -> int:
+    # 旧调用方用 0 表示没有提供 miss；全命中时 total - hit 也恰好为 0。
+    return cache_miss_tokens if cache_miss_tokens > 0 else max(0, input_tokens - cache_hit_tokens)
+
+
 def builtin_cost(
     *,
     input_tokens: int,
@@ -74,8 +80,8 @@ def builtin_cost(
     cache_miss_tokens: int,
     pricing: Any,
 ) -> float:
-    """内建线性计费公式（**逐字**保留改造前 tracker.py 的实现）。"""
-    effective_cache_miss = cache_miss_tokens if cache_miss_tokens > 0 else input_tokens
+    """按缓存命中、未命中和输出分别计费。"""
+    effective_cache_miss = uncached_input_tokens(input_tokens, cache_hit_tokens, cache_miss_tokens)
     return (
         cache_hit_tokens * float(getattr(pricing, "cache_hit_price_per_mtokens", 0.0) or 0.0)
         + effective_cache_miss * float(getattr(pricing, "input_price_per_mtokens", 0.0) or 0.0)
@@ -103,9 +109,7 @@ class BillingSettings:
             return cls()
         return cls(
             enabled=bool(getattr(section, "enabled", False)),
-            timeout_ms=_coerce_int(
-                getattr(section, "timeout_ms", DEFAULT_TIMEOUT_MS), DEFAULT_TIMEOUT_MS
-            ),
+            timeout_ms=_coerce_int(getattr(section, "timeout_ms", DEFAULT_TIMEOUT_MS), DEFAULT_TIMEOUT_MS),
             reload_on_change=bool(getattr(section, "reload_on_change", True)),
             record_detail=bool(getattr(section, "record_detail", True)),
         )
@@ -137,6 +141,7 @@ class BillingOutcome:
     detail_json: str | None = None
     elapsed_ms: float = 0.0
     error: str = ""
+    uses_price_table: bool = False
 
     @property
     def is_script(self) -> bool:
@@ -236,9 +241,7 @@ def build_billing_context(
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
     local = moment.astimezone()
-    usage_payload = {
-        key: usage.get(key) for key in _USAGE_KEYS if isinstance(usage, Mapping) and key in usage
-    }
+    usage_payload = {key: usage.get(key) for key in _USAGE_KEYS if isinstance(usage, Mapping) and key in usage}
     payload: dict[str, Any] = {
         "model_key": str(model_key or ""),
         "model_name": str(model_name or ""),

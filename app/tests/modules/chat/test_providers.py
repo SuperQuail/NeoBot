@@ -828,3 +828,26 @@ def test_registered_model_forwards_reasoning_effort_to_every_provider():
         assert isinstance(provider, expected_cls), provider_name
         assert provider.reasoning_effort == "xhigh", provider_name
         assert provider.reasoning_effort_format == "claude", provider_name
+
+
+
+@pytest.mark.asyncio
+async def test_openai_stream_keeps_usage_only_frame_and_cached_input():
+    client = _FakeClient([_FakeStreamResponse([
+        'data: {"choices":[{"delta":{"content":"hello"}}],"usage":null}',
+        'data: {"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":4,'
+        '"prompt_tokens_details":{"cached_tokens":16}}}',
+        'data: [DONE]',
+    ])])
+    provider = OpenAIProvider(api_key="k", model="m")
+    provider._client = client  # type: ignore[assignment]
+    try:
+        assert provider._build_payload([], None, stream=True)["stream_options"] == {"include_usage": True}
+        messages = [chunk.message async for chunk in provider.stream([]) if chunk.message]
+        assert len(messages) == 1
+        usage = messages[0]["extensions"]["usage"]
+        assert usage["input_tokens"] == 20
+        assert usage["output_tokens"] == 4
+        assert usage["cache_hit_tokens"] == 16
+    finally:
+        await provider.close()

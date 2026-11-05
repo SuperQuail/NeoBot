@@ -1,0 +1,1 @@
+const a=(n=0)=>n!==0&&Math.abs(n)<1e-8?n<0?"−<¥0.00000001":"<¥0.00000001":"¥"+n.toLocaleString("zh-CN",{minimumFractionDigits:2,maximumFractionDigits:8}),s=n=>(n.unpriced_calls||0)+(n.unverified_zero_calls||0),t=n=>s(n)+(n.partial_calls||0),c=n=>s(n)>0&&s(n)===n.calls?"—":a(n.cost_cny);export{c as a,a as f,t as p};

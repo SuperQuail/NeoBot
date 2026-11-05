@@ -130,19 +130,24 @@
 .analytics-aggregate-table :is(th, td):not(:first-child) {
   text-align: right;
 }
-.analytics-records-table th:first-child {
-  width: 25%;
+.analytics-table .analytics-records-table {
+  min-width: 640px;
+  font-size: 12px;
 }
-.analytics-records-table th:nth-child(3) {
-  width: 24%;
+.analytics-records-table th:first-child {
+  width: 20%;
+}
+.analytics-records-table th:nth-child(3),
+.analytics-records-table th:nth-child(5) {
+  width: 18%;
 }
 .analytics-records-table th:nth-child(4) {
-  width: 15%;
+  width: 10%;
 }
 .analytics-records-table th:last-child {
   width: 90px;
 }
-.analytics-records-table :is(th, td):nth-child(n + 4) {
+.analytics-records-table :is(th, td):nth-child(n + 3) {
   text-align: right;
 }
 .analytics-records-table .btn-sm {
