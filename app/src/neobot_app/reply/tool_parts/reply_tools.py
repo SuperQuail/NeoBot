@@ -69,6 +69,10 @@ class _ReplyToolsMixin:
         )
         split_preview = ReplySplitPreview(text, tuple(segments)) if matched_preview else None
         send_original = bool(args.get("send_original") is True)
+        # raw 是 send_original 的「本来就不该切」入口：两者共用同一条整段直发路径
+        # （跳过自动切分、AI 检查与超限拦截），差别只在语义与回执的 raw 标记。
+        raw = bool(args.get("raw") is True)
+        send_original = send_original or raw
         if raw_segments and not segments and not send_original:
             # text is only a placeholder when explicit segments were selected.
             text = ""
@@ -162,17 +166,40 @@ class _ReplyToolsMixin:
                 "也不要把思考过程/草稿当成正文；请只发送你要说的那句话，然后重试。"
             )
         self._ai_check_pending = False
-        if send_original and text.strip():
-            display = text.strip()
-            return f"已发送原文：{display[:300]}{'...' if len(display) > 300 else ''}"
-        if segments:
-            seg_text = "\n---\n".join(segments)
-            return f"已发送 {len(segments)} 条消息：\n{seg_text}"
-        preview = self._preview_split(text)
-        preview_text = "\n---\n".join(preview.messages)
+        # 回执按「实际发出去的样子」给：raw/send_original 是整段一条，segments 逐条，
+        # 其余是自动切分结果——与 sender._build_reply_messages 同一套口径。
+        preview: ReplyPostProcessResult | None = None
+        if send_original:
+            # sender 在 text 清洗后为空时退回 segments，回执跟它保持一致。
+            bodies = [text.strip()] if text.strip() else list(segments or [])
+        elif segments:
+            bodies = list(segments)
+        else:
+            preview = self._preview_split(text)
+            bodies = list(preview.messages)
+        parts: list[dict] = [
+            {"index": index, "type": "image", "image": number}
+            for index, number in enumerate(images or [], start=1)
+        ]
+        for body in bodies:
+            parts.append({"index": len(parts) + 1, "type": "text", "text": body})
         if images:
-            return f"已发送（{len(images)} 张图片 + {len(preview.messages)} 条文字）：\n{preview_text}"
-        return f"已发送 {len(preview.messages)} 条消息：\n{preview_text}"
+            summary = f"已发送（{len(images)} 张图片 + {len(bodies)} 条文字）"
+        elif send_original:
+            summary = "已发送原文：1 条消息"
+        else:
+            summary = f"已发送 {len(bodies)} 条消息"
+        payload = {
+            "ok": True,
+            "raw": raw,
+            "sent_count": len(parts),
+            "parts": parts,
+            "summary": summary,
+        }
+        if preview is not None and preview.fallback_used:
+            payload["fallback_used"] = True
+            payload["reason"] = preview.reason
+        return json.dumps(payload, ensure_ascii=False)
 
     def remember_split_preview(self, result: ReplyPostProcessResult) -> None:
         """Record only previews actually exposed to the model, never internal checks."""
@@ -319,6 +346,11 @@ class _ReplyToolsMixin:
                 "直接输出的正文不会发送，且本轮会被判为失败。"
                 "发送图片时每张图片单独作为一条消息发送，文字另外单独发送；"
                 "图片与文字不会合并到同一条消息里。"
+                "文字发送时自动按句子切分：标点或换行处断开，相邻的短句可能再合并，"
+                "所以一段话通常会变成几条消息，回执会列出实际发成的每条内容；"
+                "超过长度或条数上限时会被拦截，回执会提示改用 send_long_reply 或分批发送。"
+                "需要原样整段发送（代码、排版或必须保持完整的一段话）时设 raw=true："
+                "不切分、整段作为一条消息发出，也不触发 AI 回复检查或超限拦截。"
                 "本工具只发送消息，不结束本轮；发送后仍可继续调用其他工具。"
                 "只有 cancel 会结束一轮回复；允许在同一轮内多次发送，用于长任务的开工与进度。"
                 "text/segments 只放你要说的那句话本身：不要带消息编号、发送者名字、"
@@ -363,7 +395,11 @@ class _ReplyToolsMixin:
                         },
                         "send_original": {
                             "type": "boolean",
-                            "description": "AI回复检查开启且切分结果有问题但仍要发送时设为 true；会发送原文，不再切分，但不会跳过输出安全清洗。对于 @ 和引用消息也适用。",
+                            "description": "AI回复检查开启且切分结果有问题但仍要发送时设为 true；会发送原文，不再切分，但不会跳过输出安全清洗。对于 @ 和引用消息也适用。与 raw 走同一条整段直发路径，只是语义不同：send_original 是「检查后仍要发原文」，raw 是「本来就不需要切分」。",
+                        },
+                        "raw": {
+                            "type": "boolean",
+                            "description": "需要原样整段发送时设为 true：不切分，把清洗后的整段文本作为一条消息发出，也不触发 AI 回复检查与超限拦截。适合代码、排版或必须保持完整的一段话；默认 false（自动按句子切分）。与 send_original 等价于同一条直发路径，只是意图不同。",
                         },
                     },
                     "required": ["text"],
