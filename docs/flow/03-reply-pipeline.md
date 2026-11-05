@@ -10,7 +10,7 @@ covers:
   - app/src/neobot_app/reply/vision_context.py
   - app/src/neobot_app/reply/flow_registry.py
 verified_against: d525a5b
-verified_hash: e9bc53a1081d
+verified_hash: 858fff0fac5d
 ---
 
 # 03 回复管线：状态机 / 冷却 / 静默看门狗 / 发送与后处理
@@ -298,3 +298,6 @@ flowchart LR
   并且一侧 CJK、另一侧字母数字的空格按排版删掉（`_normalize_cjk_latin_spaces`）。
   边界要留神：英文靠「句号/感叹号之后那个空格」断句（半角 `.` `!` `?` 不在分隔符集合里），
   所以**不能**把所有空格都设成不可切，否则 `Hello. World. Bye.` 再也不分句。
+* **反引号包住的命令不参与分句**：`split_into_sentences_w_remove_punctuation` 在分句前
+  把行内 `` `...` `` 换成占位符，整段不切分、空格不丢，还原时再去掉两侧反引号；
+  引用型内容（`` `cancel` ``、`` `*(note)*` ``）保留反引号，否则会变成裸控制词/注记被兜底丢弃。
