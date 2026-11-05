@@ -28,6 +28,7 @@ class _BuildState:
     credential_manager: Any = None
     debug_recorder: Any = None
     drawing_manager: Any = None
+    dsh_gateway: Any = None
     emoji_service: Any = None
     file_server: Any = None
     friend_queue: Any = None
@@ -50,6 +51,7 @@ class _BuildState:
     provider_error_message: Any = None
     provider_logger: Any = None
     reply_orchestrator: Any = None
+    router_mode: Any = None
     sandbox: Any = None
     scheduled_task_manager: Any = None
     self_heal_manager: Any = None

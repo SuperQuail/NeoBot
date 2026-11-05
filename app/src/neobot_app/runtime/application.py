@@ -113,6 +113,8 @@ class NeoBotApplication(Generic[T]):
         self._problem_solver_manager = problem_solver_manager
         self._markdown_image_converter = markdown_image_converter
         self._plugin_runtime = plugin_runtime
+        #: 可选的 DSH daemon 网关运行时；由组合根装配后赋值，None 表示未启用。
+        self.dsh_gateway: Any = None
         # 待机模式下插件运行时归「核心」所有：停 bot 运行时不得把面板一起停掉。
         self._owns_plugins = bool(owns_plugins)
         self._report_service = report_service
@@ -192,6 +194,12 @@ class NeoBotApplication(Generic[T]):
             if getattr(self, "_owns_plugins", True) and self._plugin_runtime is not None:
                 log_stage("plugin_start")
                 await self._plugin_runtime.start_all()
+            # 插件 handler 已在 start_all 里注册，网关放在其后监听，避免空窗期丢命令。
+            dsh_gateway = getattr(self, "dsh_gateway", None)
+            if dsh_gateway is not None:
+                log_stage("dsh_gateway")
+                started.append("dsh_gateway")
+                await dsh_gateway.start()
             log_stage("chat_stream")
             await self.chat_stream.initialize()
             if self._emoji_service is not None:
@@ -253,6 +261,9 @@ class NeoBotApplication(Generic[T]):
     async def _rollback_start(self, started: list[str]) -> BaseException | None:
         """Rollback startup without letting one cleanup failure skip later resources."""
         steps: list[tuple[str, Callable[[], Any]]] = []
+        dsh_gateway = getattr(self, "dsh_gateway", None)
+        if "dsh_gateway" in started and dsh_gateway is not None:
+            steps.append(("dsh gateway", dsh_gateway.close))
         if "report_task" in started:
             steps.append(("report task", self._cancel_report_task))
         if "event_ingress" in started:
@@ -490,6 +501,10 @@ class NeoBotApplication(Generic[T]):
     async def _stop_components(self) -> BaseException | None:
         self._shutdown_event.set()
         steps: list[tuple[str, Callable[[], Any]]] = []
+        dsh_gateway = getattr(self, "dsh_gateway", None)
+        if dsh_gateway is not None:
+            # 先停网关：daemon 的同步请求可能在插件 shutdown 后打到已释放的对象上。
+            steps.append(("dsh gateway", dsh_gateway.close))
         if self._self_heal_manager is not None:
             steps.append(("self heal manager", self._self_heal_manager.shutdown))
         if self._problem_solver_manager is not None:

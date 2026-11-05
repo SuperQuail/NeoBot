@@ -59,6 +59,8 @@ class _CoreMixin:
         reviewer: Any = None,
         auto_review: bool = True,
         review_timeout_seconds: float = 30.0,
+        router_mode: Any = None,
+        router_config: Any = None,
     ) -> None:
         self._native_vision_provider = native_vision_provider
         self._reviewer = reviewer
@@ -104,6 +106,9 @@ class _CoreMixin:
         self._credential_manager = credential_manager
         self._config = config
         self._config_update_callback = config_update_callback
+        #: Router 模式（dsh_router 插件启用后收窄工具面）；None 表示无此能力。
+        self._router_mode = router_mode
+        self._router_config = router_config
         self._last_wait_time = 0.0
         self._session_tasks: set[asyncio.Task] = set()
         self._session_task_info: dict[int, dict] = {}

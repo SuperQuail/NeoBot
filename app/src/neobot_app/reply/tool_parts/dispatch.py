@@ -11,6 +11,29 @@ from neobot_chat.schema.types import ToolDefinition
 from neobot_app.reply.tool_parts.common import _SKILL_GUARD_BASE_TOOLS, _SKILL_INTERNAL_KEYS
 
 
+#: Router 模式始终保留的基础工具：回复控制流 + 技能读取 + 只读文件工具。
+#: 刻意不含 agents__delegate / 写文件 / 执行命令，避免 Router 绕开工具面裁剪。
+_ROUTER_BASE_TOOLS = frozenset(
+    {
+        "cancel",
+        "send_reply",
+        "split_reply",
+        "send_long_reply",
+        "wait",
+        "check_background_tasks",
+        "cancel_task",
+        "skills__read_manifest",
+        "skills__read_resource",
+        "skills__view_instructions",
+        "skills__load_tools",
+        "read",
+        "glob",
+        "grep",
+        "read_image",
+    }
+)
+
+
 class _DispatchMixin:
     def _shared_agent_tools(self) -> Any:
         from neobot_app.skills.agent_tools_skill import AgentToolsSkill
@@ -76,6 +99,20 @@ class _DispatchMixin:
         # allowed-tools 白名单拦截（须在 skills__read_* 等所有路由之前）
         if not self.is_tool_authorized(name):
             return self.authorization_error(name)
+        # Router 模式执行期兜底：展示面已裁过，但模型仍可能按旧上下文/程序绑定
+        # 直接点名执行类工具。
+        if self._router_mode_active() and not self._router_tool_allowed(name):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "code": "ROUTER_MODE_DENIED",
+                    "error": (
+                        "当前会话处于 Router 模式，只能使用只读工具与 DSH 任务工具；"
+                        "需要写文件/执行命令请先退出 Router 模式"
+                    ),
+                },
+                ensure_ascii=False,
+            )
         if not name.startswith("agent_tools__") and self._skill_manager is not None:
             from neobot_app.skills.agent_tools_skill import AgentToolsSkill
             from neobot_app.agent_tools.contracts import ToolContext
@@ -217,12 +254,47 @@ class _DispatchMixin:
         finally:
             CURRENT_INVOCATION.reset(marker)
 
+    def _router_pipeline_key(self) -> str:
+        """本执行器对应的聊天流 key（``kind:id``）；取不到时返回空串。"""
+        if self._conv_kind and self._conv_id:
+            return f"{self._conv_kind}:{self._conv_id}"
+        return ""
+
+    def _router_mode_active(self) -> bool:
+        """当前聊天流是否处于 Router 模式。"""
+        service = self._router_mode
+        key = self._router_pipeline_key()
+        if service is None or not key:
+            return False
+        try:
+            return bool(service.is_active(key))
+        except Exception:
+            return False
+
+    def _router_allowed_names(self) -> frozenset[str]:
+        """Router 模式允许的工具名：配置名单 + 基础只读/回复工具。"""
+        configured = getattr(self._router_config, "allowed_tools", None) or ()
+        return _ROUTER_BASE_TOOLS | frozenset(str(name) for name in configured)
+
+    def _router_tool_allowed(self, name: str) -> bool:
+        """Router 模式下某个工具是否允许（dsh_router__* 始终放行）。"""
+        if str(name).startswith("dsh_router__"):
+            return True
+        return name in self._router_allowed_names()
+
     def _filter_tool_defs(self, tools: list[ToolDefinition]) -> list[ToolDefinition]:
         # allowed-tools 白名单：非空时过滤掉「不在白名单且不在 allowed_tools 中」的工具
         if self._allowed_tools:
             allowed = _SKILL_GUARD_BASE_TOOLS | self._allowed_tools
             tools = [t for t in tools if t["function"]["name"] in allowed]
         tools = [t for t in tools if self.is_tool_authorized(t["function"]["name"])]
+        # Router 模式：只留只读/回复基础设施与 dsh_router__*。
+        # 注意不要写进 is_tool_authorized：它同时驱动技能激活，会把
+        # skills__load_tools 候选一起裁掉。
+        if self._router_mode_active():
+            tools = [
+                t for t in tools if self._router_tool_allowed(t["function"]["name"])
+            ]
         names: set[str] = set()
         for tool in tools:
             name = tool["function"]["name"]

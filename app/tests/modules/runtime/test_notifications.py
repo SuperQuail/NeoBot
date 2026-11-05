@@ -257,3 +257,47 @@ async def test_no_orchestrator_means_no_mirror_and_no_error():
     await hub.publish(source="drawing", kind="group", conversation_id="1", content="x")
     assert hub._queues["group:1"].qsize() == 1
 
+
+
+class _BlockingPolicy:
+    """模拟群聊窗口关闭：evaluate 永远拒绝。"""
+
+    def evaluate(self, _conversation):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(allowed=False, reason="outside_window")
+
+
+@pytest.mark.asyncio
+async def test_force_bypasses_policy_for_private_only():
+    """私聊 force 跳过发言策略；群聊 force 仍抛 SpeechBlocked。"""
+    from types import SimpleNamespace
+
+    from neobot_contracts.ports.speaking import SpeechBlocked
+
+    hub = BackgroundNotificationHub(
+        orchestrator=SimpleNamespace(
+            speaking_policy=_BlockingPolicy(),
+            is_pipeline_key_active=lambda _key: True,
+        )
+    )
+
+    # 私聊：force 不应抛异常，通知入队等 poll
+    await hub.publish(
+        source="dsh_worker",
+        kind="private",
+        conversation_id="42",
+        content="审批请求",
+        force=True,
+    )
+    assert hub._queues["private:42"].qsize() == 1
+
+    # 群聊：force 不生效，仍按发言策略拒绝
+    with pytest.raises(SpeechBlocked):
+        await hub.publish(
+            source="dsh_worker",
+            kind="group",
+            conversation_id="99",
+            content="审批请求",
+            force=True,
+        )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from neobot_app.bootstrap._pipeline import build_pipelines_and_app, register_host_services
 from neobot_app.bootstrap._skills import build_plugin_runtime
+from neobot_app.dsh_gateway import build_gateway_runtime
 from neobot_app.runtime.application import NeoBotApplication
 from neobot_app.runtime.process_restart import ProcessRestartSignal
 from neobot_app.runtime.process_stop import ProcessStopSignal
@@ -64,6 +65,13 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
     _build_hot_reload_services(state)
     _build_prompt_analysis(state)
 
+    # DSH daemon 网关：默认关闭。enabled=False 时返回 None（不建服务、不监听端口）；
+    # 启动/关闭动作挂在 NeoBotApplication 的生命周期步骤上（见 runtime/application.py）。
+    state.dsh_gateway = build_gateway_runtime(
+        config=getattr(getattr(getattr(config, "agent", None), "dsh", None), "gateway", None),
+        logger=logger_factory.get_logger("app.dsh_gateway"),
+    )
+
     # 核心对象清单（软重启复用，实际构建见 parts/core_services.py / core_reuse.py）：
     # "logger_factory" / "config" / "prompt_store" / "sleep_service" / "standby_service" /
     # "avatar_store" / "debug_recorder" / "storage" / "usage" / "adapter" /
@@ -81,6 +89,7 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
     creator_image_service = state.creator_image_service
     credential_manager = state.credential_manager
     drawing_manager = state.drawing_manager
+    dsh_gateway = state.dsh_gateway
     emoji_service = state.emoji_service
     friend_queue = state.friend_queue
     group_queue = state.group_queue
@@ -95,6 +104,7 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
     prompt_store = state.prompt_store
     provider = state.provider
     reply_orchestrator = state.reply_orchestrator
+    router_mode = state.router_mode
     sandbox = state.sandbox
     scheduled_task_manager = state.scheduled_task_manager
     self_heal_manager = state.self_heal_manager
@@ -117,6 +127,11 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             "group_queue": (group_queue, "群消息队列"),
             "friend_queue": (friend_queue, "好友消息队列"),
             "reply_orchestrator": (reply_orchestrator, "回复编排器"),
+            "router_mode": (router_mode, "Router 模式登记处（dsh_router 插件使用）"),
+            "dsh_gateway": (
+                dsh_gateway.service if dsh_gateway is not None else None,
+                "DSH daemon 网关（开发机 daemon 出站轮询 / 长轮询下发命令）",
+            ),
             "emoji_service": (emoji_service, "表情包服务"),
             "tts_service": (tts_service, "语音合成服务"),
             "file_server": (file_server, "文件服务器"),
@@ -224,6 +239,9 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
         avatar_store=avatar_store,
         owns_plugins=owns_plugins,
     )
+
+    # 网关的 start/close 挂在应用生命周期上；构造期只装配，不监听端口。
+    application.dsh_gateway = dsh_gateway
 
     # 面板等服务需要读取 application（重启入口）
     register_host_services(plugin["host_facade"], {"application": (application, "应用运行时")})

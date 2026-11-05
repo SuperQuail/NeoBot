@@ -150,8 +150,29 @@ class AgentToolsetMixin:
                 getattr(getattr(getattr(self._config, "agent", None), "tools", None), "review_timeout_seconds", 30.0)
                 or 30.0
             ),
+            router_mode=getattr(self, "_router_mode", None),
+            router_config=getattr(
+                getattr(getattr(self._config, "agent", None), "dsh", None), "router", None
+            ),
         )
         self._tool_executors[event.event_id] = reply_toolset.executor
+        # Router 模式激活时预激活插件技能包（dsh_router__*）：
+        # 工具默认是按需加载的，每轮新建执行器会丢掉加载状态；不预激活的话
+        # Router 下一轮就看不到 dsh_router__send/status/cancel。
+        router_mode = getattr(self, "_router_mode", None)
+        if router_mode is not None:
+            try:
+                flow = f"{conv_kind}:{conv_id}"
+                if router_mode.is_active(flow):
+                    required = router_mode.required_skills()
+                    if required:
+                        reply_toolset.executor.preactivate_skills(required)
+            except Exception as exc:
+                self._logger.warning(
+                    "Router 模式预激活技能包失败，已忽略",
+                    event_id=event.event_id,
+                    error=str(exc),
+                )
         # 本轮预激活（插件消息意图入口）：在构建工具表**之前**加载指定技能包，
         # 使这些 {plugin}__{tool} 在本轮模型调用里即可直接调用。
         if event.preactivate and self._skill_manager is not None:

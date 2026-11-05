@@ -76,6 +76,36 @@ class PromptBlocksMixin:
         if not text:
             return None
         return {"role": "user", "content": text}
+    def _build_router_context_message(self, pipeline_key: str) -> dict[str, str] | None:
+        """Router 模式任务表 user 块；未启用/无内容时返回 None。
+
+        与时间块一样每次模型调用前追加，不写进 system 前缀——Router 模式是
+        临时状态，混进稳定前缀会让上下文缓存失效。
+        """
+        service = getattr(self, "_router_mode", None)
+        if service is None or not pipeline_key:
+            return None
+        router_config = getattr(
+            getattr(getattr(self._config, "agent", None), "dsh", None), "router", None
+        )
+        if router_config is not None and not bool(
+            getattr(router_config, "inject_task_table", True)
+        ):
+            return None
+        try:
+            text = service.build_context(pipeline_key)
+        except Exception:
+            return None
+        if not text:
+            return None
+        return {
+            "role": "user",
+            "content": (
+                "[Router 任务表]\n"
+                f"{text}\n"
+                "（系统注入的任务状态，不是用户发言；不要整表复述给用户。）"
+            ),
+        }
     def _build_avoid_repeat_message(self) -> dict[str, str] | None:
         """渲染防重复提醒 user 块（每次管线激活追加一次）;分区关闭或为空时返回 None。"""
         if not self._prompt_section_enabled("avoid_repeat"):

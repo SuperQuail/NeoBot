@@ -129,6 +129,7 @@ class ReplyOrchestrator(LifecycleHooksMixin, LifecycleStartMixin, LifecycleShutd
         config_update_callback: Any = None,
         sleep_service: Any = None,
         standby_service: Any = None,
+        router_mode: Any = None,
     ) -> None:
         self._adapter = adapter
         self._sleep_service = sleep_service
@@ -164,6 +165,8 @@ class ReplyOrchestrator(LifecycleHooksMixin, LifecycleStartMixin, LifecycleShutd
         self._file_server = file_server
         self._credential_manager = credential_manager
         self._config_update_callback = config_update_callback
+        #: Router 模式服务：None 时表示未启用 DSH 集成，普通会话行为不变。
+        self._router_mode = router_mode
         self._tasks: set[asyncio.Task[None]] = set()
         self._callback_tasks: set[asyncio.Task[None]] = set()
         #: 事件 ID -> 该次回复创建的工具执行器。

@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from .dsh import DshConfig
 from .media import ImageCreationConfig, VisionDetect
 from .memory import AgentMemory
 
@@ -314,3 +315,4 @@ class Agent:
     self_healing: AgentSelfHeal = field(default_factory=AgentSelfHeal)
     vision_detect: VisionDetect = field(default_factory=VisionDetect)
     tools: AgentToolsConfig = field(default_factory=AgentToolsConfig)
+    dsh: DshConfig = field(default_factory=DshConfig)
