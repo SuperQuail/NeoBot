@@ -54,6 +54,11 @@ export interface PromptKeyView {
 
 export interface PromptSectionView {
   name: string;
+  /** 块注册表元数据：阶段 / 作用域 / 顺序 / 说明；自定义分区未登记时为空 */
+  stage?: string | null;
+  scope?: string[] | null;
+  order?: number | null;
+  note?: string | null;
   keys: PromptKeyView[];
   /** 分区内的 enabled 开关（未写时为 null） */
   enabled?: boolean | null;
