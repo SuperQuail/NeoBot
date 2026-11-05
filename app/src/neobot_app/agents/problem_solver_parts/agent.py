@@ -14,6 +14,7 @@ from neobot_chat.schema.types import (
 from neobot_chat.tools.toolset import ToolSpec, Toolset
 from neobot_contracts.ports.logging import Logger, NullLogger
 
+from neobot_app.prompt.assets import raw_text
 from neobot_app.statistics.tracker import (
     CURRENT_CONVERSATION_ID,
     CURRENT_CONVERSATION_KIND,
@@ -62,7 +63,7 @@ class ProblemSolverAgent:
         cfg = config or ProblemSolverAgentConfig()
         self.description = EXPOSED_TO_MAIN_AGENT_DESCRIPTION
         if prompt_store is not None:
-            desc = prompt_store.get("problem_solver", "description", default="")
+            desc = raw_text("problem_solver", "description", store=prompt_store)
             if desc:
                 self.description = desc
         self._manager = manager

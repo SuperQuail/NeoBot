@@ -89,6 +89,7 @@ class BilibiliReplyEngine:
         max_task_chars: int = 300,
         timeout_seconds: float = 60.0,
         flow_registry: Any = None,
+        prompt_store: Any = None,
     ) -> None:
         self._provider = provider
         self._archive = archive_service
@@ -103,6 +104,7 @@ class BilibiliReplyEngine:
         self._max_task_chars = max(0, int(max_task_chars))
         self._timeout_seconds = float(timeout_seconds)
         self._flow_registry = flow_registry
+        self._prompt_store = prompt_store
 
     @property
     def available(self) -> bool:
@@ -121,7 +123,7 @@ class BilibiliReplyEngine:
         ctx.bot_data = ctx.bot_data or self._bot_data
         ctx.other_name = ctx.other_name or self._other_name
         await self._enrich_comment(ctx)
-        system, user = build_comment_prompt(ctx)
+        system, user = build_comment_prompt(ctx, prompt_store=self._prompt_store)
         key = f"bilibili_comment:{ctx.target_oid}"
         return await self._generate(
             system,
@@ -139,7 +141,7 @@ class BilibiliReplyEngine:
         ctx.bot_data = ctx.bot_data or self._bot_data
         ctx.other_name = ctx.other_name or self._other_name
         await self._enrich_private(ctx)
-        system, user = build_private_prompt(ctx)
+        system, user = build_private_prompt(ctx, prompt_store=self._prompt_store)
         key = f"bilibili_private:{ctx.sender_uid}"
         return await self._generate(
             system,
@@ -162,6 +164,7 @@ class BilibiliReplyEngine:
             bot_uid=self._bot_uid,
             bot_data=self._bot_data,
             other_name=self._other_name,
+            prompt_store=self._prompt_store,
         )
         return await self._generate(
             system,

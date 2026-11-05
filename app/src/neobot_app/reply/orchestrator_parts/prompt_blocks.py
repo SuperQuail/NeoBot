@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from neobot_app.prompt.assets import text
 from neobot_app.prompt.composer import PromptComposer, make_context
-from neobot_app.prompt.labels import render_label
 from neobot_app.prompt.context import Scope
 from neobot_app.time_context import get_current_time_values
 from neobot_app.reply.event import ReplyEvent
@@ -46,10 +46,13 @@ class PromptBlocksMixin:
         return composer
 
     def _prompt_template(self, key: str, sub: str = "template") -> str:
-        """读取提示词分区模板:文件(自定义覆盖默认) -> 内置兜底。"""
-        from neobot_app.prompt.store import get_template_value
+        """读取提示词模板：统一走 assets（custom → 内置 → 兜底）。"""
+        from neobot_app.prompt.assets import raw_text
 
-        return get_template_value(getattr(self, "_prompt_store", None), key, sub)
+        try:
+            return raw_text(key, sub, store=getattr(self, "_prompt_store", None))
+        except KeyError:
+            return ""
 
     def _prompt_section_enabled(self, key: str, default: bool = True) -> bool:
         store = getattr(self, "_prompt_store", None)
@@ -177,22 +180,23 @@ class PromptBlocksMixin:
 
     # ── 技能 / 恢复块 ──
 
-    @staticmethod
-    def _render_skills(skills: list[Any]) -> str:
-        lines: list[str] = []
-        for skill in skills:
-            skill_id = getattr(skill, "qualified_name", None) or skill.name
-            description = getattr(skill, "description", "") or ""
-            lines.append(
-                render_label(
-                    "skills",
-                    "item",
-                    '<skill id="{skill_id}" description="{description}" />',
-                    skill_id=_xml_escape(str(skill_id)),
-                    description=_xml_escape(str(description)),
-                )
+    def _render_skills(self, skills: list[Any]) -> str:
+        store = getattr(self, "_prompt_store", None)
+        lines = [
+            text(
+                "label_skills",
+                "item",
+                store=store,
+                values={
+                    "skill_id": _xml_escape(
+                        str(getattr(skill, "qualified_name", None) or skill.name)
+                    ),
+                    "description": _xml_escape(str(getattr(skill, "description", "") or "")),
+                },
             )
-        return "\n".join(lines)
+            for skill in skills
+        ]
+        return "\n".join(line for line in lines if line)
 
     def _render_resume_context(self, new_member_text: str) -> str:
         """渲染群聊挂起恢复的说明文本(模板来自 [group_chat_resume])。"""

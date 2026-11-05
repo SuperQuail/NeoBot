@@ -56,16 +56,20 @@ class PromptContext:
         return self.store.enabled(section, default=default)
 
     def raw_template(self, section: str, key: str = "template") -> str:
-        """读取分区模板：文件（自定义覆盖默认）→ 内置兜底。
+        """读取分区模板：统一走 ``prompt/assets.py``（custom → 内置 → 兜底）。
 
-        store 不可用（面板/测试替身）时直接读随包分发的内置模板，保证注册表
-        里的块仍按默认文案渲染，而不是整段消失。
+        未注册为提示词资产的分区退回旧的 store/packaged 解析，保证面板等场景兼容。
         """
-        from neobot_app.prompt.store import get_template_value, packaged_template
+        from neobot_app.prompt.assets import raw_text
 
-        if self.store is None:
-            return packaged_template(section, key)
-        return get_template_value(self.store, section, key)
+        try:
+            return raw_text(section, key, store=self.store)
+        except KeyError:
+            from neobot_app.prompt.store import get_template_value, packaged_template
+
+            if self.store is None:
+                return packaged_template(section, key)
+            return get_template_value(self.store, section, key)
 
     def render(self, section: str, key: str = "template") -> str:
         """渲染分区模板；空模板/全部占位符缺失时返回空串。"""

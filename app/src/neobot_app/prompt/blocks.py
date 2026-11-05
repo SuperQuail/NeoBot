@@ -42,6 +42,8 @@ class Stage(str, Enum):
     SYSTEM_APPEND = "system_append"
     #: 不直接注入，供其它模板通过 ``{块id}`` 占位符引用的共享片段
     FRAGMENT = "fragment"
+    #: 不直接注入，只登记文本资产：内部标签、B站提示词等，由 assets 统一读取
+    CATALOG = "catalog"
     CONTEXT = "context"
     RUNTIME_DATA = "runtime_data"
     REMINDER = "reminder"
@@ -69,7 +71,7 @@ _CATALOG_ONLY_IDS = frozenset(
         "member_archive_hint",
     }
 )
-_CATALOG_STAGES = frozenset({Stage.TOOL_RESULT, Stage.STATUS, Stage.SUBAGENT})
+_CATALOG_STAGES = frozenset({Stage.TOOL_RESULT, Stage.STATUS, Stage.SUBAGENT, Stage.CATALOG})
 
 
 # ── 条件谓词 ──────────────────────────────────────────────────────────────────
@@ -492,6 +494,191 @@ BLOCKS: tuple[Block, ...] = (
         key="system_prompt",
         note="沙箱维护子 Agent",
     ),
+    # ── 统一注册的 catalog 资产（标签 / B站提示词，不经过注入管道） ──
+    Block(
+        "bili_comment",
+        Stage.CATALOG,
+        frozenset({Scope.LIVE}),
+        key="target_info",
+        extra_keys=("your_memory", "target_comment_section", "comment_tree_section", "reply_guide", "up_prefix", "summary", "url", "desc", "target_detail", "replied_note"),
+        note="B站提示词（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "bili_comment_tree",
+        Stage.CATALOG,
+        frozenset({Scope.LIVE}),
+        key="truncated_head",
+        extra_keys=("target_marker", "replied_marker", "node_line", "content_line", "content_truncated"),
+        note="B站提示词（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "bili_data_rule",
+        Stage.CATALOG,
+        frozenset({Scope.LIVE}),
+        key="template",
+        extra_keys=(),
+        note="B站提示词（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "bili_defaults",
+        Stage.CATALOG,
+        frozenset({Scope.LIVE}),
+        key="bot_name",
+        extra_keys=("unknown", "empty_task", "empty_message", "no_target_comment", "missing_comment", "private_peer", "live_room", "live_viewer", "live_bot_name"),
+        note="B站提示词（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "bili_diary",
+        Stage.CATALOG,
+        frozenset({Scope.LIVE}),
+        key="cot",
+        extra_keys=("material_tool", "rules", "requirement", "length", "truncated", "date", "material"),
+        note="B站提示词（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "bili_history",
+        Stage.CATALOG,
+        frozenset({Scope.LIVE}),
+        key="empty",
+        extra_keys=("truncated", "bot_line", "peer_line", "sender_fallback"),
+        note="B站提示词（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "bili_human_feel",
+        Stage.CATALOG,
+        frozenset({Scope.LIVE}),
+        key="template",
+        extra_keys=(),
+        note="B站提示词（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "bili_identity",
+        Stage.CATALOG,
+        frozenset({Scope.LIVE}),
+        key="block",
+        extra_keys=("name", "uid", "alias"),
+        note="B站提示词（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "bili_live",
+        Stage.CATALOG,
+        frozenset({Scope.LIVE}),
+        key="reply_to_rule",
+        extra_keys=("danmaku_history", "scheduled_history", "room", "viewer", "room_memory", "viewer_memory", "recent_history", "frame", "pending_danmaku", "scheduled_task", "scheduled_message", "observation_task", "observation_user", "asr_wrapper", "summary_system"),
+        note="B站提示词（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "bili_live_media",
+        Stage.CATALOG,
+        frozenset({Scope.LIVE}),
+        key="frame_description",
+        extra_keys=(),
+        note="B站提示词（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "bili_private",
+        Stage.CATALOG,
+        frozenset({Scope.LIVE}),
+        key="peer",
+        extra_keys=("peer_with_remark", "target", "impression", "memory", "history_section", "current_message"),
+        note="B站提示词（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "bili_profile",
+        Stage.CATALOG,
+        frozenset({Scope.LIVE}),
+        key="section",
+        extra_keys=("entry", "uname", "uid", "line"),
+        note="B站提示词（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "bili_profile_labels",
+        Stage.CATALOG,
+        frozenset({Scope.LIVE}),
+        key="remark",
+        extra_keys=("profile", "known_gender", "avatar_analysis", "bilibili_memory", "qq_memory"),
+        note="B站提示词（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "bili_reply_requirements",
+        Stage.CATALOG,
+        frozenset({Scope.LIVE}),
+        key="template",
+        extra_keys=(),
+        note="B站提示词（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "bili_reply_tool_rule",
+        Stage.CATALOG,
+        frozenset({Scope.LIVE}),
+        key="template",
+        extra_keys=(),
+        note="B站提示词（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "bili_scene",
+        Stage.CATALOG,
+        frozenset({Scope.LIVE}),
+        key="comment",
+        extra_keys=("private", "general", "live"),
+        note="B站提示词（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "bili_shared",
+        Stage.CATALOG,
+        frozenset({Scope.LIVE}),
+        key="current_time",
+        extra_keys=("related_video",),
+        note="B站提示词（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "bili_task",
+        Stage.CATALOG,
+        frozenset({Scope.LIVE}),
+        key="cross_chat",
+        extra_keys=("background", "instruction"),
+        note="B站提示词（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "label_keyword_reaction",
+        Stage.CATALOG,
+        ALL_SCOPES,
+        key="entry",
+        extra_keys=(),
+        note="内部提示词标签（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "label_message_meta",
+        Stage.CATALOG,
+        ALL_SCOPES,
+        key="line",
+        extra_keys=("age_just_now", "age_minutes", "age_hours", "age_days", "replied_prefix", "all_new", "new_content_open", "new_content_close", "previous_content"),
+        note="内部提示词标签（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "label_skills",
+        Stage.CATALOG,
+        ALL_SCOPES,
+        key="item",
+        extra_keys=(),
+        note="内部提示词标签（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "label_tool_packages",
+        Stage.CATALOG,
+        ALL_SCOPES,
+        key="entry",
+        extra_keys=(),
+        note="内部提示词标签（统一注册）；数据在 prompts.toml",
+    ),
+    Block(
+        "label_vision_context",
+        Stage.CATALOG,
+        ALL_SCOPES,
+        key="intro",
+        extra_keys=("sender", "message_number", "message_id", "image_index", "fallback_index", "label_separator", "mode_default", "mode_active", "default_label", "tool_label", "tool_prefix", "not_loaded", "load_failed"),
+        note="内部提示词标签（统一注册）；数据在 prompts.toml",
+    ),
 )
 
 
@@ -547,6 +734,11 @@ def validate_blocks() -> list[str]:
             )
     for index, left in enumerate(BLOCKS):
         for right in BLOCKS[index + 1 :]:
-            if left.stage is right.stage and left.order == right.order and (left.scopes & right.scopes):
+            if (
+                left.stage is right.stage
+                and left.stage is not Stage.CATALOG
+                and left.order == right.order
+                and (left.scopes & right.scopes)
+            ):
                 problems.append(f"同一阶段同一作用域 order 冲突: {left.id} / {right.id} ({left.stage.value})")
     return problems

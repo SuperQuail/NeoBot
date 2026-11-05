@@ -93,6 +93,9 @@ def test_listed_template_text_is_not_blank():
 
 @pytest.mark.parametrize("stage", list(Stage), ids=lambda stage: stage.value)
 def test_orders_are_unique_within_stage_and_scope(stage: Stage):
+    if stage is Stage.CATALOG:
+        # catalog 资产不参与注入排序，order 无意义
+        return
     for scope in Scope:
         orders = [block.order for block in blocks_for(stage, scope)]
         assert len(orders) == len(set(orders)), f"{stage.value}/{scope.value} order 冲突"

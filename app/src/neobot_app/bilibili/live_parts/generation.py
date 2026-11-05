@@ -22,6 +22,7 @@ from neobot_app.bilibili.prompts import (
     build_live_scheduled_prompt,
 )
 from neobot_app.bilibili.tool_reply import ToolReply, run_tool_reply
+from neobot_app.prompt import assets
 
 
 class _GenerationMixin:
@@ -99,7 +100,9 @@ class _GenerationMixin:
                 [
                     {
                         "role": "system",
-                        "content": _text("live", "summary_system"),
+                        "content": _text(
+                            "live", "summary_system", store=self._prompt_store
+                        ),
                     },
                     {"role": "user", "content": lines},
                 ],
@@ -151,9 +154,7 @@ class _GenerationMixin:
         if self._prompt_store is None:
             return ""
         try:
-            from neobot_app.prompt.store import get_template_value
-
-            return str(get_template_value(self._prompt_store, "live_chat") or "").strip()
+            return assets.text("live_chat", store=self._prompt_store)
         except Exception:
             return ""
 
@@ -168,7 +169,9 @@ class _GenerationMixin:
             room_memory=self._room_memory.get(str(room_id), ""),
             frame_context=await self.frame_context(room_id),
         )
-        system, content = build_live_observation_prompt(ctx, self._live_persona())
+        system, content = build_live_observation_prompt(
+            ctx, self._live_persona(), prompt_store=self._prompt_store
+        )
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": content},
@@ -241,10 +244,14 @@ class _GenerationMixin:
             viewer_memory=await self._load_user_memory(user_id),
             frame_context="",
         )
-        system, content = build_live_danmaku_prompt(ctx, self._live_persona())
+        system, content = build_live_danmaku_prompt(
+            ctx, self._live_persona(), prompt_store=self._prompt_store
+        )
         asr_context = await self._live_asr_context(room_id)
         if asr_context:
-            content += "\n" + _text("live", "asr_wrapper").format(asr_context=asr_context)
+            content += "\n" + _text(
+                "live", "asr_wrapper", store=self._prompt_store
+            ).format(asr_context=asr_context)
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": content},
@@ -281,10 +288,14 @@ class _GenerationMixin:
             frame_context="",
             scheduled_prompt=prompt,
         )
-        system, content = build_live_scheduled_prompt(ctx, self._live_persona())
+        system, content = build_live_scheduled_prompt(
+            ctx, self._live_persona(), prompt_store=self._prompt_store
+        )
         asr_context = await self._live_asr_context(room_id)
         if asr_context:
-            content += "\n" + _text("live", "asr_wrapper").format(asr_context=asr_context)
+            content += "\n" + _text(
+                "live", "asr_wrapper", store=self._prompt_store
+            ).format(asr_context=asr_context)
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": content},

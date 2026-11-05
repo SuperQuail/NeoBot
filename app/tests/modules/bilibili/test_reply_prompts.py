@@ -234,34 +234,118 @@ def test_live_danmaku_prompt_uses_blocks_and_twenty_chars() -> None:
 
 def test_bili_human_feel_matches_qq() -> None:
     import tomllib
-    from neobot_app.bilibili.prompts import BILI_HUMAN_FEEL
 
     from neobot_app.prompt.store import DEFAULT_TEMPLATE_FILE
 
     with DEFAULT_TEMPLATE_FILE.open("rb") as handle:
-        qq = tomllib.load(handle)["human_feel"]["template"]
-    assert BILI_HUMAN_FEEL.strip() == qq.strip()
+        data = tomllib.load(handle)
+    assert (
+        data["bili_human_feel"]["template"].strip()
+        == data["human_feel"]["template"].strip()
+    )
 
 
-
-def test_prompt_texts_are_loaded_from_toml() -> None:
-    """提示词文本来自同目录 prompts.toml（数据文件），组装结果里直接使用。"""
+def test_prompt_texts_are_loaded_from_unified_toml() -> None:
+    """提示词文本来自统一的 prompts.toml（bili_* 分区），组装结果里直接使用。"""
     import tomllib
-    from pathlib import Path
 
     from neobot_app.bilibili import prompts
+    from neobot_app.prompt.store import DEFAULT_TEMPLATE_FILE
 
-    with (Path(prompts.__file__).with_name("prompts.toml")).open("rb") as handle:
+    with DEFAULT_TEMPLATE_FILE.open("rb") as handle:
         data = tomllib.load(handle)
-    assert prompts.BILI_HUMAN_FEEL == data["human_feel"]["template"]
-    assert prompts.BILI_DATA_RULE == data["data_rule"]["template"]
-    assert prompts.LIVE_REPLY_TO_RULE == data["live"]["reply_to_rule"]
-    # 直播 ASR 包裹/弹幕总结/画面描述也走数据文件
-    assert prompts._text("live", "asr_wrapper") == data["live"]["asr_wrapper"]
-    assert prompts._text("live", "summary_system") == data["live"]["summary_system"]
-    assert prompts._text("live_media", "frame_description") == data["live_media"]["frame_description"]
     system, _ = build_comment_prompt(_comment_context())
-    assert data["reply_requirements"]["template"] in system
+    assert data["bili_human_feel"]["template"] in system
+    assert data["bili_data_rule"]["template"] in system
+    assert data["bili_reply_requirements"]["template"] in system
+    assert data["bili_scene"]["comment"] in system
+    # 直播 ASR 包裹/弹幕总结/画面描述也走统一文件
+    assert (
+        prompts._text("live", "asr_wrapper").strip()
+        == data["bili_live"]["asr_wrapper"].strip()
+    )
+    assert (
+        prompts._text("live", "summary_system").strip()
+        == data["bili_live"]["summary_system"].strip()
+    )
+    assert (
+        prompts._text("live_media", "frame_description").strip()
+        == data["bili_live_media"]["frame_description"].strip()
+    )
+
+
+def _custom_store(tmp_path, text: str):
+    """建一个只写 custom/prompts.toml 的真实 PromptStore。"""
+    from neobot_app.prompt.store import PromptStore
+
+    custom = tmp_path / "prompts" / "custom" / "prompts.toml"
+    custom.parent.mkdir(parents=True)
+    custom.write_text(text, encoding="utf-8")
+    return PromptStore(tmp_path)
+
+
+def test_custom_store_overrides_comment_and_private_prompts(tmp_path) -> None:
+    store = _custom_store(
+        tmp_path,
+        '[bili_human_feel]\ntemplate = "自定义活人感-MARK"\n'
+        '[bili_comment]\ntarget_info = "<评论区>{target_info}</评论区>自定义评论区-MARK"\n'
+        '[bili_shared]\ncurrent_time = "<当前时间>{current_time}</当前时间>自定义时间-MARK"\n'
+        '[bili_private]\ntarget = "<聊天对象>{target}</聊天对象>自定义私信-MARK"\n'
+        '[bili_profile_labels]\nremark = "自定义备注-MARK"\n',
+    )
+    ctx = _comment_context()
+    ctx.commenter_profiles = [{"uname": "张三", "uid": 11, "remark": "老熟人"}]
+
+    system, user = build_comment_prompt(ctx, prompt_store=store)
+    assert "自定义活人感-MARK" in system
+    assert "自定义评论区-MARK" in user
+    assert "自定义时间-MARK" in user
+    assert "自定义备注-MARK" in user
+
+    private = PrivateMessageContext(
+        bot_name="Neo",
+        sender_name="王五",
+        sender_uid=55,
+        sender_remark="群友",
+        current_message="在吗",
+    )
+    system, user = build_private_prompt(private, prompt_store=store)
+    assert "自定义活人感-MARK" in system
+    assert "自定义私信-MARK" in user
+
+
+def test_custom_store_overrides_task_and_diary_prompts(tmp_path) -> None:
+    store = _custom_store(
+        tmp_path,
+        '[bili_task]\ncross_chat = "自定义跨聊天任务-MARK"\n'
+        '[bili_diary]\nrules = "自定义动态规则-MARK"\n',
+    )
+
+    system, _ = build_task_prompt("任务", prompt_store=store)
+    assert "自定义跨聊天任务-MARK" in system
+
+    system, _ = build_diary_prompt(
+        "素材", date_text="2026-10-20", prompt_store=store
+    )
+    assert "自定义动态规则-MARK" in system
+
+
+def test_custom_store_overrides_live_prompts(tmp_path) -> None:
+    from neobot_app.bilibili.prompts import (
+        LiveDanmakuContext,
+        build_live_danmaku_prompt,
+    )
+
+    store = _custom_store(
+        tmp_path,
+        '[bili_live]\nroom = "<直播间>{room}</直播间>自定义直播间-MARK"\n'
+        "danmaku_history = \"自定义历史-MARK {bot_name}\"\n",
+    )
+    ctx = LiveDanmakuContext(bot_name="弥音", room_name="房间", text="在吗")
+
+    system, user = build_live_danmaku_prompt(ctx, prompt_store=store)
+    assert "自定义历史-MARK 弥音" in system
+    assert "自定义直播间-MARK" in user
 
 
 def test_bilibili_prompts_include_configured_bot_data() -> None:

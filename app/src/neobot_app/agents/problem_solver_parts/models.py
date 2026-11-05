@@ -14,7 +14,7 @@ from neobot_chat.schema.types import (
     ToolGuardContext,
 )
 
-from neobot_app.prompt.store import packaged_template as _packaged_template
+from neobot_app.prompt.assets import raw_text as _raw_text
 from neobot_app.time_context import monotonic_seconds
 from neobot_app.agent_tools.contracts import ToolContext
 
@@ -24,13 +24,13 @@ _MAX_AGENT_ITERATIONS = 20
 
 # 提示词文本在 prompt/templates/prompts.toml（数据文件），这里只保留兼容导出名。
 # 任务模式说明:绑定工具运行时后按模式写入 [problem_solver.runtime] 的 {mode_note}
-_MODE_NOTE_PTC = _packaged_template("problem_solver", "runtime.mode_note_ptc")
-_MODE_NOTE_NATIVE = _packaged_template("problem_solver", "runtime.mode_note_native")
+_MODE_NOTE_PTC = _raw_text("problem_solver", "runtime.mode_note_ptc")
+_MODE_NOTE_NATIVE = _raw_text("problem_solver", "runtime.mode_note_native")
 
 EXPOSED_TO_MAIN_AGENT_NAME = "problem_solver"
 # TOML 里 description 按行折行保存；导出常量沿用旧的单行拼接（逐字兼容）。
-EXPOSED_TO_MAIN_AGENT_DESCRIPTION = _packaged_template("problem_solver", "description").replace("\n", "")
-EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = _packaged_template("problem_solver", "short_description")
+EXPOSED_TO_MAIN_AGENT_DESCRIPTION = _raw_text("problem_solver", "description").replace("\n", "")
+EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = _raw_text("problem_solver", "short_description")
 
 
 _SOLVER_CHAT_CONTEXT: ContextVar[str] = ContextVar("solver_chat_context", default="")

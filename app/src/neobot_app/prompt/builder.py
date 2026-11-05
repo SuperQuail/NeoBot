@@ -55,6 +55,7 @@ class PromptBuilder:
         self._keyword_reaction_builder = KeywordReactionBuilder(
             config.chat.key_word or [],
             logger=self._logger,
+            prompt_store=prompt_store,
         )
         self._adaptive_prompt_path = adaptive_prompt_path
         self._adaptive_prompt_cache: str | None = None
@@ -63,8 +64,13 @@ class PromptBuilder:
     # ── 模板读取 ──
 
     def _template(self, key: str, sub: str = "template") -> str:
-        """读取分区模板:文件(自定义覆盖默认) -> 内置兜底。"""
-        return get_template_value(self._store, key, sub)
+        """读取分区模板：统一走 assets（custom → 内置 → 兜底），未注册分区退回 store。"""
+        from neobot_app.prompt.assets import raw_text
+
+        try:
+            return raw_text(key, sub, store=self._store)
+        except KeyError:
+            return get_template_value(self._store, key, sub)
 
     def _show_boundary_markers(self) -> bool:
         return bool(
@@ -332,6 +338,7 @@ class PromptBuilder:
             include_boundary_markers=self._show_boundary_markers(),
             last_reply_message_id=last_reply_message_id,
             all_new=all_new,
+            prompt_store=self._store,
         )
 
     async def build_friend_chat_messages(
@@ -352,6 +359,7 @@ class PromptBuilder:
             include_boundary_markers=self._show_boundary_markers(),
             last_reply_message_id=last_reply_message_id,
             all_new=all_new,
+            prompt_store=self._store,
         )
 
     # ── 新出现的群友档案 ──
@@ -377,8 +385,6 @@ class PromptBuilder:
 
     def member_archive_hint(self) -> str:
         """群员档案未注入时给模型的按需读取提示（增量新成员块复用）。"""
-        if self._store is not None and not self._store.enabled("member_archive_hint"):
-            return ""
         return self._template("member_archive_hint")
 
     def build_group_chat_resume_text(

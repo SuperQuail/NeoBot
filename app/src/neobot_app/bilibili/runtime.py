@@ -105,6 +105,7 @@ class BilibiliRuntime:
             bot_uid=0,
             bot_data=bot_data,
             flow_registry=flow_registry,
+            prompt_store=prompt_store,
         )
         self.comment_monitor = BilibiliCommentMonitor.from_config(
             self.service, self.engine, cfg, data_dir=DATA_DIR
@@ -120,6 +121,7 @@ class BilibiliRuntime:
             data_dir=DATA_DIR,
             bot_name=bot_name,
             bot_data=bot_data,
+            prompt_store=prompt_store,
         )
         self.diary_skill = BilibiliDiarySkill(self.diary)
         live_bot_name = (

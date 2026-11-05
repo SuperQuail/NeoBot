@@ -295,7 +295,9 @@ class PromptStore:
         return default
 
 
-def fallback_template(key: str, sub: str = "template", default: str = "") -> str:
+def fallback_template(
+    key: str, sub: str = "template", default: str = "", *, strip: bool = True
+) -> str:
     """极端兜底:内置模板文件与运行时文件都不可用时使用的最小提示词(templates/fallback.toml)。"""
     value: Any = _FALLBACK_SECTIONS.get(key)
     if value is None:
@@ -304,14 +306,18 @@ def fallback_template(key: str, sub: str = "template", default: str = "") -> str
         value = value.get(part) if isinstance(value, dict) else None
         if value is None:
             return default
-    return str(value).strip() if isinstance(value, str) else str(value)
+    if isinstance(value, str):
+        return value.strip() if strip else value
+    return str(value)
 
 
 #: 内置模板文件的解析缓存：(mtime_ns, size) -> {分区: {键: 值}}
 _PACKAGED_CACHE: tuple[tuple[int, int] | None, dict[str, dict[str, Any]]] = (None, {})
 
 
-def packaged_template(key: str, sub: str = "template", default: str = "") -> str:
+def packaged_template(
+    key: str, sub: str = "template", default: str = "", *, strip: bool = True
+) -> str:
     """读取随包分发的内置模板分区（无 store 时的兜底，如面板/测试替身）。
 
     读取顺序：内置 templates/prompts.toml -> templates/fallback.toml -> default。
@@ -337,8 +343,8 @@ def packaged_template(key: str, sub: str = "template", default: str = "") -> str
         if value is None:
             break
     if isinstance(value, str) and value.strip():
-        return value.strip()
-    return fallback_template(key, sub, default)
+        return value.strip() if strip else value
+    return fallback_template(key, sub, default, strip=strip)
 
 
 def _atomic_write_text(path: Path, text: str) -> None:

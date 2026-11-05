@@ -168,6 +168,26 @@ async def test_comment_reply_generation_uses_provider() -> None:
     assert "你好" in user["content"]
 
 
+async def test_prompt_store_override_reaches_comment_prompt(tmp_path) -> None:
+    from neobot_app.prompt.store import PromptStore
+
+    custom = tmp_path / "prompts" / "custom" / "prompts.toml"
+    custom.parent.mkdir(parents=True)
+    custom.write_text(
+        '[bili_scene]\ncomment = "<场景>自定义评论场景-MARK</场景>"\n',
+        encoding="utf-8",
+    )
+    provider = FakeProvider("好哦")
+    engine = _engine(provider, prompt_store=PromptStore(tmp_path))
+
+    await engine.generate_comment_reply(_comment_ctx())
+
+    system = next(
+        item for item in provider.calls[0] if item.get("role") == "system"
+    )
+    assert "自定义评论场景-MARK" in system["content"]
+
+
 async def test_skip_returns_none() -> None:
     engine = _engine(FakeProvider("[SKIP]"))
 
