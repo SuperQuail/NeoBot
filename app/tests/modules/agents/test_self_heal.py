@@ -470,3 +470,35 @@ async def test_shutdown_closes_attached_agent_once() -> None:
     assert agent.close_calls == 1
     assert manager._agent is None
     assert manager.enabled is False
+
+
+# ── 提示词数据文件 ──
+
+
+def test_self_heal_prompts_are_loaded_from_template(tmp_path) -> None:
+    """首次唤起/重新唤起提示词来自 templates/prompts.toml，代码不留副本。"""
+    import tomlkit
+
+    from neobot_app.agents.self_heal_parts.models import HealTask
+    from neobot_app.prompt.store import DEFAULT_TEMPLATE_FILE, PromptStore, sync_default_prompts
+
+    section = tomlkit.parse(DEFAULT_TEMPLATE_FILE.read_text(encoding="utf-8")).unwrap()["self_heal"]
+    heal = HealTask(
+        task_id="heal_test01",
+        admin_account="10001",
+        trigger_reason="3 个未处理异常累积",
+        error_snapshot=[_payload("t1"), _payload("t2")],
+    )
+    manager = _make_manager()
+
+    prompt = manager._build_initial_prompt(heal)
+
+    assert manager._prompt_text("initial_prompt") == section["initial_prompt"].strip()
+    assert manager._prompt_text("resume_prompt") == section["resume_prompt"]
+    sync_default_prompts(tmp_path)
+    manager.set_prompt_store(PromptStore(tmp_path))
+    assert manager._prompt_text("resume_prompt") == section["resume_prompt"]
+    assert prompt.startswith("你被系统以自修复 Agent 身份唤醒")
+    assert "heal_test01" in prompt
+    assert "3 个未处理异常累积" in prompt
+    assert prompt.endswith("- 累积异常数: 2\n")

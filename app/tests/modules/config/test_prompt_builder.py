@@ -487,21 +487,25 @@ async def test_default_templates_carry_history_consistency_rules():
     sync_default_prompts(tmp)
     store = PromptStore(tmp)
 
+    # 群聊/私聊共用的规则与样例已抽到 [qq_chat] / [qq_chat_examples]
+    template = store.template("qq_chat") + store.template("qq_chat_examples")
+    assert "已经回答过" in template
+    assert "忽略自己之前说过的话" in template
+    assert "调用 send_reply 并把编号填进它的 reply_to 参数" in template
+    assert "[msg_id=" in template
+    # 无条件禁令：发出的每一条消息都不许以标注开头
+    assert "任何时候都禁止把它们写进你的回复" in template
+    # 针对正反馈：不要模仿自己历史里的脏前缀
+    assert "不是你的说话格式" in template
+    # 禁止把草稿/思考写进正文
+    assert "思考过程、草稿、计划或内心话" in template
+    # 输出样例（对照式）必须用中性占位，不得出现真实群友昵称
+    assert 'text="12: 某群友: 你好呀"' in template
+    assert "AAA大肥鱼" not in template
+    # 主模板只引用共享片段，不再重复粘贴规则文本
     for section in ("group_chat", "friend_chat"):
-        template = store.template(section)
-        assert "已经回答过" in template
-        assert "忽略自己之前说过的话" in template
-        assert "调用 send_reply 并把编号填进它的 reply_to 参数" in template
-        assert "[msg_id=" in template
-        # 无条件禁令：发出的每一条消息都不许以标注开头
-        assert "任何时候都禁止把它们写进你的回复" in template
-        # 针对正反馈：不要模仿自己历史里的脏前缀
-        assert "不是你的说话格式" in template
-        # 禁止把草稿/思考写进正文
-        assert "思考过程、草稿、计划或内心话" in template
-        # 输出样例（对照式）必须用中性占位，不得出现真实群友昵称
-        assert 'text="12: 某群友: 你好呀"' in template
-        assert "AAA大肥鱼" not in template
+        assert "{qq_chat}" in store.template(section)
+        assert "已经回答过" not in store.template(section)
 
 
 async def test_current_time_section_is_renderable_and_documented():
@@ -527,7 +531,8 @@ async def test_custom_prompt_partial_override_inherits_defaults():
 
     # Assert
     assert store.template("group_chat") == "只改群聊模板"
-    assert store.template("friend_chat").startswith("<你是谁>")
+    assert store.template("friend_chat").startswith("{qq_chat}")
+    assert store.template("qq_chat").startswith("<你是谁>")
     assert "problem-solving agent" in store.get("problem_solver", "system_prompt")
     assert store.template("long_reply_fallback")
     # 同步默认提示词不得覆盖自定义内容
@@ -654,13 +659,12 @@ def test_reply_requirements_get_timely_reply_principle(tmp_path):
     """[group_chat] / [friend_chat] 的 <回复要求> 补「适时回话 / 不接表情包 / 不硬找话题」。"""
     store = _default_store(tmp_path)
 
-    for section in ("group_chat", "friend_chat"):
-        template = store.template(section)
-        assert TIMELY_REPLY_PRINCIPLE in template
-        assert "任务收尾后" in template
-        assert "这类开工与进度的回复不算多余回复" in template
-        assert template.count(NO_UNPROMPTED_IMAGE_COMMENT) == 1
-        assert template.count(NO_ECHO_OR_FORCED_TOPIC_COMMENT) == 1
+    template = store.template("qq_chat")
+    assert TIMELY_REPLY_PRINCIPLE in template
+    assert "任务收尾后" in template
+    assert "这类开工与进度的回复不算多余回复" in template
+    assert template.count(NO_UNPROMPTED_IMAGE_COMMENT) == 1
+    assert template.count(NO_ECHO_OR_FORCED_TOPIC_COMMENT) == 1
 
 
 def test_build_short_time_message_renders_timestamp_only():

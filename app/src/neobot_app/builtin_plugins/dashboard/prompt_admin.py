@@ -17,7 +17,7 @@ from typing import Any
 
 import tomlkit
 
-from neobot_app.prompt.blocks import BLOCKS
+from neobot_app.prompt.blocks import BLOCKS, Stage
 from neobot_app.prompt.render import render_template, template_placeholders
 from neobot_app.prompt.store import parse_prompt_file
 from neobot_app.time_context import get_current_time_values
@@ -28,6 +28,10 @@ RENDERABLE_KEYS = frozenset({"template", "system_prompt"})
 _SUB_TABLE_KEYS = ("runtime",)
 #: 分区 id 即块 id（blocks.py 是元数据的唯一来源）
 _BLOCKS_BY_ID = {block.id: block for block in BLOCKS}
+#: FRAGMENT 块不直接注入，而是被主模板以 {块id} 引用（预览时需要先展开）
+_FRAGMENT_IDS = frozenset(
+    block.id for block in BLOCKS if block.stage is Stage.FRAGMENT
+)
 
 
 def sample_values(config: Any = None) -> dict[str, str]:
@@ -96,15 +100,32 @@ def sample_values(config: Any = None) -> dict[str, str]:
 
 
 def preview_template(
-    template: str, values: dict[str, str] | None = None
+    template: str, values: dict[str, str] | None = None, store: Any = None
 ) -> dict[str, Any]:
-    """渲染模板并报告占位符使用情况(纯函数,供实时预览使用)。"""
+    """渲染模板并报告占位符使用情况(纯函数,供实时预览使用)。
+
+    ``{qq_chat}`` 这类 FRAGMENT 占位符会先用对应分区的文本展开，面板预览才能看到
+    真实渲染结果（而不是字面量占位符）。
+    """
     merged = sample_values()
     if values:
         for key, value in values.items():
             name = str(key or "").strip()
             if name:
                 merged[name] = "" if value is None else str(value)
+    for name in sorted(template_placeholders(template or "")):
+        if name not in _FRAGMENT_IDS or merged.get(name):
+            continue
+        fragment = ""
+        template_reader = getattr(store, "template", None)
+        if callable(template_reader):
+            fragment = str(template_reader(name) or "")
+        if not fragment:
+            from neobot_app.prompt.store import packaged_template
+
+            fragment = packaged_template(name)
+        if fragment:
+            merged[name] = render_template(fragment, merged)
     rendered = render_template(template or "", merged)
     placeholders = sorted(template_placeholders(template or ""))
     remaining = sorted(template_placeholders(rendered))

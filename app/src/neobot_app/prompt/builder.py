@@ -377,7 +377,9 @@ class PromptBuilder:
 
     def member_archive_hint(self) -> str:
         """群员档案未注入时给模型的按需读取提示（增量新成员块复用）。"""
-        return self._template("member_archive_hint") or _MEMBER_ARCHIVE_HINT
+        if self._store is not None and not self._store.enabled("member_archive_hint"):
+            return ""
+        return self._template("member_archive_hint")
 
     def build_group_chat_resume_text(
         self,
@@ -466,14 +468,6 @@ class PromptBuilder:
             if isinstance(limit, int) and limit > 0:
                 return limit
         return 1500
-
-
-_MEMBER_ARCHIVE_HINT = (
-    "<群友记忆>群友的长期记忆未在此注入。需要某位群友的记忆时，用 "
-    "archive_crud__read_archive 按需读取：table_name 优先 user_summary、缺失时用 user_profile，"
-    "key 为该群友的 QQ 号；先 mode='outline' 看大纲，再用 offset 分页读正文，"
-    "offset 为负数时从尾部向前翻页（越靠后的内容越新）。</群友记忆>"
-)
 
 
 def _build_bot_other_name(config: BotConfigSchema) -> str:

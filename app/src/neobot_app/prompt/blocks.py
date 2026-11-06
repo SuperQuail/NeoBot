@@ -40,6 +40,8 @@ class Stage(str, Enum):
     SYSTEM_MAIN = "system_main"
     SYSTEM_INSERT = "system_insert"
     SYSTEM_APPEND = "system_append"
+    #: 不直接注入，供其它模板通过 ``{块id}`` 占位符引用的共享片段
+    FRAGMENT = "fragment"
     CONTEXT = "context"
     RUNTIME_DATA = "runtime_data"
     REMINDER = "reminder"
@@ -54,6 +56,20 @@ PERSONA_END = "</你是谁>"
 
 ALL_SCOPES = frozenset(Scope)
 CHAT_SCOPES = BOTH_CHATS
+
+#: 登记在册、但**不经过组合器注入管道**的块：它们的文本由专门代码路径按键读取
+#: （工具结果压缩、睡眠/唤醒命令、子 Agent 组装），或由编排器在管道外单独插入。
+#: 这些块不参与 stage 排序，``order`` 仅用于文档/面板展示。
+_CATALOG_ONLY_IDS = frozenset(
+    {
+        "live_chat",
+        "background_notification",
+        "new_member_profiles",
+        "group_chat_resume",
+        "member_archive_hint",
+    }
+)
+_CATALOG_STAGES = frozenset({Stage.TOOL_RESULT, Stage.STATUS, Stage.SUBAGENT})
 
 
 # ── 条件谓词 ──────────────────────────────────────────────────────────────────
@@ -149,6 +165,13 @@ class Block:
         return scope in self.scopes
 
     @property
+    def is_pipeline_block(self) -> bool:
+        """是否由组合器按 stage 注入；False 表示文本由专门代码路径按键读取。"""
+        if self.stage in _CATALOG_STAGES or self.id in _CATALOG_ONLY_IDS:
+            return False
+        return True
+
+    @property
     def template_section(self) -> str | None:
         """实际读取的 TOML 分区名：显式 ``section`` 优先，否则用块 id。
 
@@ -162,6 +185,21 @@ class Block:
 
 
 BLOCKS: tuple[Block, ...] = (
+    # ── 共享片段（被主模板以占位符引用，不单独注入） ──
+    Block(
+        "qq_chat",
+        Stage.FRAGMENT,
+        CHAT_SCOPES,
+        order=10,
+        note="QQ 聊天共享提示词：人设 / 回复要求 / 历史一致性 / 任务处理要求",
+    ),
+    Block(
+        "qq_chat_examples",
+        Stage.FRAGMENT,
+        CHAT_SCOPES,
+        order=20,
+        note="QQ 聊天共享的回复样例",
+    ),
     # ── system 主模板 ──
     Block(
         "group_chat",
@@ -443,7 +481,7 @@ BLOCKS: tuple[Block, ...] = (
         frozenset({Scope.SUBAGENT}),
         order=20,
         key="system_prompt",
-        extra_keys=("description",),
+        extra_keys=("description", "runtime"),
         note="自修复子 Agent",
     ),
     Block(
@@ -499,6 +537,14 @@ def validate_blocks() -> list[str]:
             problems.append(f"{block.id}: insert_fallback 只能是 append/skip")
         if not block.scopes:
             problems.append(f"{block.id}: scopes 不能为空")
+    # per_round 块由编排器在 builder 之后追加；若 order 落在稳定追加块中间会静默乱序
+    stable_append = [block for block in BLOCKS if block.stage is Stage.SYSTEM_APPEND and not block.per_round]
+    max_stable_order = max((block.order for block in stable_append), default=-1)
+    for block in BLOCKS:
+        if block.per_round and block.stage is Stage.SYSTEM_APPEND and block.order <= max_stable_order:
+            problems.append(
+                f"{block.id}: per_round 块的 order({block.order}) 必须大于所有稳定追加块(最大 {max_stable_order})"
+            )
     for index, left in enumerate(BLOCKS):
         for right in BLOCKS[index + 1 :]:
             if left.stage is right.stage and left.order == right.order and (left.scopes & right.scopes):

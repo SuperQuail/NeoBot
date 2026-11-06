@@ -53,6 +53,30 @@ def _merge(*parts: str) -> str:
     return "\n".join(cleaned)
 
 
+#: system 已消费时、上下文块里应置空（去重）的占位符。只限这些历史契约键：
+#: 其它占位符（bot_name/group_name…）在 context 里仍然是合法用法，不能一起清空。
+_DEDUPE_KEYS_BY_SCOPE: dict[Scope, frozenset[str]] = {
+    Scope.GROUP: frozenset(
+        {
+            "member_list",
+            "key_word_reaction_list",
+            "memory_list",
+            "group_info",
+            "group_admin",
+            "bot_group_admin_status",
+        }
+    ),
+    Scope.PRIVATE: frozenset(
+        {
+            "profile",
+            "friend_info",
+            "key_word_reaction_list",
+            "memory_list",
+        }
+    ),
+}
+
+
 def _insert_after_marker(text: str, marker: str | None, block_text: str) -> str | None:
     """把块插到最后一个标记之后；没有标记时返回 None（由调用方决定兜底）。"""
     if not marker:
@@ -102,11 +126,45 @@ class PromptComposer:
 
     # ── system ──
 
+    def _with_fragments(self, ctx: PromptContext) -> tuple[PromptContext, set[str]]:
+        """把 FRAGMENT 块渲染成 ``{块id}`` 取值，供主模板等通过占位符引用。
+
+        返回 (新 ctx, 片段模板占位符集合)。占位符集合并入 system 的 consumed，
+        否则片段里用掉的 ``{member_list}`` 会在上下文块里重复渲染一次。
+
+        片段不存在/被关闭时不给值：模板里的占位符保持原样（或整段覆盖的旧自定义
+        不含占位符时自然不会插入），避免重复。
+        """
+        values = dict(ctx.values)
+        fragment_placeholders: set[str] = set()
+        for block in blocks_for(Stage.FRAGMENT, ctx.scope):
+            section = block.template_section
+            if section is None:
+                continue
+            text = ""
+            if not self.block_skip_reason(block, ctx):
+                text = self.render_block(block, ctx)
+            # 关闭/为空也显式给空值：主模板里的 {块id} 否则会以字面量泄漏进 system
+            values[block.id] = text
+            if text:
+                fragment_placeholders |= template_placeholders(ctx.raw_template(section, block.key))
+        if values == ctx.values:
+            return ctx, fragment_placeholders
+        return replace(ctx, values=values), fragment_placeholders
+
+    def fragment(self, block_id: str, ctx: PromptContext) -> str:
+        """读取一个 FRAGMENT 块的渲染结果（不存在/关闭/为空时返回空串）。"""
+        block = block_by_id(block_id)
+        if block.template_section is None or self.block_skip_reason(block, ctx):
+            return ""
+        return self.render_block(block, ctx)
+
     def build_system(self, ctx: PromptContext) -> SystemPrompt:
         """拼 system：主模板 → 定点插入 → 末尾追加。"""
+        ctx, fragment_placeholders = self._with_fragments(ctx)
         rendered: list[str] = []
         skipped: list[tuple[str, str]] = []
-        consumed: set[str] = set()
+        consumed: set[str] = set(fragment_placeholders)
 
         main_parts: list[str] = []
         for block in blocks_for(Stage.SYSTEM_MAIN, ctx.scope):
@@ -157,6 +215,7 @@ class PromptComposer:
             text = _merge(text, part)
             rendered.append(block.id)
 
+        self._log_skipped(tuple(skipped))
         return SystemPrompt(
             text=text,
             consumed=frozenset(consumed),
@@ -164,15 +223,27 @@ class PromptComposer:
             skipped=tuple(skipped),
         )
 
+    def _log_skipped(self, skipped: tuple[tuple[str, str], ...]) -> None:
+        """把被跳过的块与原因记入日志（线上排查「为什么没注入」）。"""
+        if not skipped:
+            return
+        self._logger.debug(
+            "提示词块已跳过",
+            blocks=[{"id": block_id, "reason": reason} for block_id, reason in skipped],
+        )
+
     # ── 上下文 user 块 ──
 
     def build_context(self, ctx: PromptContext, system: SystemPrompt | None = None) -> ContextBuild:
-        """渲染 CONTEXT 阶段块；system 已消费的占位符自动去重。"""
+        """渲染 CONTEXT 阶段块；system 已消费的**去重键**自动置空。"""
         if system is not None and system.consumed:
-            values = dict(ctx.values)
-            for key in system.consumed:
-                values[key] = ""
-            ctx = replace(ctx, values=values)
+            dedupe_keys = _DEDUPE_KEYS_BY_SCOPE.get(ctx.scope, frozenset())
+            blanked = system.consumed & dedupe_keys
+            if blanked:
+                values = dict(ctx.values)
+                for key in blanked:
+                    values[key] = ""
+                ctx = replace(ctx, values=values)
         messages: list[dict[str, str]] = []
         rendered: list[str] = []
         skipped: list[tuple[str, str]] = []

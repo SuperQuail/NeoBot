@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from neobot_app.prompt.composer import PromptComposer, make_context
+from neobot_app.prompt.labels import render_label
 from neobot_app.prompt.context import Scope
 from neobot_app.time_context import get_current_time_values
 from neobot_app.reply.event import ReplyEvent
@@ -178,14 +179,19 @@ class PromptBlocksMixin:
 
     @staticmethod
     def _render_skills(skills: list[Any]) -> str:
-        lines = [
-            "当用户请求与以下技能相关的事情时，先调用 skills__read_manifest 读取对应技能说明，"
-            "再按说明逐步操作（如需要，可用 skills__read_resource 读取技能目录内的参考资料）。"
-        ]
+        lines: list[str] = []
         for skill in skills:
             skill_id = getattr(skill, "qualified_name", None) or skill.name
             description = getattr(skill, "description", "") or ""
-            lines.append(f'<skill id="{_xml_escape(str(skill_id))}" description="{_xml_escape(str(description))}" />')
+            lines.append(
+                render_label(
+                    "skills",
+                    "item",
+                    '<skill id="{skill_id}" description="{description}" />',
+                    skill_id=_xml_escape(str(skill_id)),
+                    description=_xml_escape(str(description)),
+                )
+            )
         return "\n".join(lines)
 
     def _render_resume_context(self, new_member_text: str) -> str:

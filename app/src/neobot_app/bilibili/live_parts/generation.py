@@ -16,6 +16,7 @@ from neobot_app.bilibili.live_parts.constants import (
 from neobot_app.bilibili.live_parts.helpers import _to_int
 from neobot_app.bilibili.prompts import (
     LiveDanmakuContext,
+    _text,
     build_live_danmaku_prompt,
     build_live_observation_prompt,
     build_live_scheduled_prompt,
@@ -98,10 +99,7 @@ class _GenerationMixin:
                 [
                     {
                         "role": "system",
-                        "content": (
-                            "你是直播弹幕总结器。把弹幕浓缩成一段直播记忆，"
-                            "只保留话题、梗、反复出现的人/事件和约定；不要逐条复述，200 字以内。"
-                        ),
+                        "content": _text("live", "summary_system"),
                     },
                     {"role": "user", "content": lines},
                 ],
@@ -246,7 +244,7 @@ class _GenerationMixin:
         system, content = build_live_danmaku_prompt(ctx, self._live_persona())
         asr_context = await self._live_asr_context(room_id)
         if asr_context:
-            content += f"\n<直播语音>{asr_context}</直播语音>"
+            content += "\n" + _text("live", "asr_wrapper").format(asr_context=asr_context)
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": content},
@@ -286,7 +284,7 @@ class _GenerationMixin:
         system, content = build_live_scheduled_prompt(ctx, self._live_persona())
         asr_context = await self._live_asr_context(room_id)
         if asr_context:
-            content += f"\n<直播语音>{asr_context}</直播语音>"
+            content += "\n" + _text("live", "asr_wrapper").format(asr_context=asr_context)
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": content},

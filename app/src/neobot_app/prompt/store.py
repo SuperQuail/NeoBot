@@ -11,6 +11,12 @@
     - 升级后新增的分区(如新子Agent的提示词)会自动继承默认值
     - 同一分区内,自定义文件中未出现的键也自动继承默认值
 
+内置资源文件(templates/ 下,随包分发):
+    prompts.toml           默认提示词
+    fallback.toml          内置模板整体丢失时的最小兜底提示词
+    custom_skeleton.txt    首次生成 custom/prompts.toml 的骨架文本
+    README.md              首次生成 data/prompts/README.md 的说明全文
+
 占位符与转义(与 templates/prompts.toml 的说明一致):
     - {名字} 为占位符,渲染时替换;未提供的占位符原样保留;
     - 需要字面量花括号时写双花括号;
@@ -32,6 +38,10 @@ from neobot_app.prompt.blocks import known_sections as _known_sections
 # 内置默认提示词模板位置(随程序包分发)
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 DEFAULT_TEMPLATE_FILE = TEMPLATES_DIR / "prompts.toml"
+FALLBACK_TEMPLATE_FILE = TEMPLATES_DIR / "fallback.toml"
+# 骨架文本用 {sections} 占位，同步时替换成按注册表生成的分区清单
+CUSTOM_SKELETON_FILE = TEMPLATES_DIR / "custom_skeleton.txt"
+README_TEMPLATE_FILE = TEMPLATES_DIR / "README.md"
 
 # 运行时目录结构
 PROMPTS_DIR_NAME = "prompts"
@@ -43,110 +53,6 @@ README_FILE_NAME = "README.md"
 # 提示词分区清单由注册表派生（prompt/blocks.py 是唯一真相），避免手工清单漂移。
 KNOWN_SECTIONS: tuple[str, ...] = _known_sections()
 
-# TOML 多行字符串定界符(在 Python 字符串里直接写会被误解析,单独拼出来)
-_TOML_QUOTE = "'" * 3
-
-# 极端兜底:内置模板文件丢失时仍可工作的最小提示词
-_FALLBACK_SECTIONS: dict[str, dict[str, str]] = {
-    "live_chat": {"template": ""},
-    "group_chat": {
-        "template": (
-            "<你是谁>\n你的名字是{bot_name},你的QQ号是{bot_account}{other_name}.\n"
-            "{bot_data}\n</你是谁>\n"
-            "<回复要求>不要重复回答已经回答过的内容,不要与自己之前说过的话矛盾;"
-            "消息行首的 [msg_id=...]、编号和发送者名字都是系统生成的标注,"
-            "任何时候都不许写进你的回复,你只需要说你要说的那句话;"
-            "也不要模仿自己历史发言里出现过的这类前缀,更不要把思考过程、草稿写进正文。"
-            "\n</回复要求>\n"
-            "<群聊>{group_name}[群号:{group_id}]\n{group_info}\n</群聊>\n"
-            "<消息编号说明>\n{numbering_guide}\n</消息编号说明>"
-        )
-    },
-    "group_context": {
-        "template": (
-            "<群聊档案>\n{group_info}\n</群聊档案>\n"
-            "<群友信息>\n{member_list}\n</群友信息>\n"
-            "<群管理员>{group_admin}</群管理员>\n"
-            "<群管理状态>{bot_group_admin_status}</群管理状态>\n"
-            "<你的印象>\n{key_word_reaction_list}\n你想起来之前:\n{memory_list}\n</你的印象>"
-        )
-    },
-    "friend_chat": {
-        "template": (
-            "<你是谁>\n你的名字是{bot_name},你的QQ号是{bot_account}{other_name}.\n"
-            "{bot_data}\n</你是谁>\n"
-            "<回复要求>不要重复回答已经回答过的内容,不要与自己之前说过的话矛盾;"
-            "消息行首的 [msg_id=...]、编号和发送者名字都是系统生成的标注,"
-            "任何时候都不许写进你的回复,你只需要说你要说的那句话;"
-            "也不要模仿自己历史发言里出现过的这类前缀,更不要把思考过程、草稿写进正文。"
-            "\n</回复要求>\n"
-            "<消息编号说明>\n{numbering_guide}\n</消息编号说明>"
-        )
-    },
-    "friend_context": {
-        "template": (
-            "<聊天对象>{friend_name}(你的备注:{remark})</聊天对象>\n"
-            "<对方信息>\n{friend_info}\n</对方信息>\n"
-            "<你的印象>\n{key_word_reaction_list}\n你想起来{memory_list}\n</你的印象>"
-        )
-    },
-    "friend_chat_hint": {
-        "template": (
-            "<私聊提示>\n这是私聊对话。必须先正常回复对方的消息，回复内容根据聊天内容自然决定。\n"
-            "发送回复后，如果对方明显还有更多内容要说，请使用 wait 工具等待新消息进行后续回复"
-            "（一般等待10秒即可），不要直接结束对话。\n</私聊提示>"
-        )
-    },
-    "at_mention_wait": {
-        "template": (
-            "<被@时的处理>\n@你的用户如果没有说明要你做什么，而且当前没有其他需要回复的内容，"
-            "你应该调用 wait 工具等待五秒左右（seconds=5），看看对方是不是还要补充；"
-            "对方补充了再一起回应。\n如果对方已经说清了要你做什么，直接照做，不要等待。\n"
-            "</被@时的处理>"
-        )
-    },
-    "current_time": {"template": "<当前时间>{current_time}</当前时间>"},
-    "group_chat_resume": {
-        "template": (
-            "{new_member_profiles}\n\n"
-            "这是群聊对话的续接。挂起期间的新消息已按发送者追加为 user/assistant 消息,"
-            "请根据新消息决定是否需要回复。"
-        )
-    },
-    "new_member_profiles": {
-        "template": "[新出现的群友档案]\n{member_profiles}"
-    },
-    "native_vision": {
-        "template": (
-            "<原生视觉>\n"
-            "聊天记录里的图片只有正文文本描述;默认加载的图片与其来源标注追加在提示词末尾。\n"
-            "需要看其他图片时调用 image_context__add_image;不要调用外部视觉模型解析工具。\n"
-            "只能描述实际加载并看到的图片,加载失败时不要根据占位描述猜测。\n"
-            "</原生视觉>"
-        )
-    },
-    "tool_result_compressed": {
-        "template": "[已压缩] 工具 {tool_name} 调用成功。"
-    },
-    "tool_result_compressed_detail": {
-        "template": "[已压缩] 工具 {tool_name} 调用成功。结果摘要:\n{summary}"
-    },
-    "long_reply_fallback": {"template": "{bot_name}懒得和你说道理，你不配听"},
-    "wake_up": {"template": "你刚刚正在睡觉,现在被叫醒了,还有点困."},
-    # /sleep /awake 命令的回复提示词(spec(5) §4.1):与 [wake_up] 分工不同
-    "sleep_cmd": {
-        "template": (
-            "你刚刚答应去睡觉（睡眠 {duration}，预计 {wake_at} 醒来）。"
-            "请用你自己的语气自然回应一句，不要复述本条状态说明。"
-        )
-    },
-    "awake_cmd": {
-        "template": (
-            "你刚被叫醒了（睡了 {elapsed}）。"
-            "请用你自己的语气自然回应一句，不要复述本条状态说明。"
-        )
-    },
-}
 
 def _skeleton_section_lines() -> str:
     """把 KNOWN_SECTIONS 按每行 3 个排版成骨架注释（新增分区自动出现）。"""
@@ -155,78 +61,6 @@ def _skeleton_section_lines() -> str:
         for index in range(0, len(KNOWN_SECTIONS), 3)
     ]
     return "\n".join(f"#   {row}" for row in rows)
-
-
-_CUSTOM_SKELETON = (
-    "# NeoBot 自定义提示词文件\n"
-    "#\n"
-    "# 默认提示词在 data/prompts/default/prompts.toml(由程序每次启动时覆盖同步,\n"
-    "# 不要修改)。需要自定义时,把要修改的分区整体复制到这里再修改即可;\n"
-    "# 未出现在本文件中的分区自动使用默认提示词。\n"
-    "#\n"
-    "# 可用分区(详见 default/prompts.toml 中的说明与占位符列表):\n"
-    f"{_skeleton_section_lines()}\n"
-    "#\n"
-    "# 占位符写作花括号包住的名字,渲染时替换;需要输出字面量花括号时写成双层花括号。\n"
-    "# 只含空白的区块(如群友信息标签之间只有换行)会在渲染后被自动删除。\n"
-    "#\n"
-    "# 示例(取消注释后修改):\n"
-    "#\n"
-    "# [group_chat]\n"
-    f"# template = {_TOML_QUOTE}\n"
-    "# 你是一个性格傲娇的猫娘...\n"
-    "# 群名:{group_name},群友:{member_list}\n"
-    "# 需要输出大括号时这样写:{{msg_id=123}}\n"
-    f"# {_TOML_QUOTE}\n"
-)
-
-_README_TEXT = (
-    "# 提示词目录说明\n"
-    "\n"
-    "本目录用于维护 NeoBot 的提示词文件(独立于 config.toml)。\n"
-    "\n"
-    "## 结构\n"
-    "\n"
-    "- default/prompts.toml — 默认提示词。由程序内置模板在每次启动 / config.reload\n"
-    "  时自动覆盖同步,请不要手动修改(手动修改会在下次启动时被覆盖)。\n"
-    "- custom/prompts.toml — 自定义提示词。默认为空(程序首次运行自动创建)。\n"
-    "  需要自定义某个提示词时,把对应分区从默认文件复制到本文件再修改。\n"
-    "- README.md — 本说明文件。\n"
-    "\n"
-    "## 消息结构\n"
-    "\n"
-    "聊天记录以真实的 user/assistant 消息追加在 system 提示词之后,而不是内嵌在\n"
-    "system 里。一次模型调用的消息顺序是:\n"
-    "\n"
-    "1. system — [group_chat] / [friend_chat] 模板渲染出的稳定提示词;\n"
-    "2. user — [group_context] / [friend_context] 模板渲染出的本轮上下文\n"
-    "   (群友信息、对方档案、印象等);\n"
-    "3. user / assistant — 按发送者拆分的聊天记录(bot 自己的发言是 assistant);\n"
-    "4. user — [current_time] 模板渲染出的当前时间块,每次调用模型前追加一条"
-    "(历史时间块保留,不做清理)。\n"
-    "\n"
-    "## 占位符与转义\n"
-    "\n"
-    "1. 占位符写作花括号包住的名字,未提供值的占位符会原样保留,便于发现写错的占位符。\n"
-    "2. 需要输出字面量花括号时写成双层花括号:左双层渲染为左花括号,右双层渲染为右花括号。\n"
-    "3. 只含空白的区块(如群友信息标签之间只有换行)渲染后会被自动删除,因此可以\n"
-    "   放心把可选区块写进模板。\n"
-    "4. 模板含畸形花括号时会降级为只替换已知占位符,不会导致整轮回复失败。\n"
-    "5. 把 {member_list} 之类的占位符写进 [group_chat],内容就留在 system 里,\n"
-    "   并且不再重复出现在 [group_context] 中(反之亦然)。\n"
-    "\n"
-    "## 合并规则\n"
-    "\n"
-    "1. 自定义文件中出现的分区/键覆盖默认值;\n"
-    "2. 未在自定义文件中出现的分区/键自动使用默认值;\n"
-    "3. 程序升级后新增的提示词分区(例如新的子Agent提示词)会自动继承默认值,\n"
-    "   无需手动处理。\n"
-    "\n"
-    "## 修改后如何生效\n"
-    "\n"
-    "提示词按文件修改时间自动感知(每次构建 prompt 时校验),无需重启;\n"
-    "如需重新同步默认提示词,执行 config.reload 命令即可。\n"
-)
 
 
 def _parse_sections(path: Path, logger: Logger | None = None) -> dict[str, dict[str, Any]]:
@@ -271,6 +105,15 @@ def parse_prompt_file(
     文件缺失、编码无法识别或 TOML 损坏时返回空字典,不抛异常。
     """
     return _parse_sections(Path(path), logger)
+
+
+def _load_fallback_sections() -> dict[str, dict[str, Any]]:
+    """读取随包分发的最小兜底提示词(缺失时为空,由调用方回退 default)。"""
+    return {key: dict(value) for key, value in _parse_sections(FALLBACK_TEMPLATE_FILE).items()}
+
+
+#: 极端兜底:内置模板文件丢失时仍可工作的最小提示词
+_FALLBACK_SECTIONS: dict[str, dict[str, Any]] = _load_fallback_sections()
 
 
 def get_template_value(
@@ -453,13 +296,14 @@ class PromptStore:
 
 
 def fallback_template(key: str, sub: str = "template", default: str = "") -> str:
-    """极端兜底:内置模板文件与运行时文件都不可用时使用的最小提示词。"""
-    section = _FALLBACK_SECTIONS.get(key)
-    if section is None:
-        return default
-    value = section.get(sub)
+    """极端兜底:内置模板文件与运行时文件都不可用时使用的最小提示词(templates/fallback.toml)。"""
+    value: Any = _FALLBACK_SECTIONS.get(key)
     if value is None:
         return default
+    for part in str(sub).split("."):
+        value = value.get(part) if isinstance(value, dict) else None
+        if value is None:
+            return default
     return str(value).strip() if isinstance(value, str) else str(value)
 
 
@@ -470,7 +314,7 @@ _PACKAGED_CACHE: tuple[tuple[int, int] | None, dict[str, dict[str, Any]]] = (Non
 def packaged_template(key: str, sub: str = "template", default: str = "") -> str:
     """读取随包分发的内置模板分区（无 store 时的兜底，如面板/测试替身）。
 
-    读取顺序：内置 templates/prompts.toml -> ``_FALLBACK_SECTIONS`` -> default。
+    读取顺序：内置 templates/prompts.toml -> templates/fallback.toml -> default。
     结果按文件 mtime/size 缓存，避免每次渲染都解析 TOML。
     """
     global _PACKAGED_CACHE
@@ -487,10 +331,28 @@ def packaged_template(key: str, sub: str = "template", default: str = "") -> str
             for section, value in _parse_sections(DEFAULT_TEMPLATE_FILE).items()
         }
         _PACKAGED_CACHE = (signature, cached_sections)
-    value = cached_sections.get(key, {}).get(sub)
+    value: Any = cached_sections.get(key, {})
+    for part in str(sub).split("."):
+        value = value.get(part) if isinstance(value, dict) else None
+        if value is None:
+            break
     if isinstance(value, str) and value.strip():
         return value.strip()
     return fallback_template(key, sub, default)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """临时文件 + 原子替换,避免并发读取到半截文件。"""
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def sync_default_prompts(data_dir: Path, logger: Logger | None = None) -> None:
@@ -530,11 +392,21 @@ def sync_default_prompts(data_dir: Path, logger: Logger | None = None) -> None:
 
         custom_file = custom_dir / PROMPTS_FILE_NAME
         if not custom_file.exists():
-            custom_file.write_text(_CUSTOM_SKELETON, encoding="utf-8")
-            log.info(f"已创建自定义提示词文件(默认为空): {custom_file}")
+            try:
+                skeleton = CUSTOM_SKELETON_FILE.read_text(encoding="utf-8")
+            except OSError as exc:
+                log.warning(f"内置自定义提示词骨架缺失,跳过创建: {CUSTOM_SKELETON_FILE}: {exc}")
+            else:
+                _atomic_write_text(custom_file, skeleton.replace("{sections}", _skeleton_section_lines()))
+                log.info(f"已创建自定义提示词文件(默认为空): {custom_file}")
 
         readme = prompts_dir / README_FILE_NAME
         if not readme.exists():
-            readme.write_text(_README_TEXT, encoding="utf-8")
+            try:
+                readme_text = README_TEMPLATE_FILE.read_text(encoding="utf-8")
+            except OSError as exc:
+                log.warning(f"内置提示词说明文件缺失,跳过创建: {README_TEMPLATE_FILE}: {exc}")
+            else:
+                _atomic_write_text(readme, readme_text)
     except Exception as exc:
         log.warning(f"默认提示词同步失败(读取侧有兜底,不影响启动): {exc}")

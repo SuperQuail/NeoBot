@@ -236,12 +236,32 @@ def test_bili_human_feel_matches_qq() -> None:
     import tomllib
     from neobot_app.bilibili.prompts import BILI_HUMAN_FEEL
 
-    with open(
-        "app/src/neobot_app/prompt/templates/prompts.toml", "rb"
-    ) as handle:
+    from neobot_app.prompt.store import DEFAULT_TEMPLATE_FILE
+
+    with DEFAULT_TEMPLATE_FILE.open("rb") as handle:
         qq = tomllib.load(handle)["human_feel"]["template"]
     assert BILI_HUMAN_FEEL.strip() == qq.strip()
 
+
+
+def test_prompt_texts_are_loaded_from_toml() -> None:
+    """提示词文本来自同目录 prompts.toml（数据文件），组装结果里直接使用。"""
+    import tomllib
+    from pathlib import Path
+
+    from neobot_app.bilibili import prompts
+
+    with (Path(prompts.__file__).with_name("prompts.toml")).open("rb") as handle:
+        data = tomllib.load(handle)
+    assert prompts.BILI_HUMAN_FEEL == data["human_feel"]["template"]
+    assert prompts.BILI_DATA_RULE == data["data_rule"]["template"]
+    assert prompts.LIVE_REPLY_TO_RULE == data["live"]["reply_to_rule"]
+    # 直播 ASR 包裹/弹幕总结/画面描述也走数据文件
+    assert prompts._text("live", "asr_wrapper") == data["live"]["asr_wrapper"]
+    assert prompts._text("live", "summary_system") == data["live"]["summary_system"]
+    assert prompts._text("live_media", "frame_description") == data["live_media"]["frame_description"]
+    system, _ = build_comment_prompt(_comment_context())
+    assert data["reply_requirements"]["template"] in system
 
 
 def test_bilibili_prompts_include_configured_bot_data() -> None:

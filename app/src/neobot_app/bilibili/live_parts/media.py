@@ -9,6 +9,7 @@ from typing import Any
 
 from neobot_app.bilibili._compat import call_client, get_field
 from neobot_app.bilibili.live_parts.helpers import _to_int
+from neobot_app.bilibili.prompts import _text
 
 
 class _MediaMixin:
@@ -94,7 +95,7 @@ class _MediaMixin:
                     "content": [
                         {
                             "type": "text",
-                            "text": "这是B站直播间的当前画面截图。用一两句话客观描述画面里发生了什么，供弹幕回复参考；不要编造看不清的细节。",
+                            "text": _text("live_media", "frame_description"),
                         },
                         part,
                     ],

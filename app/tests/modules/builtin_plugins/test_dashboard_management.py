@@ -265,7 +265,7 @@ async def test_prompts_reset_restores_default(managed_panel) -> None:
 
     assert reset.status_code == 200
     assert reset.json()["removed"] is True
-    assert managed_panel["store"].template("group_chat").startswith("<你是谁>")
+    assert managed_panel["store"].template("group_chat").startswith("{qq_chat}")
 
 
 async def test_prompts_preview_unknown_section_returns_404(managed_panel) -> None:

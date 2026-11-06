@@ -162,3 +162,57 @@ async def test_system_consumed_member_list_is_not_repeated_in_context(
     assert context_blocks[0]["role"] == "user"
     assert "成员列表：小明、小红" not in context_text
     assert "群友信息" not in context_text  # 空区块被 strip_empty_tag_blocks 删除
+
+
+async def test_fragment_consumed_placeholders_are_deduped_from_context(
+    custom_store, bot_config, fake_profile, fake_queue
+):
+    """共享片段（qq_chat）里用掉的占位符也必须算作 system 已消费。"""
+    store = custom_store(
+        '[qq_chat]\ntemplate = """<你是谁>\n{bot_name}\n</你是谁>\n<群友信息>{member_list}</群友信息>"""\n'
+    )
+    builder = PromptBuilder(bot_config, fake_profile, prompt_store=store)
+    context_blocks: list[dict[str, str]] = []
+
+    prompt = await builder.build_group_chat_prompt(123456, fake_queue, context_blocks=context_blocks)
+
+    assert "成员列表：小明、小红" in prompt  # 片段消费了 {member_list}
+    assert len(context_blocks) == 1
+    assert "成员列表：小明、小红" not in context_blocks[0]["content"]
+
+
+async def test_dedup_only_clears_documented_dedupe_keys(custom_store, bot_config, fake_profile, fake_queue):
+    """只去重历史契约的 6 个键；{bot_name}/{group_name} 在 context 里仍应正常渲染。"""
+    store = custom_store('[group_context]\ntemplate = """我是{bot_name},群名{group_name}"""\n')
+    builder = PromptBuilder(bot_config, fake_profile, prompt_store=store)
+    context_blocks: list[dict[str, str]] = []
+
+    await builder.build_group_chat_prompt(123456, fake_queue, context_blocks=context_blocks)
+
+    assert context_blocks, "上下文块不应为空"
+    text = context_blocks[0]["content"]
+    assert "测试群名" in text
+    assert "我是,群名" not in text  # bot_name 不应被误清空
+
+
+async def test_disabled_fragment_does_not_leak_placeholder(custom_store, bot_config, fake_profile, fake_queue):
+    """[qq_chat] enabled=false 后 system 不应残留字面量 {qq_chat}。"""
+    store = custom_store("[qq_chat]\nenabled = false\n")
+    builder = PromptBuilder(bot_config, fake_profile, prompt_store=store)
+
+    prompt = await builder.build_group_chat_prompt(123456, fake_queue)
+
+    assert "{qq_chat}" not in prompt
+    assert "{qq_chat_examples}" not in prompt
+
+
+async def test_member_archive_hint_can_be_disabled(custom_store, bot_config, fake_profile, fake_queue):
+    """[member_archive_hint] enabled=false 时不再注入「群友记忆未在此注入」提示。"""
+    store = custom_store("[member_archive_hint]\nenabled = false\n")
+    builder = PromptBuilder(bot_config, fake_profile, prompt_store=store)
+    context_blocks: list[dict[str, str]] = []
+
+    prompt = await builder.build_group_chat_prompt(123456, fake_queue, context_blocks=context_blocks)
+
+    combined = prompt + "".join(block["content"] for block in context_blocks)
+    assert "群友的长期记忆未在此注入" not in combined
