@@ -129,6 +129,23 @@ def test_gentle_language_is_cot_subblock_before_main_template(scope: Scope, prom
     assert text.index(GENTLE_MARKER) < text.index("</cot>") < text.index("<你是谁>")
 
 
+@pytest.mark.parametrize("scope", [Scope.GROUP, Scope.PRIVATE], ids=lambda scope: scope.value)
+def test_reply_tool_contract_is_injected_once(scope: Scope, prompt_store, bot_config):
+    """群聊/私聊 system 都注入唯一一份 <回复方式> 契约。"""
+    composer = PromptComposer(prompt_store)
+    ctx = make_context(
+        config=bot_config,
+        store=prompt_store,
+        scope=scope,
+        features={"agent_mode": True},
+    )
+    text = composer.build_system(ctx).text
+
+    assert text.count("<回复方式>\n本会话是 agent 模式") == 1
+    assert "content 留空" in text
+    assert "直接输出的正文会被丢弃" in text
+
+
 def test_gentle_language_survives_whole_group_chat_override(custom_store, bot_config):
     """整段覆盖 [group_chat] 后，cot 板块（含温和语言）仍在最前面。"""
     store = custom_store(

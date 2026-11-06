@@ -145,6 +145,7 @@ def test_orders_are_unique_within_stage_and_scope(stage: Stage):
             Stage.SYSTEM_APPEND,
             Scope.GROUP,
             (
+                "reply_tool_contract",
                 "long_task_progress",
                 "human_feel",
                 "stale_topic",
@@ -161,6 +162,7 @@ def test_orders_are_unique_within_stage_and_scope(stage: Stage):
             Stage.SYSTEM_APPEND,
             Scope.PRIVATE,
             (
+                "reply_tool_contract",
                 "friend_chat_hint",
                 "long_task_progress",
                 "human_feel",

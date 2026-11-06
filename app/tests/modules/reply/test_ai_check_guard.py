@@ -36,6 +36,21 @@ def test_default_prompts_require_a_real_cancel_tool_call():
     assert "没有调用发送工具就直接输出的正文不会被发送" in text
 
 
+def test_qq_default_prompts_do_not_allow_direct_output():
+    """QQ 回复相关默认文案不允许“先输出正文再补工具”的模糊表述。"""
+    prompts = tomllib.loads((TEMPLATES_DIR / "prompts.toml").read_text(encoding="utf-8"))
+    text = "\n".join(
+        prompts[name]["template"]
+        for name in ("qq_chat", "qq_chat_examples", "group_chat", "friend_chat", "friend_chat_hint")
+    )
+
+    assert "你可以先告诉对方" not in text
+    assert "正常回复对方的消息" not in text
+    assert "本轮会被记为失败" not in text
+    assert "没有调用发送工具就直接输出的正文不会被发送" in text
+    assert "必须先调用 send_reply 回复" in text
+
+
 def test_send_reply_definition_declares_the_only_outlet():
     executor = ReplyToolExecutor(send_reply_handler=AsyncMock(return_value=True))
     definition = next(
