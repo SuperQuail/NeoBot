@@ -148,7 +148,7 @@ async def test_review_without_tool_is_cancelled_and_never_sends_draft(monkeypatc
 @pytest.mark.parametrize("kind", ["group", "private"])
 @pytest.mark.parametrize("decision", ["send_reply", "cancel"])
 async def test_structured_review_decisions_still_work(monkeypatch, kind, decision):
-    args = {"text": "确认后的正文", "ai_check_approved": True} if decision == "send_reply" else {"reason": "无需参与"}
+    args = {"text": "确认后的正文", "segments": ["确认后的正文"]} if decision == "send_reply" else {"reason": "无需参与"}
     event, provider, sent, stages, _, _ = await run_script(monkeypatch, [
         tool_response("send_reply", {"text": "待审草稿"}), tool_response(decision, args),
     ], kind=kind)
@@ -188,9 +188,7 @@ async def test_bare_cancel_in_plain_model_output_is_not_claimed_sent(monkeypatch
 ])
 async def test_orchestrator_forwards_verified_preview_to_real_sender(monkeypatch, text, segments):
     first = tool_response("send_reply", {"text": text})
-    approved = tool_response("send_reply", {
-        "text": text, "segments": segments, "ai_check_approved": True,
-    })
+    approved = tool_response("send_reply", {"text": text, "segments": segments})
     event, provider, sent, _, _, _ = await run_script(monkeypatch, [first, approved])
     assert event.state is ReplyState.COMPLETED
     assert len(provider.calls) == 3
@@ -209,10 +207,10 @@ async def test_tool_review_pending_clears_only_on_successful_decision():
     result = await executor.execute("send_reply", {"text": "你好"})
     assert "暂未发送" in result and executor.ai_check_pending
     send.assert_not_awaited()
-    result = await executor.execute("send_reply", {"text": "你好", "ai_check_approved": True})
+    result = await executor.execute("send_reply", {"text": "你好", "segments": ["你好"]})
     assert result.startswith("错误：") and executor.ai_check_pending
     send.return_value = True
-    await executor.execute("send_reply", {"text": "你好", "ai_check_approved": True})
+    await executor.execute("send_reply", {"text": "你好", "segments": ["你好"]})
     assert not executor.ai_check_pending
     await executor.execute("send_reply", {"text": "下一条"})
     await executor.execute("cancel", {})

@@ -66,15 +66,11 @@ def wire_text(adapter):
 def tool_for(sender, event, **kwargs):
     async def handler(**args):
         return await sender.send_reply(
-            event, args["text"], segments=args["segments"], send_original=args["send_original"],
-            images=args["images"], split_preview=args.get("split_preview"),
+            event, args.get("text", ""), segments=args.get("segments"),
+            images=args.get("images"), split_preview=args.get("split_preview"),
         )
 
-    return ReplyToolExecutor(
-        send_reply_handler=handler,
-        emoji_service=getattr(sender, "_emoji_service", None),
-        **kwargs,
-    )
+    return ReplyToolExecutor(send_reply_handler=handler, **kwargs)
 
 
 @pytest.mark.parametrize("raw", ["cancel", " CANCEL ", "Bot: cancel", "<think>secret</think>cancel"])
@@ -169,15 +165,15 @@ async def test_automatic_split_does_not_erase_closing_fence_or_leak_trailing_thi
 
 
 @pytest.mark.parametrize("fence", ["```", "~~~"])
-async def test_send_original_keeps_code_and_still_cleans_leading_think(fence):
+async def test_statement_raw_keeps_code_and_still_cleans_leading_think(fence):
     body = f"{fence}text\ncancel\n{fence}"
     sender, event, adapter = make_sender()
     result = await tool_for(sender, event).execute("send_reply", {
         "text": "<think>secret</think>" + body,
-        "segments": ["different text"], "send_original": True,
+        "segments": [{"text": body, "raw": True}],
     })
     assert wire_text(adapter) == [body]
-    assert "已发送原文" in result and "different text" not in result
+    assert "已发送" in result and "different text" not in result
 
 
 @pytest.mark.parametrize("raw", [
@@ -198,7 +194,7 @@ async def test_cancel_caption_does_not_drop_image_attachment(tmp_path, original)
     )
     sender, event, adapter = make_sender(emoji_service=emoji)
     result = await tool_for(sender, event).execute("send_reply", {
-        "text": "cancel", "images": [1], "send_original": original,
+        "text": "cancel", "emoji_numbers": [1], "send_original": original,
     })
     assert "已发送" in result
     assert wire_text(adapter) == []
@@ -210,7 +206,7 @@ async def test_cancel_caption_does_not_drop_image_attachment(tmp_path, original)
 async def test_missing_image_plus_cleaned_empty_text_is_not_success():
     sender, event, adapter = make_sender()
     result = await tool_for(sender, event).execute("send_reply", {
-        "text": "cancel", "images": [404],
+        "text": "cancel", "emoji_numbers": [404],
     })
     assert result.startswith("错误：") and "未发送" in result
     assert not adapter.sent

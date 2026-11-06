@@ -66,12 +66,12 @@ class _MiscToolsMixin:
         if self._poke_user is None:
             return "错误：poke_user 处理器未配置"
         try:
-            user_id = int(args.get("user_id", -1))
+            target_qq = int(args.get("target_qq", args.get("user_id", -1)))
         except (ValueError, TypeError):
-            return "错误：user_id 必须为整数"
-        if user_id <= 0:
-            return f"错误：user_id 无效，收到 {args.get('user_id')}"
-        return await self._poke_user(user_id=user_id)
+            return "错误：target_qq 必须为整数"
+        if target_qq <= 0:
+            return f"错误：target_qq 无效，收到 {args.get('target_qq', args.get('user_id'))}"
+        return await self._poke_user(user_id=target_qq)
 
     def _define_wait_tool(self, tools: list[ToolDefinition]) -> None:
         if self._wait is not None:
@@ -123,12 +123,12 @@ class _MiscToolsMixin:
                     "只需提供目标QQ号，Bot会自动判断会话类型。",
                     {
                         "properties": {
-                            "user_id": {
+                            "target_qq": {
                                 "type": "integer",
-                                "description": "要戳一戳的目标QQ号。",
+                                "description": "要戳一戳的目标 QQ 号。QQ 号见群友列表或私聊资料。",
                             },
                         },
-                        "required": ["user_id"],
+                        "required": ["target_qq"],
                     },
                 ),
             )

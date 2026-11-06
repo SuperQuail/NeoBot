@@ -491,7 +491,7 @@ async def test_default_templates_carry_history_consistency_rules():
     template = store.template("qq_chat") + store.template("qq_chat_examples")
     assert "已经回答过" in template
     assert "忽略自己之前说过的话" in template
-    assert "调用 send_reply 并把编号填进它的 reply_to 参数" in template
+    assert "调用 send_reply 并把编号填进它的 reply_to_number 参数" in template
     assert "[msg_id=" in template
     # 无条件禁令：发出的每一条消息都不许以标注开头
     assert "任何时候都禁止把它们写进你的回复" in template

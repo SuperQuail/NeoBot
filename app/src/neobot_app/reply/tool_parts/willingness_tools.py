@@ -18,7 +18,6 @@ class _WillingnessToolsMixin:
         if action == "set_global":
             return await self._execute_set_global_willing(args)
         current_conv_id = str(self._conv_id or "").strip()
-        requested_conv_id = str(args.get("conv_id") or current_conv_id).strip()
         if action in {
             "set_conversation",
             "remove_conversation",
@@ -27,8 +26,6 @@ class _WillingnessToolsMixin:
         }:
             if not current_conv_id:
                 return "错误：无法确定当前会话 ID"
-            if requested_conv_id != current_conv_id:
-                return "错误：只能调整当前会话的回复意愿"
         if action == "set_conversation":
             value = args.get("value")
             if value is None:
@@ -214,10 +211,6 @@ class _WillingnessToolsMixin:
                                     ],
                                     "description": "调整动作。set_global 为全局(需凭据);"
                                     "其余仅允许作用于当前会话。",
-                                },
-                                "conv_id": {
-                                    "type": "string",
-                                    "description": "可选，会话 ID；不填时使用当前会话。若提供，必须等于当前会话 ID。",
                                 },
                                 "value": {
                                     "type": "number",

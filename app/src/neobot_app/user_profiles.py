@@ -275,11 +275,20 @@ class UserProfileService:
             group_id, message_queue, window=archive_fetch_window,
         )
         if members is None:
-            response = await self._adapter_call(
-                self._adapter.get_group_member_list(int(group_id)),
-                action="get_group_member_list",
-                group_id=str(group_id),
-            )
+            try:
+                response = await self._adapter_call(
+                    self._adapter.get_group_member_list(int(group_id)),
+                    action="get_group_member_list",
+                    group_id=str(group_id),
+                )
+            except Exception as exc:
+                # 成员列表只是增强信息：API 异常不能把整轮提示词构建带崩
+                self._logger.warning(
+                    "获取群成员列表失败，跳过成员信息",
+                    group_id=str(group_id),
+                    error_type=type(exc).__name__,
+                )
+                response = None
             members = response.data if response and response.data else []
 
         lines: list[str] = []
