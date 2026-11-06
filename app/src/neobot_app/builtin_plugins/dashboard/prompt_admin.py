@@ -17,6 +17,7 @@ from typing import Any
 
 import tomlkit
 
+from neobot_app.prompt.blocks import BLOCKS, Stage
 from neobot_app.prompt.render import render_template, template_placeholders
 from neobot_app.prompt.store import parse_prompt_file
 from neobot_app.time_context import get_current_time_values
@@ -25,6 +26,12 @@ from neobot_app.time_context import get_current_time_values
 RENDERABLE_KEYS = frozenset({"template", "system_prompt"})
 #: 分区内的子表键（[problem_solver.runtime] 这类）
 _SUB_TABLE_KEYS = ("runtime",)
+#: 分区 id 即块 id（blocks.py 是元数据的唯一来源）
+_BLOCKS_BY_ID = {block.id: block for block in BLOCKS}
+#: FRAGMENT 块不直接注入，而是被主模板以 {块id} 引用（预览时需要先展开）
+_FRAGMENT_IDS = frozenset(
+    block.id for block in BLOCKS if block.stage is Stage.FRAGMENT
+)
 
 
 def sample_values(config: Any = None) -> dict[str, str]:
@@ -93,15 +100,32 @@ def sample_values(config: Any = None) -> dict[str, str]:
 
 
 def preview_template(
-    template: str, values: dict[str, str] | None = None
+    template: str, values: dict[str, str] | None = None, store: Any = None
 ) -> dict[str, Any]:
-    """渲染模板并报告占位符使用情况(纯函数,供实时预览使用)。"""
+    """渲染模板并报告占位符使用情况(纯函数,供实时预览使用)。
+
+    ``{qq_chat}`` 这类 FRAGMENT 占位符会先用对应分区的文本展开，面板预览才能看到
+    真实渲染结果（而不是字面量占位符）。
+    """
     merged = sample_values()
     if values:
         for key, value in values.items():
             name = str(key or "").strip()
             if name:
                 merged[name] = "" if value is None else str(value)
+    for name in sorted(template_placeholders(template or "")):
+        if name not in _FRAGMENT_IDS or merged.get(name):
+            continue
+        fragment = ""
+        template_reader = getattr(store, "template", None)
+        if callable(template_reader):
+            fragment = str(template_reader(name) or "")
+        if not fragment:
+            from neobot_app.prompt.store import packaged_template
+
+            fragment = packaged_template(name)
+        if fragment:
+            merged[name] = render_template(fragment, merged)
     rendered = render_template(template or "", merged)
     placeholders = sorted(template_placeholders(template or ""))
     remaining = sorted(template_placeholders(rendered))
@@ -167,9 +191,15 @@ def describe_sections(
             )
         if not keys:
             continue
+        # 注册表元数据:自定义分区不在注册表里,给空值而不是报错
+        block = _BLOCKS_BY_ID.get(name)
         sections.append(
             {
                 "name": name,
+                "stage": block.stage.value if block is not None else None,
+                "scope": [s.value for s in block.scopes] if block is not None else [],
+                "order": block.order if block is not None else None,
+                "note": block.note if block is not None else "",
                 "keys": keys,
                 "enabled": merged.get("enabled"),
                 "customized": bool(custom),
@@ -184,14 +214,14 @@ def describe_sections(
 
 def _default_sections(store: Any) -> dict[str, Any]:
     """内置默认提示词分区(用于「恢复默认」与差异展示)。"""
+    reader = getattr(store, "default_sections", None)
+    if callable(reader):
+        return reader()
+    # store 不可用(面板未注入)时退回直接读内置模板
     from neobot_app.prompt.store import DEFAULT_TEMPLATE_FILE
 
     if DEFAULT_TEMPLATE_FILE.is_file():
         return parse_prompt_file(DEFAULT_TEMPLATE_FILE)
-    # 内置模板文件缺失(异常部署)时退回 store 自己的默认分区读取
-    loader = getattr(store, "_load_default_sections", None)
-    if callable(loader):
-        return loader()
     return {}
 
 

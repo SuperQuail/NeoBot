@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from neobot_app.prompt.labels import render_label
 from neobot_app.prompt.render import render_template
 
 #: 同一个工具 + 同一组参数连续失败到这个次数后，在工具结果里附一句软提示。
@@ -216,7 +217,15 @@ def _render_tool_package_index(skill_manager: Any) -> str:
     for name in names:
         tools = list(tool_names(name) or [])
         if tools:
-            lines.append("- " + name + ": " + ", ".join(tools))
+            lines.append(
+                render_label(
+                    "tool_packages",
+                    "entry",
+                    "- {name}: {tools}",
+                    name=name,
+                    tools=", ".join(tools),
+                )
+            )
     return "\n".join(lines)
 def _parse_tool_args(value: object) -> dict[str, Any]:
     """Normalize provider tool arguments to the dictionary executor contract."""

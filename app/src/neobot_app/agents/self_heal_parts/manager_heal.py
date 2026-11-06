@@ -9,9 +9,11 @@ from neobot_chat.schema.types import (
     State,
 )
 
+from neobot_app.prompt.store import get_template_value, packaged_template
 from neobot_app.statistics.tracker import (
     CURRENT_USAGE_MODULE,
 )
+from neobot_app.utils.formater import safe_format
 
 from .models import (
     HealTask,
@@ -23,6 +25,13 @@ from .models import (
 
 class SelfHealManagerHealMixin:
     """修复任务执行与两阶段通知。"""
+
+    def _prompt_text(self, key: str) -> str:
+        """读取 [self_heal] 的提示词文本(自定义文件优先,缺失时用内置模板)。"""
+        store = getattr(self, "_prompt_store", None)
+        return get_template_value(store, "self_heal", key) or packaged_template(
+            "self_heal", key
+        )
 
     async def _publish_start_notification(self, heal: HealTask) -> None:
         """Send the «已开始工作» notification to the admin private chat."""
@@ -105,12 +114,7 @@ class SelfHealManagerHealMixin:
                 messages.append(
                     {
                         "role": "user",
-                        "content": (
-                            "你尚未调用 submit_resolution 提交诊断结论。请立即调用 "
-                            "submit_resolution，给出 summary（必填）、repaired（bool，"
-                            "默认 false）、debug_file（可选，已写报告的沙箱相对路径）、"
-                            "root_cause（可选）。即使无法诊断也必须提交。"
-                        ),
+                        "content": self._prompt_text("resume_prompt"),
                     }
                 )
                 retry_state: State = {"messages": messages}
@@ -209,27 +213,15 @@ class SelfHealManagerHealMixin:
             )
 
     def _build_initial_prompt(self, heal: HealTask) -> str:
+        # 模板经 packaged_template 读取会去掉首尾空白；旧文案末尾带一个换行，补回来逐字一致。
         return (
-            "你被系统以自修复 Agent 身份唤醒，因为 Bot 在最近一段时间累积了一组异常。\n\n"
-            "请按以下流程工作：\n"
-            "1. 调用 read_errors 读取本次触发捕获的异常快照（含 traceback）。\n"
-            "2. 必要时调用 read_log_tail 读取完整日志，或 read_source_code / "
-            "search_source_code 定位异常代码位置。可用 search_web 查询依赖文档、"
-            "已知 issue 或相似异常的解决方法。\n"
-            "3. 谨慎使用安全修复工具（如 clear_drawing_cooldown / "
-            "trigger_image_cleanup）。仅在确认根因、评估风险后调用。\n"
-            "4. 调用 write_debug_report 将完整诊断报告写入沙箱 debug 目录，"
-            "记录异常栈、根因分析、已尝试的修复动作与后续建议。返回的沙箱相对路径"
-            "需要传给 submit_resolution 的 debug_file 参数。\n"
-            "5. 调用 submit_resolution 提交诊断结论（summary 必填、repaired 必填、"
-            "debug_file、root_cause 可选）。\n\n"
-            "规则：\n"
-            "- 不要直接修改源代码（你没有写源码的工具），仅做安全修复钩子可完成的事。\n"
-            "- 通知会自动通过系统向管理员私聊推送，无需你写'TO:'等收件人字段。\n"
-            "- 不要在聊天消息里夹杂内部技术字段（如 task_id）。\n"
-            f"- 当前任务 ID: {heal.task_id}\n"
-            f"- 触发原因: {heal.trigger_reason}\n"
-            f"- 累积异常数: {len(heal.error_snapshot)}\n"
+            safe_format(
+                self._prompt_text("initial_prompt"),
+                task_id=heal.task_id,
+                trigger_reason=heal.trigger_reason,
+                error_count=len(heal.error_snapshot),
+            )
+            + "\n"
         )
 
     async def shutdown(self) -> None:

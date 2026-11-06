@@ -25,14 +25,28 @@ def test_describe_sections_lists_defaults_and_placeholders(store: PromptStore) -
     assert "template" in keys
     assert keys["template"]["kind"] == "template"
     assert keys["template"]["overridden"] is False
-    assert "bot_name" in keys["template"]["placeholders"]
+    # 主模板只引用共享片段，具体占位符在 [qq_chat] 分区里
+    assert "qq_chat" in keys["template"]["placeholders"]
     assert keys["template"]["value"] == keys["template"]["default"]
+    qq_keys = {key["path"]: key for key in sections["qq_chat"]["keys"]}
+    assert "bot_name" in qq_keys["template"]["placeholders"]
 
     # 子表键必须展开成 runtime.template，面板才能单独编辑
     solver = {key["path"]: key for key in sections["problem_solver"]["keys"]}
     assert "system_prompt" in solver
     assert "runtime.template" in solver
     assert solver["description"]["kind"] == "text"
+
+
+def test_preview_expands_fragment_placeholders(store: PromptStore) -> None:
+    """{qq_chat} 这类共享片段占位符在预览里要展开成真实文本，不能显示字面量。"""
+    template = store.template("group_chat")
+
+    result = prompt_admin.preview_template(template, {}, store)
+
+    assert "{qq_chat}" not in result["rendered"]
+    assert "<你是谁>" in result["rendered"]
+    assert "<回复要求>" in result["rendered"]
 
 
 def test_write_and_remove_override_roundtrip(tmp_path: Path, store: PromptStore) -> None:
@@ -49,11 +63,11 @@ def test_write_and_remove_override_roundtrip(tmp_path: Path, store: PromptStore)
     assert key["overridden"] is True
     assert key["default"] != "自定义群聊提示词"
     # 其它分区继续继承默认值
-    assert store.template("friend_chat").startswith("<你是谁>")
+    assert store.template("friend_chat").startswith("{qq_chat}")
 
     prompt_admin.remove_override(custom_file, "group_chat", "template")
     store.reload()
-    assert store.template("group_chat").startswith("<你是谁>")
+    assert store.template("group_chat").startswith("{qq_chat}")
 
 
 def test_write_override_supports_sub_table(tmp_path: Path, store: PromptStore) -> None:

@@ -28,6 +28,9 @@ verified_hash: 621b91a6a75f
 * `bootstrap/_config.py:14 _load_config`（.env + 官方插件配置迁移 + 加载）与
   `bootstrap/__init__.py:543 _load_config_or_defaults`（失败 → 默认配置 + 强制待机）；
 * 热重载三层：分类表 `RULES` → 消费者注册表 `HotReloadRegistry` → 具体消费者；
+* 新配置段 `[prompt_optimizations]`（`config/schemas/bot_parts/prompt.py`）：cot 板块总开关
+  `cot_enabled` 与 6 个子块开关，默认全开；旧 `chat.gentle_language_enabled` 在
+  0.9.0 → 0.10.0 迁移里搬进 `gentle_language`，旧键删除；
 * 写入侧（`chat_writer`、dashboard `config_manager`）与它们的读盘语义。
 
 **不画什么**（避免与相邻图重叠）：
@@ -126,32 +129,59 @@ sequenceDiagram
 ## 细节
 
 <details>
-### schema 分层：BotConfig 的 17 个分区加 version，与两处名字重绑
+### schema 分层：BotConfig 的 20 个分区加 version，与两处名字重绑
 
 ```mermaid
 flowchart TD
-    A["BotConfig｜bot.py:1651，实际类型是 EnhancedBotConfig｜:1981"] --> B["version: str = 0.7.0，metadata readonly｜:1654"]
-    A --> C["bot / chat / models / agent_model / willing / tts / plugins｜:1658-1664"]
-    A --> D["message / file_server / adapter / debug / standby / scheduled_task｜:1665-1670"]
-    A --> E["agent / web_search / billing / avatars｜:1671-1674"]
-    C --> C1["chat 实际是 EnhancedChat｜:1658，共 77 个字段，基类 13 加增强 64"]
-    C --> C2["models: registry 模型库 + assignments 调用方引用｜:601"]
-    C2 --> C3["iter_role_models 只产出「被引用且库里存在」的角色｜:633"]
-    E --> E1["agent 下 11 个子段：creator / memory / problem_solver / sandbox / tools…｜:1517"]
-    E1 --> E2["AgentMemoryTrigger｜:1123 group_interval=500 private_interval=200"]
-    E1 --> E3["AgentMemoryArchive｜:1162 max_chars=500 max_total_chars=15000"]
-    E1 --> E4["AgentToolsConfig｜:1499 mode=native max_agent_iterations=20 max_goal_rounds=8"]
+    A["bot_parts/config.py:19 BotConfig｜实际类型是 EnhancedBotConfig"] --> B["version: str = 0.10.0，metadata readonly｜:22"]
+    A --> C["bot / chat / prompt_optimizations / models / agent_model / willing / tts / plugins"]
+    A --> D["message / file_server / adapter / debug / standby / scheduled_task"]
+    A --> E["agent / web_search / billing / avatars / bilibili / asr"]
+    C --> C1["chat 实际是 EnhancedChat（继承 core.Chat），共 79 个字段｜基类 13 + 增强 66"]
+    C --> C2["models: registry 模型库 + assignments 调用方引用"]
+    C2 --> C3["iter_role_models 只产出「被引用且库里存在」的角色"]
+    C --> C4["prompt_optimizations 7 个开关：cot_enabled + 6 个子块｜bot_parts/prompt.py:8"]
+    E --> E1["agent 下 11 个子段：creator / memory / problem_solver / sandbox / tools…"]
+    E1 --> E2["AgentMemoryTrigger group_interval=500 private_interval=200"]
+    E1 --> E3["AgentMemoryArchive max_chars=500 max_total_chars=15000"]
+    E1 --> E4["AgentToolsConfig mode=native max_agent_iterations=20 max_goal_rounds=8"]
     D --> D1["adapter 内含密钥字段：local_auth_token / reverse_ws_access_token"]
-    A --> F["文件末尾重绑：Chat = EnhancedChat｜:1968，BotConfig = EnhancedBotConfig｜:1969"]
+    A --> F["bot.py 只做 re-export（113 行）"]
+    F --> F1["文件末尾重绑：Chat = EnhancedChat，BotConfig = EnhancedBotConfig｜bot.py:58"]
 ```
 
-`Chat` 与 `BotConfig` 在文件末尾被**重新赋值**成增强版：任何
-`from ...schemas.bot import BotConfig` 拿到的都是 `EnhancedBotConfig`，
-所以 `[chat]` 段里能写 `reply_mode`、`agent_max_iterations` 这些基础 `Chat` 没有的键。
-`KeyWordRule` 是 `TypedDict`（`bot.py:15`），不是 dataclass：
-它走 `_validate_type` 的 TypedDict 分支校验，字段缺失不报错。
-`ModelAssignments.SINGLE_ROLES` 用 `ClassVar` 声明，因此**不是配置字段**，
-不会被写进 TOML（`bot.py:574`）。
+schema 已按域拆到 `config/schemas/bot_parts/`：`bot.py` 只负责 re-export，行号不再指向
+单文件的大类定义。`Chat` 与 `BotConfig` 在 `bot.py` 末尾被重新绑成增强版，所以
+`from ...schemas.bot import BotConfig` 拿到的都是 `EnhancedBotConfig`，`[chat]` 段里能写
+`reply_mode`、`agent_max_iterations` 这些基础 `Chat` 没有的键。
+`KeyWordRule` 是 `TypedDict`（`bot_parts/core.py`），不是 dataclass：它走 `_validate_type`
+的 TypedDict 分支校验，字段缺失不报错。
+`ModelAssignments.SINGLE_ROLES` 用 `ClassVar` 声明，因此**不是配置字段**，不会被写进 TOML。
+</details>
+
+<details>
+### 版本迁移：0.9.0 → 0.10.0 把温和语言开关搬进 [prompt_optimizations]
+
+```mermaid
+flowchart TD
+    A["config.toml version=0.9.0"] --> B["_apply_migrations 按 (from,to) 找链｜manager.py:254"]
+    B --> C["migrate_v9_to_v10｜migrations.py:493"]
+    C --> D["复制除 version / chat / prompt_optimizations 外的所有分区"]
+    D --> E["pop chat.gentle_language_enabled<br/>旧键从 [chat] 删除"]
+    E --> F{"旧分区已有 prompt_optimizations?"}
+    F -- 是 --> G["保留现有值，只补缺失的子块（setdefault）"]
+    F -- 否 --> H["新建分区并写入 gentle_language"]
+    G --> I["其余子块由 schema 默认值 true 补齐"]
+    H --> I
+    I --> J["version -> 0.10.0，后续补全写回"]
+```
+
+迁移只搬一个键：`chat.gentle_language_enabled` → `prompt_optimizations.gentle_language`，
+true/false 原样保留；`prompt_optimizations` 里其余 6 个开关由 dataclass 默认值 `true` 补齐，
+所以老部署升级后行为不变。`new["prompt_optimizations"]` 只在有内容时才写，
+空分区交给加载期的补全写回生成。新增配置段时**必须同时补迁移函数**：只改 schema 的话，
+旧文件缺这一段，会被 `Config.load` 的补全写回整份重生成（补默认值），
+而用户手写、schema 还不认识的键/分区会在同一次整份重写里消失。
 </details>
 
 <details>
@@ -394,7 +424,7 @@ flowchart TD
 |---|---|---|---|
 | `bootstrap._CONFIG_ERROR` | `_load_config_or_defaults` 捕获异常时写原因｜`__init__.py:553` | 下一次加载成功时清空｜`:563` | 非空即强制 `start_in_standby`｜`:698`，并写入待机原因文案｜`:703`；兜底配置不进复用缓存｜`:607` |
 | 磁盘 config.toml | 三个写入者（loader 补全 / chat_writer 定点 / 面板整份） | 用户手改或面板 TOML 模式 | 解析失败一律不改文件并抛 `ConfigLoadError`；写失败只有「文件原本不存在」是致命的 |
-| `version` 字段 | schema 默认 0.7.0；迁移链每步强制推进｜`manager.py:275` | 无 | 找不到迁移链：warning 后用旧数据继续，下次启动再试 |
+| `version` 字段 | schema 默认 0.10.0；迁移链每步强制推进｜`manager.py:275` | 无 | 找不到迁移链：warning 后用旧数据继续，下次启动再试 |
 | `ConfigProxy._config` | `build_config` 构造；`reload(new)` 原地替换｜`proxy.py:15` | 进程重启 | 兜底对象同样包成 ConfigProxy，否则面板与命令的重载入口会 AttributeError｜`__init__.py:562` |
 | `HotReloadRegistry._consumers` | `register`：同名忽略，先注册者胜｜`registry.py:146` | `unregister`（软重启前）｜`:156` | 一个都不命中 → 报告写「没有组件声明关心本次改动的配置项」｜`:96` |
 | `config.hot_reload.RULES` | 模块常量 + `register_rule` 追加覆盖 | 只有测试调 `unregister_rule` | 未登记路径默认「需要重启」，不会静默生效 |
@@ -422,7 +452,7 @@ flowchart TD
   同名用户脚本优先）；`web_search.engines` 默认也写实为 `["bing", "duckduckgo"]`，
   不再留 `None` 让 `SearchManager` 兜底 —— 面板/文档/审计看到的即为生效值。
 * **引用名是调用方唯一的定位手段，缺失或重复都会静默失效**：`by_ref()` 会跳过空引用名的条目
-  （`bot.py:641` 的 `if item.model_ref`），字典推导对重复引用名是**后写覆盖** ——
+  （`bot_parts/model_registry.py:269` 的 `if item.model_ref`），字典推导对重复引用名是**后写覆盖** ——
   两者都不报错，表现为「配置写了却没生效」。`register_models` 现在会在注册前把这两类
   各告警一条（指出第几个条目 / 涉及哪些位置），既有行为（跳过、后者生效）不变。
 * **「引用名是否存在」这条校验不能静默兜底**：它取 `by_ref()` 的结果；取不到方法时
@@ -448,13 +478,17 @@ flowchart TD
   别据此推断其它键也这样。
 * **迁移链断了不报错**：`_resolve_migration_chain` 返回空只 warning，然后拿旧结构走补全写回
   （`manager.py:262`）。改 schema `version` 前必须先补上迁移函数。
-* **`Chat` / `BotConfig` 是文件末尾的重绑**（`bot.py:1968`）：
-  读 schema 时看到基类 `Chat` 的定义不要以为生效的是它。
+* **新增配置段必须同时补迁移**：只改 schema 不写 `@Config.migration` 时，旧配置会被判出缺失项，
+  由 `Config.load` 整份写回补上默认值 —— 用户原有的显式值看着没丢，但顺序、注释和其它自定义内容
+  会丢。0.9.0 → 0.10.0 就是按这个规矩做的：`chat.gentle_language_enabled` 被 pop 出来搬进
+  `[prompt_optimizations].gentle_language`（`migrations.py:493`），旧键删除，其余子块默认 true。
+* **`Chat` / `BotConfig` 是 `bot.py` 末尾的重绑**（`bot.py:58`）：
+  读 schema 时看到基类 `Chat` 的定义不要以为生效的是它；schema 定义已拆到 `bot_parts/`。
 * **编号路由只对三个角色生效**（`main_agent` / `archive_summary` / `self_heal`），
   另外五个编号字段（`creator`、`memory`、`chat_interaction`、
   `willingness`、`scheduled_task`）**没有任何读取点**；解题 Agent 想要的
   `agent_model.problem_solver` 字段根本不存在，永远回落到编号 1。
-* **`auto_compact_chars` 是死配置**（`bot.py:1171`）：写它没有任何效果，
+* **`auto_compact_chars` 是死配置**（`bot_parts/memory.py:56`）：写它没有任何效果，
   档案长度相关行为由 `max_chars` 与 `max_total_chars` 决定。
 * **概率钳位只覆盖两个字段**（`converter.py:16`）：其它数值字段越界原样保留，
   不要以为加载期做了全量范围校验。

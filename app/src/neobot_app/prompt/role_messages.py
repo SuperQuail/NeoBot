@@ -25,6 +25,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from neobot_app.message.queue import QueueEntryType
+from neobot_app.prompt.labels import label, render_label
 
 if TYPE_CHECKING:
     from neobot_app.message.numbering import MessageNumbering
@@ -56,12 +57,12 @@ def _format_message_age(occurred_at: int | None, reference: int | None) -> str:
         return ""
     age = max(0, int(reference) - int(occurred_at))
     if age < 60:
-        return "刚刚"
+        return render_label("message_meta", "age_just_now", "刚刚")
     if age < 3600:
-        return f"{age // 60}分钟前"
+        return render_label("message_meta", "age_minutes", "{minutes}分钟前", minutes=age // 60)
     if age < 86400:
-        return f"{age // 3600}小时前"
-    return f"{age // 86400}天前"
+        return render_label("message_meta", "age_hours", "{hours}小时前", hours=age // 3600)
+    return render_label("message_meta", "age_days", "{days}天前", days=age // 86400)
 
 
 def _render_role_message(
@@ -93,14 +94,24 @@ def _render_role_message(
         # 共用同一个签名，这里刻意不用它。
         body = content
         if replied:
-            body = f"[被回复消息] {content}"
+            body = label("message_meta", "replied_prefix", "[被回复消息] ") + content
         return {"role": role, "content": body, "_history_msg_id": msg_id}
     prefix = f"{number}: " if number is not None else ""
-    marker = "[被回复消息] " if replied else ""
+    marker = label("message_meta", "replied_prefix", "[被回复消息] ") if replied else ""
     age_label = f"[{age}] " if age else ""
     return {
         "role": role,
-        "content": f"[msg_id={msg_id}] {prefix}{marker}{age_label}{sender}: {content}",
+        "content": render_label(
+            "message_meta",
+            "line",
+            "[msg_id={msg_id}] {prefix}{marker}{age}{sender}: {content}",
+            msg_id=msg_id,
+            prefix=prefix,
+            marker=marker,
+            age=age_label,
+            sender=sender,
+            content=content,
+        ),
     }
 
 
@@ -234,7 +245,7 @@ def _build_from_entries(
         )
     if all_new or (last_reply_message_id is not None and not found_last_reply):
         if include_boundary_markers:
-            messages.append(_user_message("<当前均为新消息，没有上次回复过的内容>"))
+            messages.append(_user_message(label("message_meta", "all_new")))
 
     new_section_opened = False
     new_section_content_emitted = False
@@ -248,7 +259,7 @@ def _build_from_entries(
                 and prev_entry.message.message_id == last_reply_message_id
             ):
                 if include_boundary_markers:
-                    messages.append(_user_message("<这是新的可能要回答的内容>"))
+                    messages.append(_user_message(label("message_meta", "new_content_open")))
                     new_section_content_emitted = True
 
         if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
@@ -337,12 +348,12 @@ def _build_from_entries(
             and entry.message.message_id == last_reply_message_id
         ):
             if include_boundary_markers:
-                messages.append(_user_message("<以上是上次对话回复过的内容>"))
+                messages.append(_user_message(label("message_meta", "previous_content")))
             new_section_opened = True
             continue
     # 仅在确实输出过新区段内容/开标记时才追加闭合标记,避免残缺的
     # "</这是新的可能要回答的内容>" 单独出现(last_reply 位于队尾时)
     if new_section_opened and new_section_content_emitted:
         if include_boundary_markers:
-            messages.append(_user_message("</这是新的可能要回答的内容>"))
+            messages.append(_user_message(label("message_meta", "new_content_close")))
     return _as_send_reply_tool_history(messages)

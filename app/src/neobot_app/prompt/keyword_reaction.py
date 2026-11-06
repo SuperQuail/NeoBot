@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
+from neobot_app.prompt.labels import render_label
+
 if TYPE_CHECKING:
     from neobot_app.config.schemas.bot import KeyWordRule
     from neobot_app.message.queue import MessageQueue
@@ -55,7 +57,14 @@ class KeywordReactionBuilder:
             matched_depths=" | ".join(",".join(str(depth) for depth in item.matched_depths) for item in items),
         )
         return "\n".join(
-            f"<追加信息_{index}>对于\"{'、'.join(item.matched_keywords)}\",{item.prompt_text}</追加信息_{index}>"
+            render_label(
+                "keyword_reaction",
+                "entry",
+                '<追加信息_{index}>对于"{keywords}",{prompt_text}</追加信息_{index}>',
+                index=index,
+                keywords="、".join(item.matched_keywords),
+                prompt_text=item.prompt_text,
+            )
             for index, item in enumerate(items, start=1)
         )
 

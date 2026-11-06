@@ -375,18 +375,3 @@ class AgentHandlersMixin:
             self._record_reply_delivered(
                 event, queue, queue_key, before_message_id=before_message_id
             )
-
-    def _append_current_time_block(
-        self, state: AgentLoopState, messages: list[dict]
-    ) -> None:
-        if state.time_block_full_sent:
-            block = self._build_short_time_message()
-            if block is None:
-                # 短时间戳分区关闭/缺失时回退完整块,保证时间仍在推进
-                block = self._build_current_time_message()
-        else:
-            block = self._build_current_time_message()
-            if block is not None:
-                state.time_block_full_sent = True
-        if block is not None:
-            messages.append(block)
