@@ -98,6 +98,12 @@ class _ReplyToolsMixin:
                 images = [int(n) for n in raw_images]
             except (ValueError, TypeError):
                 return f"错误：images 必须为整数列表，收到 {raw_images}"
+            if images and self._emoji is None:
+                return "错误：表情包服务不可用，无法发送图片，未发送；请去掉 images 后重试"
+            if images:
+                missing = [n for n in images if self._emoji.get_entry(n) is None]
+                if missing:
+                    return f"错误：表情包编号不存在，未发送：{missing}（用 list_emojis / search_custom_emoji 查看可用编号）"
         reply_to = args.get("reply_to")
         if reply_to is not None:
             try:
@@ -174,6 +180,9 @@ class _ReplyToolsMixin:
                     expanded_bodies.append(piece)
                     expanded_raw.append(False)
             send_segments = expanded_bodies
+            # 这些条目是本工具用 _preview_split 切出来的系统切分，不是模型手写分条：
+            # 交给 sender 的可信预览，避免把正文里的 cancel 等词当控制词吞掉。
+            split_preview = ReplySplitPreview(text, tuple(expanded_bodies))
 
         delivered = await self._send_reply(
             text=text,
@@ -224,7 +233,7 @@ class _ReplyToolsMixin:
         if images:
             summary = f"已发送（{len(images)} 张图片 + {len(bodies)} 条文字）"
         elif send_original:
-            summary = "已发送原文：1 条消息"
+            summary = f"已发送原文：{len(bodies)} 条消息"
         else:
             summary = f"已发送 {len(bodies)} 条消息"
         payload = {

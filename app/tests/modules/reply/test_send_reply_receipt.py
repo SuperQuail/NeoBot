@@ -59,9 +59,14 @@ def _executor(sender, event, **kwargs):
             segments=args["segments"],
             send_original=args["send_original"],
             images=args["images"],
+            **({"split_preview": args["split_preview"]} if args.get("split_preview") else {}),
         )
 
-    return ReplyToolExecutor(send_reply_handler=handler, **kwargs)
+    return ReplyToolExecutor(
+        send_reply_handler=handler,
+        emoji_service=getattr(sender, "_emoji_service", None),
+        **kwargs,
+    )
 
 
 def _wire_texts(adapter):
@@ -302,3 +307,15 @@ def test_send_reply_schema_documents_per_statement_raw():
     assert "raw" in segments["items"]["oneOf"][1]["properties"]
     assert "该条" in segments["description"] and "自动切分" in segments["description"]
     assert send_reply["parameters"]["required"] == []
+
+async def test_auto_statement_keeps_control_word_parts():
+    """系统自动切出的分条必须按可信切分发送，不能把正文里的 cancel 吞掉。"""
+    sender, event, adapter = _sender()
+    receipt = json.loads(
+        await _executor(sender, event).execute(
+            "send_reply", {"segments": [{"text": "cancel，是什么意思"}]}
+        )
+    )
+    wire = _wire_texts(adapter)
+    assert wire == ["cancel", "是什么意思"]
+    assert [part["text"] for part in receipt["parts"]] == wire

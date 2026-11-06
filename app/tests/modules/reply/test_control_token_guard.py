@@ -70,7 +70,11 @@ def tool_for(sender, event, **kwargs):
             images=args["images"], split_preview=args.get("split_preview"),
         )
 
-    return ReplyToolExecutor(send_reply_handler=handler, **kwargs)
+    return ReplyToolExecutor(
+        send_reply_handler=handler,
+        emoji_service=getattr(sender, "_emoji_service", None),
+        **kwargs,
+    )
 
 
 @pytest.mark.parametrize("raw", ["cancel", " CANCEL ", "Bot: cancel", "<think>secret</think>cancel"])
