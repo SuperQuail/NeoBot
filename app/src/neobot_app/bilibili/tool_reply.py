@@ -21,9 +21,9 @@ _SEND_REPLY = {
             "type": "object",
             "properties": {
                 "text": {"type": "string", "minLength": 1, "maxLength": 20000},
-                "reply_to": {
+                "reply_to_uid": {
                     "type": "integer",
-                    "description": "可选：要 @ 的观众 UID（直播间弹幕行首 [uid=...]）；不传则不 @",
+                    "description": "可选：要 @ 的观众 UID（直播间弹幕行首 [uid=...]；不是消息编号）；不传则不 @",
                 },
             },
             "required": ["text"],
@@ -75,7 +75,7 @@ class _ReplyExecutor:
                 return '{"ok": false, "error": "text 不能为空"}'
             if self.allow_reply_to:
                 try:
-                    self.reply_to = int(args.get("reply_to") or 0)
+                    self.reply_to = int(args.get("reply_to_uid", args.get("reply_to")) or 0)
                 except (TypeError, ValueError):
                     self.reply_to = 0
             if text.upper() == "[SKIP]":

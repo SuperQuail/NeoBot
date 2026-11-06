@@ -94,15 +94,17 @@ class AgentPipelineMixin:
         # into a labelled user appendix at the END of every model request.
         vision_context.manual_parts.extend(image_parts)
         if vision_just_disabled:
-            messages.append(
-                {"role": "user", "content": "[原生视觉回退] 图片未发送；非视觉模型和外部图片解析工具已恢复。"}
+            self._append_block(
+                messages,
+                "vision_fallback_notice",
+                dynamic={"vision_fallback": True},
             )
 
         # 已经回复过:清零轮次与时间基准,本次管线激活不再提醒
         if state.reply_sent:
             nudge_rounds = 0
             nudge_deadline = monotonic_seconds() + nudge_seconds
-        # 设计契约：外发工具（send_reply / send_emoji / speak / send_long_reply）
+        # 设计契约：外发工具（send_reply / speak / send_long_reply）
         # 只是普通工具，发出消息不等于结束本轮；只有 cancel 可以主动终止。
         return tools, nudge_rounds, nudge_deadline, state.cancelled
 

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from neobot_app.reply.event import ReplyState
 from neobot_app.reply.postprocess import ReplySplitPreview
-from neobot_app.utils.media_sender import prepare_image_segment, send_image
+from neobot_app.utils.media_sender import send_image
 from ._runtime import asyncio
 from .agent_state import AgentLoopState
 from .sending import _segment_file_hint
@@ -24,6 +24,7 @@ class AgentHandlersMixin:
         self, state: AgentLoopState, event: ReplyEvent, reason: str | None = None
     ) -> None:
         state.cancelled = True
+        self._clear_unsent_marker(event)
         event.error = reason or "agent 主动取消回复"
         if not event.is_terminal:
             event.transition(ReplyState.CANCELLED)
@@ -88,46 +89,11 @@ class AgentHandlersMixin:
             )
         if delivered is not False:
             state.reply_sent = True
+            self._clear_unsent_marker(event)
             self._record_reply_delivered(
                 event, queue, queue_key, before_message_id=before_message_id
             )
         return delivered
-
-    async def _agent_send_emoji_handler(
-        self,
-        state: AgentLoopState,
-        event: ReplyEvent,
-        queue: MessageQueue,
-        queue_copy: MessageQueue,
-        queue_key: str,
-        number: int,
-    ) -> None:
-        if self._emoji_service is None:
-            return
-        entry = self._emoji_service.get_entry(number)
-        if entry is None:
-            return
-        # 表情包单独作为一条消息发送，不与要说的话合并
-        segments = [prepare_image_segment(self._file_server, entry.file_path)]
-        emoji_conv = event.conversation_ref
-        before_message_id = queue.get_last_message_id(queue_key)
-        delivered = await self._send_with_timeout(emoji_conv, segments)
-        # 表情包发出去了就算「已回复」：否则 emoji-only 轮次会被判 CANCELLED，
-        # 回复冷却与 last_reply_position 都不推进
-        if delivered is not False:
-            state.reply_sent = True
-            event.send_response = delivered
-            self._record_reply_delivered(
-                event, queue, queue_key, before_message_id=before_message_id
-            )
-        # 表情包也是「真实发出去了」的图片：按真实形态入队
-        if emoji_conv is not None:
-            emoji_sink = self._self_sent_sink(queue, queue_copy, queue_key)
-            await self._sender.record_self_sent_image(
-                emoji_sink, emoji_conv, entry.file_path
-            )
-        # 记录表情包使用次数
-        await self._emoji_service.record_usage(number)
 
     async def _agent_wait_handler(
         self,
@@ -263,6 +229,7 @@ class AgentHandlersMixin:
         # 与 send_reply 同语义：语音真实发出即视为已回复
         if delivered is not False:
             state.reply_sent = True
+            self._clear_unsent_marker(event)
             event.send_response = delivered
             self._record_reply_delivered(
                 event, queue, queue_key, before_message_id=before_message_id
@@ -341,6 +308,7 @@ class AgentHandlersMixin:
             caption_delivered = await self._send_with_timeout(conv_ref, caption_segs)
             if conv_ref is not None and caption_delivered is not False:
                 state.reply_sent = True
+                self._clear_unsent_marker(event)
                 event.send_response = caption_delivered
                 self._record_reply_delivered(event, queue, queue_key, before_message_id=before_message_id)
                 self._sender.record_self_sent_text(long_reply_sink, conv_ref, caption.strip())
@@ -354,6 +322,7 @@ class AgentHandlersMixin:
         )
         if image_delivered is not False:
             state.reply_sent = True
+            self._clear_unsent_marker(event)
             event.send_response = image_delivered
             event.send_incomplete = False
             self._record_reply_delivered(event, queue, queue_key, before_message_id=before_message_id)
@@ -369,24 +338,10 @@ class AgentHandlersMixin:
             )
         if image_delivered is not False or caption_delivered is not False:
             state.reply_sent = True
+            self._clear_unsent_marker(event)
             event.send_response = (
                 image_delivered if image_delivered is not False else caption_delivered
             )
             self._record_reply_delivered(
                 event, queue, queue_key, before_message_id=before_message_id
             )
-
-    def _append_current_time_block(
-        self, state: AgentLoopState, messages: list[dict]
-    ) -> None:
-        if state.time_block_full_sent:
-            block = self._build_short_time_message()
-            if block is None:
-                # 短时间戳分区关闭/缺失时回退完整块,保证时间仍在推进
-                block = self._build_current_time_message()
-        else:
-            block = self._build_current_time_message()
-            if block is not None:
-                state.time_block_full_sent = True
-        if block is not None:
-            messages.append(block)

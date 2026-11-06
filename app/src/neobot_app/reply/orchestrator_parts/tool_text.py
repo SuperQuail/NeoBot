@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from neobot_app.prompt.assets import text
 from neobot_app.prompt.render import render_template
 
 #: 同一个工具 + 同一组参数连续失败到这个次数后，在工具结果里附一句软提示。
@@ -204,7 +205,7 @@ def _redacted_tool_text(value: object, limit: int = _MAX_TOOL_LOG_CHARS) -> str:
 def _safe_tool_args(args: object) -> str:
     redacted = _redact_tool_value(args, drop_internal=True)
     return _redacted_tool_text(redacted, _MAX_TOOL_LOG_CHARS)
-def _render_tool_package_index(skill_manager: Any) -> str:
+def _render_tool_package_index(skill_manager: Any, *, prompt_store: Any = None) -> str:
     """把可加载工具包 + 工具名直接渲染进提示词，省掉模型先查询/看说明的一次调用。"""
     if skill_manager is None:
         return ""
@@ -216,7 +217,14 @@ def _render_tool_package_index(skill_manager: Any) -> str:
     for name in names:
         tools = list(tool_names(name) or [])
         if tools:
-            lines.append("- " + name + ": " + ", ".join(tools))
+            entry = text(
+                "label_tool_packages",
+                "entry",
+                store=prompt_store,
+                values={"name": name, "tools": ", ".join(tools)},
+            )
+            if entry:
+                lines.append(entry)
     return "\n".join(lines)
 def _parse_tool_args(value: object) -> dict[str, Any]:
     """Normalize provider tool arguments to the dictionary executor contract."""

@@ -14,6 +14,7 @@ from neobot_chat.schema.types import (
 from neobot_chat.tools.toolset import ToolSpec, Toolset
 from neobot_contracts.ports.logging import Logger, NullLogger
 
+from neobot_app.prompt.assets import raw_text
 from neobot_app.statistics.tracker import (
     CURRENT_CONVERSATION_ID,
     CURRENT_CONVERSATION_KIND,
@@ -32,6 +33,10 @@ from .tool_executor import SelfHealToolExecutor
 if TYPE_CHECKING:
     from .manager import SelfHealManager
 
+#: 兼容旧导出名：内容来自 ``prompts.toml`` 的 ``[self_heal].system_prompt``，
+#: 代码里不再维护第二份文案（旧调用方/测试仍可 import）。
+_FALLBACK_SYSTEM_PROMPT = raw_text("self_heal", "system_prompt")
+
 
 def _build_system_prompt(
     config: SelfHealAgentConfig,
@@ -39,35 +44,15 @@ def _build_system_prompt(
     peer_descriptions: str = "",
     prompt_store: Any = None,
 ) -> str:
-    base = ""
-    if prompt_store is not None:
-        base = prompt_store.get("self_heal", "system_prompt", default="")
-    if not base:
-        base = _FALLBACK_SYSTEM_PROMPT
-    return (
-        base
-        + f"\n\n- 诊断超时时间：{config.timeout_seconds} 秒\n"
-        f"{peer_descriptions}\n"
+    from neobot_app.prompt.render import render_template
+
+    base = raw_text("self_heal", "system_prompt", store=prompt_store)
+    runtime = raw_text("self_heal", "runtime", store=prompt_store)
+    detail = render_template(
+        runtime,
+        {"timeout_seconds": config.timeout_seconds, "peer_descriptions": peer_descriptions},
     )
-
-
-_FALLBACK_SYSTEM_PROMPT = (
-    "你是系统的自修复 Agent。当 Bot 在运行期间累积了持续异常时，系统会自动唤起你。\n\n"
-    "你的职责：\n"
-    "1. 诊断异常根因（使用 read_errors + read_log_tail + read_source_code / "
-    "search_source_code + search_web）。\n"
-    "2. 在确认根因且评估风险后，调用安全修复工具（clear_drawing_cooldown / "
-    "trigger_image_cleanup）。没有适合工具时不要强行修改，仅做诊断。\n"
-    "3. 调用 write_debug_report 将完整诊断报告写入沙箱 debug 目录。\n"
-    "4. 调用 submit_resolution 提交结论，系统会自动通过通知系统向管理员私聊"
-    "推送最终通知。\n\n"
-    "重要规则：\n"
-    "- 你无法修改 Bot 自身源码，仅有少量安全修复钩子。请现实地评估能做什么。\n"
-    "- 修复失败也要明确通过 submit_resolution 的 repaired=false 告知。\n"
-    "- 不要在报告里夹带多余的 task_id 之类的内部字段——这些由系统自动填充。\n"
-    "- 不需要负责把消息发送给管理员；系统会自动通过通知系统完成。\n"
-    "- 完成诊断后请用简洁的中文摘要提交。"
-)
+    return base + "\n\n" + detail + "\n"
 
 
 class SelfHealAgent:
@@ -93,7 +78,7 @@ class SelfHealAgent:
         cfg = config or SelfHealAgentConfig()
         self.description = EXPOSED_TO_MAIN_AGENT_DESCRIPTION
         if prompt_store is not None:
-            desc = prompt_store.get("self_heal", "description", default="")
+            desc = raw_text("self_heal", "description", store=prompt_store)
             if desc:
                 self.description = desc
         self._manager = manager
@@ -225,4 +210,5 @@ def build_self_heal_agent(
     )
     if manager is not None:
         manager.set_agent(agent)
+        manager.set_prompt_store(prompt_store)
     return agent

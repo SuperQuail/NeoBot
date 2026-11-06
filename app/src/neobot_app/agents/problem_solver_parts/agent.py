@@ -14,6 +14,7 @@ from neobot_chat.schema.types import (
 from neobot_chat.tools.toolset import ToolSpec, Toolset
 from neobot_contracts.ports.logging import Logger, NullLogger
 
+from neobot_app.prompt.assets import raw_text
 from neobot_app.statistics.tracker import (
     CURRENT_CONVERSATION_ID,
     CURRENT_CONVERSATION_KIND,
@@ -27,14 +28,12 @@ from .models import (
     ProblemSolverAgentConfig,
     _CHAT_FLOW_ID,
     _MAX_AGENT_ITERATIONS,
-    _MODE_NOTE_NATIVE,
-    _MODE_NOTE_PTC,
     _SOLVER_CHAT_CONTEXT,
     _TOOL_CONTEXT,
     _default_resolver,
 )
 
-from .prompts import _build_system_prompt
+from .prompts import _build_system_prompt, load_mode_note
 from .toolset_builder import build_problem_solver_toolset
 
 if TYPE_CHECKING:
@@ -64,7 +63,7 @@ class ProblemSolverAgent:
         cfg = config or ProblemSolverAgentConfig()
         self.description = EXPOSED_TO_MAIN_AGENT_DESCRIPTION
         if prompt_store is not None:
-            desc = prompt_store.get("problem_solver", "description", default="")
+            desc = raw_text("problem_solver", "description", store=prompt_store)
             if desc:
                 self.description = desc
         self._manager = manager
@@ -121,7 +120,7 @@ class ProblemSolverAgent:
         specs = [ToolSpec(d, _default_resolver) for d in executor.definitions()]
         self._toolset = Toolset(executor=executor, specs=specs)
         previous = self._agent
-        self._mode_note = _MODE_NOTE_PTC if runtime.mode == "ptc" else _MODE_NOTE_NATIVE
+        self._mode_note = load_mode_note(self._prompt_store, runtime.mode)
         self._agent = Agent(
             previous.provider, toolset=self._toolset, include_builtin_tools=False,
             description=self.description,

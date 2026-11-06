@@ -156,7 +156,13 @@ class AgentToolExecMixin:
                     from neobot_app.skills.image_context_skill import ImageContextResult
 
                     if isinstance(result, ImageContextResult):
-                        image_parts.extend(labelled_tool_images(result, tool_call_id=str(tc.get("id", ""))))
+                        image_parts.extend(
+                            labelled_tool_images(
+                                result,
+                                tool_call_id=str(tc.get("id", "")),
+                                prompt_store=getattr(self, "_prompt_store", None),
+                            )
+                        )
                 safe_result = _redacted_tool_text(result, _MAX_TOOL_LOG_CHARS)
                 result = _bounded_tool_text(result)
             except asyncio.TimeoutError:

@@ -6,7 +6,7 @@ covers:
   - app/src/neobot_app/observability/context_recorder.py
   - app/src/neobot_app/observability/prompt_diff.py
 verified_against: d525a5b
-verified_hash: b982070998c5
+verified_hash: 73d8dae4968c
 ---
 
 # 24 提示词系统与聊天流快照
@@ -17,9 +17,17 @@ verified_hash: b982070998c5
 
 「系统提示词怎么拼出来」与「拼好的提示词怎么给人看」两件事：
 
-* 提示词侧：`PromptStore` 的三层取值与默认提示词同步、`render_template` 的占位符/转义/空区块规则、
-  `PromptBuilder` 的分区装配、`build_role_messages` 的角色消息构造、关键词反应注入；
+* 提示词侧：**块注册表** `prompt/blocks.py`（每块的阶段 / 作用域 / 顺序 / 启用条件）、
+  **组合器** `prompt/composer.py`（按阶段拼 system、上下文 user 块与运行时注入）、
+  **统一资产入口** `prompt/assets.py`（`raw_text` / `text`，优先 store 覆盖，其次内置，最后兜底）、
+  唯一数据文件 `prompt/templates/prompts.toml`；`PromptStore` 的三层取值与默认提示词同步、
+  `render_template` 的占位符/转义/空区块规则、`PromptBuilder` 只收集占位符取值、
+  `build_role_messages` 的角色消息构造、关键词反应注入；
 * 观测侧：`ChatFlowRegistry`（面板「聊天流」数据源）与 `ContextRecorder`（完整提示词历史，纯内存 + 逐份 diff）。
+
+**文本与行为分开**：文本在 `prompts.toml`（用户可覆盖、面板可编辑），阶段/顺序/启停条件在
+`blocks.py`。新增一个块 = 注册表加一条 `Block` + TOML 加一个分区，不需要改 builder 的 if 链，
+也不需要改编排器的注入顺序。
 
 不在这里：模型路由见 `05`、回复管线的调用时机见 `03`、面板接口见 `09b`、
 计费与日志 sink 见 `23`（本图只引用 context_recorder 的内存语义）。
@@ -30,18 +38,30 @@ verified_hash: b982070998c5
 flowchart TD
     A["启动: sync_default_prompts 对齐 SRC_DATA 与 DATA_DIR"] --> B["PromptStore(data_dir)"]
     B --> C["_load_default_sections 读内置 prompts.toml"]
-    C --> D["_load_merged 叠加用户覆盖"]
-    D --> E["_file_signature 按 mtime 判缓存"]
-    E --> F["PromptBuilder.build_*"]
-    F --> G["render_template: 占位符替换 + 空区块清理"]
-    G --> H["build_role_messages: 组装角色消息"]
-    H --> I["orchestrator 作为 system 提示词发出去"]
-    I --> J["ChatFlowRegistry.record_prompt / record_request"]
-    I --> K["ContextRecorder 记录完整上下文（逐份 diff）"]
-    J --> L["面板聊天流页只读展示"]
-    K --> M["面板完整提示词页只读展示"]
-    B -.文件变化.-> N["reload() 或下次签名失配时重载"]
+    C --> D["_load_merged 叠加 data/prompts/custom"]
+    D --> E["_file_signature 按 (mtime,size) 判缓存"]
+    E --> F["PromptBuilder 收集占位符取值<br/>群/私聊上下文、时间、编号说明、自适应文本"]
+    F --> G["make_context: PromptContext(scope, values, dynamic, features)"]
+    G --> G1["_with_fragments: FRAGMENT 渲染成 {块id}<br/>（qq_chat / qq_chat_examples）"]
+    G1 --> H["PromptComposer.build_system"]
+    H --> H1["Stage.SYSTEM_PREFIX: cot_intro → 子块 → cot_outro"]
+    H1 --> H2["Stage.SYSTEM_MAIN: group_chat / friend_chat"]
+    H2 --> H3["模板漏写时补回 numbering_guide"]
+    H3 --> H4["Stage.SYSTEM_APPEND: 稳定追加块"]
+    H4 --> I["SystemPrompt: text + consumed + rendered + skipped"]
+    I --> J["build_context: Stage.CONTEXT<br/>system 已消费的去重键置空"]
+    J --> K["编排器组装 messages 并发给 provider"]
+    K --> K1["_append_round_blocks: per_round 的 SYSTEM_APPEND 块"]
+    K --> L["_inject_runtime_blocks: RUNTIME_DATA → REMINDER → TIME"]
+    K --> M["ChatFlowRegistry.record_prompt / record_request"]
+    K --> N["ContextRecorder 记录完整上下文（逐份 diff）"]
+    M --> O["面板聊天流页只读展示"]
+    N --> P["面板完整提示词页只读展示"]
+    B -.文件变化.-> Q["reload() 或下次签名失配时重载"]
 ```
+
+块被跳过不丢信息：`block_skip_reason` 返回的中文原因进 `SystemPrompt.skipped`，同时记一条
+debug「提示词块已跳过」——排查「这段为什么没注入」先看那里，而不是猜配置。
 
 ## 时序
 
@@ -50,20 +70,25 @@ sequenceDiagram
     autonumber
     participant BS as bootstrap
     participant PS as PromptStore
+    participant AS as assets
     participant PB as PromptBuilder
-    participant RE as render_template
+    participant PC as PromptComposer
     participant OR as ReplyOrchestrator
     participant FR as ChatFlowRegistry
     participant CR as ContextRecorder
 
     BS->>PS: sync_default_prompts + PromptStore(data_dir)
-    PS->>PS: 读内置模板并叠加用户覆盖
-    OR->>PB: build（角色 / 群聊 / 私聊）
-    PB->>PS: template(key)
-    PS-->>PB: 模板文本
-    PB->>RE: render_template(模板, 占位符值)
-    RE-->>PB: 渲染结果（空区块已清理）
-    PB-->>OR: system 提示词
+    PS->>PS: 读内置模板并叠加 custom 覆盖
+    OR->>PB: build_group_chat_prompt / build_friend_chat_prompt
+    PB->>AS: raw_text(section, key) 逐分区取模板
+    AS-->>PB: custom → 内置 → fallback
+    PB->>PC: build_system(make_context(...))
+    PC->>PC: SYSTEM_PREFIX(cot) → SYSTEM_MAIN → SYSTEM_APPEND
+    PC-->>PB: SystemPrompt(text, consumed, skipped)
+    PB->>PC: build_context(ctx, system) 渲染 CONTEXT 块
+    PC-->>PB: user 块（system 已消费的键置空）
+    PB-->>OR: system 文本 + context_blocks
+    OR->>PC: _append_round_blocks / inject(RUNTIME_DATA→REMINDER→TIME)
     OR->>FR: record_prompt + record_request
     OR->>CR: record(messages, meta)
     Note over FR,CR: 三处登记全部 try/except，绝不影响本次回复
@@ -81,16 +106,19 @@ flowchart TD
     C --> D["sections: key -> {template, enabled, ...}"]
     D --> E{"get(key) / template(key)"}
     E -- 命中 --> F["返回该分区"]
-    E -- 缺失 --> G["fallback_template 内置兜底"]
+    E -- 缺失 --> G["返回 default（空串）<br/>template_or_fallback 才回退内置兜底"]
     F --> H["_file_signature 记录 mtime 判是否需要重载"]
     G --> H
     H --> I["reload() 手工/启动时重载"]
 ```
 
-三层是「**包内默认 -> 用户覆盖 -> 内置兜底**」。`_file_signature`（`store.py:315`）决定要不要重读，
+三层是「**包内默认 -> 用户覆盖 -> 内置兜底**」。`_file_signature`（`store.py:152`）决定要不要重读，
 所以**改提示词文件后不必重启**，但要保证 mtime 真的变了（同秒内多次写可能漏更新）。
-`enabled(key, default=True)`（`:425`）是分区的总开关：`enabled=false` 的分区在 `PromptBuilder` 侧
-直接跳过（`builder.py:81 _section_enabled`）。
+`get()` 缺失或空白时返回 `default`（空串），只有 `template_or_fallback` / `get_template_value`
+会回退内置兜底（`store.py:258` / `:119`）。
+`enabled(key, default=True)`（`:272`）是分区的总开关：`enabled=false` 的分区在
+`PromptComposer.block_skip_reason` 里先被跳过（`SYSTEM_MAIN` 主模板例外），
+模板文本本身则由 `assets.raw_text` 按 custom → 内置 → fallback 解析。
 </details>
 
 <details>
@@ -116,27 +144,53 @@ flowchart TD
 </details>
 
 <details>
-### PromptBuilder：分区装配与自适应段
+### 块注册表与阶段：cot 前缀、FRAGMENT 与 CATALOG
 
 ```mermaid
 flowchart TD
-    A["PromptBuilder(config, store, ...)"] --> B["_section_enabled 过滤关闭的分区"]
-    B --> C["_context_values 汇总占位符取值"]
-    C --> D["_time_values / build_current_time_message / build_short_time_message"]
-    D --> E["_inject_member_archives 决定是否注入成员档案"]
-    E --> F["_group_profile_max_chars 限制群画像长度"]
-    F --> G["_build_numbering_guide 消息编号说明"]
-    G --> H["_append_adaptive 追加自适应提示词"]
-    H --> I["_merge_prompt_fragments 合并片段"]
-    I --> J["最终 system 提示词"]
+    A["Stage.SYSTEM_PREFIX｜blocks.py"] --> A1["cot_intro → cot_at_mention → gentle_language<br/>→ cot_avoid_bot_chat → cot_no_bluffing<br/>→ cot_no_game_topics → cot_no_echo_images → cot_outro"]
+    B["Stage.FRAGMENT"] --> B1["qq_chat / qq_chat_examples：不单独注入<br/>渲染成 {块id} 给主模板引用"]
+    C["Stage.CATALOG"] --> C1["label_* / bili_*：不经过注入管道<br/>assets.text(id) 按键读取"]
+    D["Stage.CONTEXT / RUNTIME_DATA / REMINDER / TIME"] --> D1["user 块按阶段顺序追加<br/>TIME 是 terminal，保证在最后一条"]
+    E["Block.requires"] --> E1["config_flag / feature / dynamic_present<br/>返回未通过原因"]
+    F["per_round / once_per_activation"] --> F1["每轮由编排器追加 / 每次激活只发一次"]
+    G["section_enabled：分区 enabled=false"] --> G1["主模板例外：SYSTEM_MAIN 永远启用"]
 ```
 
-值得注意的两点：
+`Stage` 共 12 个值：`SYSTEM_PREFIX` / `SYSTEM_MAIN` / `SYSTEM_APPEND` / `FRAGMENT` / `CATALOG` /
+`CONTEXT` / `RUNTIME_DATA` / `REMINDER` / `TIME` / `TOOL_RESULT` / `STATUS` / `SUBAGENT`。
+`SYSTEM_PREFIX` 是全局 cot 板块：总开关 `prompt_optimizations.cot_enabled` 管整段，子块各有开关
+（`at_mention_reply` / `gentle_language` / `avoid_bot_chat` / `no_bluffing` / `no_game_topics` /
+`no_echo_images`），默认全开；关掉子块只跳过该块，`cot_intro` 与 `cot_outro` 仍在（整段仍是 `<cot>…</cot>`）。
+主模板里的旧 `<cot>` 已改名 `<思维模式要求>`，避免与真正的 cot 前缀重名。
+`blocks.validate_blocks()` 做注册表自检：id 唯一、非主模板必须有 TOML 分区或 `text`、
+`per_round` 块的 order 必须大于所有稳定追加块、同阶段同作用域 order 不能冲突。
+</details>
 
-* `_append_adaptive`（`builder.py:455`）是「自适应提示词」的唯一注入点，内容来自
-  `_get_adaptive_prompt`（可选择走模型生成或读缓存）；
-* `_group_profile_max_chars`（`:515`）与档案系统的 `max_chars=500` 是**两个不同的上限**：
-  前者只为渲染长度服务（见 FINDINGS 07-2），改一个不会影响另一个。
+<details>
+### PromptBuilder → PromptComposer：取值与拼装分离
+
+```mermaid
+flowchart TD
+    A["build_group_chat_prompt / build_friend_chat_prompt"] --> B["_group_context_values / _friend_context_values<br/>汇总群友、印象、关键词反应等占位符"]
+    B --> C["_time_values + _build_numbering_guide"]
+    C --> D["_make_ctx(scope, values, dynamic={'adaptive_text': _adaptive_block()})"]
+    D --> E["self._composer.build_system(ctx)"]
+    E --> F["build_context_messages(ctx, system) 填 context_blocks"]
+    F --> G["返回 system.text"]
+    H["编排器侧的后处理"] --> H1["_append_round_blocks 追加 per_round 的 SYSTEM_APPEND 块"]
+    H --> H2["_at_mention_wait_message 追加等待指引 user 块"]
+    H --> H3["prompt.build.before / after 钩子可改写或短路"]
+    I["builder 的按块渲染入口"] --> I1["build_current_time_message / build_short_time_message"]
+    I --> I2["member_archive_hint / build_group_chat_resume_text"]
+    I --> I3["_inject_member_archives：是否注入成员档案"]
+```
+
+`PromptBuilder` 不再自己拼分区：`_append_adaptive` 这个分叉点已删除，自适应文本现在是
+`SYSTEM_APPEND` 里的 `adaptive_prompt` 块（`text=dynamic_text("adaptive_text")`），
+builder 只把 `_adaptive_block()`（读 `data/自适应提示词.txt`，按 mtime 缓存）放进 `dynamic`。
+`_group_profile_max_chars` 与档案系统的 `max_chars=500` 仍是**两个不同的上限**：
+前者只为渲染长度服务（见 FINDINGS 07-2），改一个不会影响另一个。
 </details>
 
 <details>
@@ -245,7 +299,10 @@ flowchart TD
 | 状态 | 谁置位 | 谁清理 | 失败时停在哪 |
 |---|---|---|---|
 | PromptStore 缓存签名 | `_file_signature`（mtime/size） | 下次重载覆盖 | 同秒内二次写入可能不触发重载 |
-| 分区开关 `enabled` | 提示词文件 | 文件改回 true | `enabled=false` 的分区在 builder 侧被跳过 |
+| 分区开关 `enabled` | 提示词文件 | 文件改回 true | `block_skip_reason` 先查分区；主模板（SYSTEM_MAIN）不受影响 |
+| cot 前缀与子块开关 | `[prompt_optimizations]` 的 `cot_enabled` 与 6 个子块 | 配置改回 true | 关闭的块进 `skipped`，整段前缀随之消失或缩短 |
+| 块跳过原因 | `PromptComposer.block_skip_reason` | 每次构建重算 | 同时进 `SystemPrompt.skipped` 与 debug「提示词块已跳过」 |
+| FRAGMENT 占位符取值 | `_with_fragments` | 每次 `build_system` 重算 | 片段关闭/为空时显式给空值，避免 `{qq_chat}` 以字面量泄漏 |
 | `ChatFlowState.active` | `set_active(True)` | `set_active(False)` 或淘汰 | 只影响面板展示，不影响回复 |
 | 聊天流条数 | `_state` 新建时 | `_evict_if_needed` | 超限淘汰最旧流 |
 | 提示词历史 | `ContextRecorder.record` | 超限淘汰最旧 + **重启清空** | 读写异常只记 debug |
@@ -257,6 +314,17 @@ flowchart TD
   表现是「模板里留着一个空标签」或「字面量花括号被吃掉」。
 * **提示词历史不落盘**：面板看到的完整提示词重启即失；它和 `DebugRecorder` 的文件录制是**两条独立链路**
   （后者落盘、按保留期清理，见 `23-billing-stats.md`）。
+* **「这段提示词为什么没注入」先看 `skipped`**：组合器把块级原因（分区关闭 / 配置开关关闭 /
+  缺少运行时内容 / 渲染为空）都记进 `SystemPrompt.skipped` 与 debug 日志；
+  builder 不再是唯一注入点，per_round 块由编排器 `_append_round_blocks` 追加、运行时块由 `inject` 追加。
+* **cot 前缀不在主模板里**：`<cot>…</cot>` 由 `Stage.SYSTEM_PREFIX` 块拼成并放在 system 最前面，
+  改 `group_chat` 里的 `<思维模式要求>` 不会影响它；关 `prompt_optimizations.cot_enabled`
+  只让前缀消失，主模板照常。旧配置的 `chat.gentle_language_enabled` 已迁移成
+  `prompt_optimizations.gentle_language`（配置版本 0.9.0 → 0.10.0，见 `01b-config-system.md`）。
+* **主模板是分区开关的安全例外**：`assets.asset_enabled` 与 `block_skip_reason` 都让
+  `SYSTEM_MAIN` 无视 `enabled=false`，否则一次误配会让机器人彻底没有提示词。
+* **未登记的自定义分区走兼容回退**：`PromptContext.raw_template` 先试 `assets.raw_text`，
+  未注册的 section 抛 `KeyError` 后退回 store/packaged；面板仍可编辑，但没有 stage 元数据。
 * **聊天流登记三处都吞异常**：面板显示空白时先怀疑 `pipeline_key` 不一致或 `max_* ` 上限夹紧，
   而不是「回复管线坏了」。
 * **两个 max_chars 不同源**：提示词渲染的群画像长度（`_group_profile_max_chars`）与档案系统

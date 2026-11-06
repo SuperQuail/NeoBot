@@ -14,15 +14,15 @@ from neobot_chat.schema.types import (
     ToolGuardContext,
 )
 
+from neobot_app.prompt.assets import raw_text as _raw_text
 from neobot_app.time_context import monotonic_seconds
 
 
 
 EXPOSED_TO_MAIN_AGENT_NAME = "self_heal"
-EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
-    "系统自修复诊断。仅由系统在累积异常时自动唤起，不直接面向用户聊天。"
-    "诊断 Bot 自身运行时异常、尝试安全修复、产出调试报告并通过通知系统告知管理员。"
-)
+# 文本在 prompt/templates/prompts.toml 的 [self_heal].description；
+# TOML 里按行折行保存，导出常量沿用旧的单行拼接（逐字兼容）。
+EXPOSED_TO_MAIN_AGENT_DESCRIPTION = _raw_text("self_heal", "description").replace("\n", "")
 
 # Source names used when publishing to BackgroundNotificationHub
 START_SOURCE = "self_heal_start"

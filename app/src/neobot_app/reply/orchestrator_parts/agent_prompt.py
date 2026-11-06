@@ -45,17 +45,6 @@ class AgentPromptMixin:
             all_new=all_new,
         )
         context_messages: list[dict[str, str]] = []
-        prompt = await self._build_prompt(
-            event,
-            queue_copy,
-            queue_key,
-            numbering=numbering,
-            last_reply_message_id=last_reply_message_id,
-            all_new=all_new,
-            context_blocks=context_messages,
-        )
-        self._record_flow_prompt(event, queue_key, prompt)
-        self._record_debug("prompt_built", event, queue_key=queue_key, prompt=prompt)
 
         # 注入匹配的 Markdown 技能（插件 SKILL.md）：先完成匹配与 allowed-tools 判定，
         # 供后续表情包搜索提示引用（限制激活时 search_custom_emoji 已被过滤）
@@ -83,6 +72,8 @@ class AgentPromptMixin:
         # 表情包列表不再注入提示词:它按使用次数排序且带"已用N次",每次发出表情包都会
         # 改变 system 前缀,让整段缓存失效。改为按需工具 list_emojis / search_custom_emoji。
 
+        # 本轮独有的 system 块文本先备好，交给 _build_prompt 按注册表顺序追加。
+        round_dynamic: dict[str, str] = {}
         # 注入 Skill 操作说明(一行摘要;完整说明用 skills__view_instructions 按需查看)
         if self._skill_manager is not None:
             skill_instructions = self._skill_manager.get_instructions()
@@ -95,49 +86,38 @@ class AgentPromptMixin:
                 if not line.startswith(f"- {hidden_skill}:")
             )
             if skill_instructions:
-                prompt += (
-                    "\n\n<Skill 操作说明>\n"
-                    f"{skill_instructions}\n"
-                    "需要某个技能的具体操作说明、参数细节或注意事项时,"
-                    "调用 skills__view_instructions 查看完整内容。"
-                    "\n未直接列出调用工具的技能,其工具定义尚未加载以节省每次调用的开销;"
-                    "需要使用时先调用 skills__load_tools 加载(一次可加载多个),"
-                    "加载后本轮即可直接调用。"
-                    "\n</Skill 操作说明>"
+                round_dynamic["skill_instructions"] = skill_instructions
+                package_index = _render_tool_package_index(
+                    self._skill_manager, prompt_store=self._prompt_store
                 )
-            package_index = _render_tool_package_index(self._skill_manager)
-            if package_index:
-                prompt += (
-                    "\n\n<可加载工具包>\n"
-                    f"{package_index}\n"
-                    "清单已直接给出；需要某个包时直接调用 skills__load_tools 加载，无需先查询。"
-                    "\n</可加载工具包>"
-                )
+                if package_index:
+                    round_dynamic["tool_package_index"] = package_index
 
         # 注入匹配的 Markdown 技能（插件 SKILL.md）
         if matched_skills:
-            prompt += (
-                "\n\n<可用技能>\n"
-                + self._render_skills(matched_skills)
-                + "\n</可用技能>"
-            )
+            round_dynamic["available_skills"] = self._render_skills(matched_skills)
 
-        # 限制说明（保持与 <可用技能> 相邻追加）
+        # 限制说明（与 <可用技能> 相邻追加）
         if allowed_tools is not None:
-            prompt += (
-                "\n注意：当前激活技能限制了可用工具，仅允许："
-                f"{', '.join(sorted(allowed_tools))}"
-                "（以及始终可用的基础回复工具与技能读取工具）。"
-            )
+            round_dynamic["allowed_tools"] = ", ".join(sorted(allowed_tools))
 
         # 原生视觉说明属于稳定内容:放进 system 提示词(跨管线逐字节相同、可缓存),
         # 不再作为对话末尾的 user 消息(那个位置随历史长度变化,永远命中不了缓存)
         native_vision_active = getattr(self._provider, "native_vision", False) is True
-        if native_vision_active:
-            vision_note = self._native_vision_note()
-            if vision_note:
-                prompt += f"\n\n{vision_note}"
 
+        prompt = await self._build_prompt(
+            event,
+            queue_copy,
+            queue_key,
+            numbering=numbering,
+            last_reply_message_id=last_reply_message_id,
+            all_new=all_new,
+            context_blocks=context_messages,
+            agent_mode=True,
+            dynamic=round_dynamic,
+            features={"native_vision": native_vision_active},
+        )
+        self._record_flow_prompt(event, queue_key, prompt)
         self._record_debug("prompt_built", event, queue_key=queue_key, prompt=prompt)
 
         # 3. 准备消息列表(system + 上下文块 + 角色消息 + 后台通知)
@@ -145,6 +125,25 @@ class AgentPromptMixin:
         messages: list[dict] = [{"role": "system", "content": prompt}]
         messages.extend(context_messages)
         messages.extend(role_messages)
+        if self._take_unsent_marker(event):
+            appended = self._append_block(
+                messages,
+                "prev_no_tool_call_reminder",
+                dynamic={"prev_no_tool_call_reminder": True},
+            )
+            if appended:
+                self._record_debug(
+                    "prev_no_tool_call_reminder",
+                    event,
+                    queue_key=queue_key,
+                    injected=True,
+                )
+            else:
+                self._logger.warning(
+                    "prev_no_tool_call_reminder 未注入（分区关闭或渲染为空），保留跨轮标记",
+                    event_id=event.event_id,
+                    queue_key=queue_key,
+                )
         if context_messages:
             self._record_debug(
                 "chat_context_injected",
@@ -228,6 +227,8 @@ class AgentPromptMixin:
                 pre_hook_text,
                 self_sent=self._self_sent_sink(queue, queue_copy, queue_key),
             )
+            if delivered is not False:
+                self._clear_unsent_marker(event)
             if delivered is not False:
                 self._record_reply_delivered(
                     event, queue, queue_key, before_message_id=before_message_id

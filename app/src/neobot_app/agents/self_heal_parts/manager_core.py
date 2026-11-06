@@ -56,6 +56,7 @@ class SelfHealManagerCoreMixin:
         self._running_task: asyncio.Task[None] | None = None
         self._current_heal: HealTask | None = None
         self._agent: Any = None  # SelfHealAgent; set via set_agent
+        self._prompt_store: Any = None
         self._orchestrator: Any = None
         self._web_search_config = web_search_config or {}
         self._trigger_date_today: str = ""
@@ -74,9 +75,7 @@ class SelfHealManagerCoreMixin:
         from neobot_app.agents.self_heal import _build_system_prompt
         from neobot_app.analysis.prompt_analysis import tools_to_text
 
-        prompt = _build_system_prompt(
-            self._config, prompt_store=getattr(self, "_prompt_store", None)
-        )
+        prompt = _build_system_prompt(self._config, prompt_store=self._prompt_store)
         parts = [("系统提示词", "system", prompt)]
         agent = getattr(self, "_agent", None)
         definitions = list(getattr(agent, "tool_definitions", []) or []) if agent else []
@@ -88,6 +87,10 @@ class SelfHealManagerCoreMixin:
 
     def set_agent(self, agent: Any) -> None:
         self._agent = agent
+
+    def set_prompt_store(self, prompt_store: Any) -> None:
+        """提供提示词存储,使首次唤起/重新唤起提示词也能被自定义覆盖。"""
+        self._prompt_store = prompt_store
 
     def set_orchestrator(self, orchestrator: Any) -> None:
         self._orchestrator = orchestrator

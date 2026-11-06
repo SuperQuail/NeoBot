@@ -13,17 +13,15 @@
 >
 > 合并对话框里会预填最终落地的那条 squash 信息，合并前看一眼——那是最后一次人工把关。
 
-### 0. 分支模型（2026-10-26 起）
+### 0. 分支模型（QuailEgg 发布，2026-11-07 起）
 
-- **`dev`**：默认分支，日常功能/修复 PR 都提到这里；
-- **`main`**：只接收来自 `dev` 的 PR（发布候选）；
-- **`release`**：只接收来自 `main` 的 PR；`main → release` 的 PR **版本号必须高于 release 当前版本**
-  （建议在 `dev` 上统一提升 8 个 `pyproject.toml` 并更新 `uv.lock`，随 `dev → main` 带入），
-  合并后由 release 推送触发 PyPI 发布；
-- 功能分支从 `dev` 切出；禁止跨级 PR（例如功能分支直接 PR 到 `main`/`release`）。
+- **`main`**：默认分支，日常功能/修复 PR 都提到这里；
+- 合并到 `main` 后 Q Egg 根据 `.changes/` 记录创建发布 PR（分支 `release`），合并发布 PR 后自动发布 PyPI 并创建 tag/Release；
+- `dev` 保留为普通分支（长期开发时可继续使用），不再默认、不再参与发布；
+- 功能分支从 `main` 切出；禁止直推 `main` / `release`。
 
-PR 门禁会检查 base/head 流向（`scripts/check_pr_flow.py`）与 release PR 的版本号
-（`scripts/check_release_bump.py`）。
+PR 门禁会检查 base/head 流向（`scripts/check_pr_flow.py`）；`release` 由 QuailEgg
+生成和维护，发布 PR 的必需检查受 GitHub 平台限制不会正常启动，由仓库管理员合并。
 
 ### 速查
 
@@ -142,13 +140,12 @@ python scripts/check_pr_title.py --title "<PR 标题>" --strict
    禁止把开发上下文带进评审；评审意见要具体到可执行项。
 3. **bug 先发 issue**：发现 bug / CI 因 bug 变红时，先创建 issue，再让修复 PR 在描述里用 `Closes #NN` 关联。
    CI 对标题以 `fix` 开头的 PR 强制检查关联 issue，没有就红。
-4. **分支流向**：`dev` 是默认分支；`main` 只接收 `dev`；`release` 只接收 `main`。
-   `main → release` 的 PR 版本号必须高于 release 基线（在 dev 上提升后随 dev→main 带入），否则红。
+4. **分支流向**：PR 目标只能是 `main`（默认分支）或普通分支 `dev`；`release` 由 QuailEgg 生成和维护，不接受人工 PR，也不能作为源分支。
 
 本地可先自检：
 
 ```bash
-python scripts/check_pr_size.py --base dev --head HEAD
+python scripts/check_pr_size.py --base main --head HEAD
 python scripts/check_pr_issue_link.py --pr <PR号>
 ```
 
@@ -156,20 +153,21 @@ python scripts/check_pr_issue_link.py --pr <PR号>
 
 下面每一条都是**禁止项**，不是建议：
 
-- **禁止**直推 `dev` / `main` / `release`，**禁止** force push 他人分支，**禁止** amend 或 rebase 别人的提交
+- **禁止**直推 `main` / `release`，**禁止** force push 他人分支，**禁止** amend 或 rebase 别人的提交
 - **禁止**为了让检查通过而改 CI 门禁、放宽断言、删除或跳过失败用例、用 `xfail` 掩盖失败
 - **禁止**夹带与本 PR 无关的重构或格式化
 - **禁止**提交 `.env`、密钥、token、真实用户数据（占位符要登记到 `.secretsignore`）
 - **禁止**从历史里恢复已删除的调试脚本——CI hygiene job 会阻断，那些文件历史上带过硬编码密钥
-- **禁止**擅自改版本号或 `uv.lock`——只在发版 PR 里按 [scripts/RELEASING.md](scripts/RELEASING.md) 做
+- **禁止**擅自改版本号或 `uv.lock`——版本由 Q Egg 根据 `.changes/` 记录自动提升，按 [scripts/RELEASING.md](scripts/RELEASING.md) 操作
 - **禁止**留 AI 署名、工具痕迹或 `Generated with …`
 
 ### 6. 别忘了同步
 
+- 改动 `app/` 或 `packages/*` 时，建议用 `qegg commit` 写一条 `.changes/` 变更记录（PR CI 会检查；当前尚未加入分支保护，属非阻断检查；见 [scripts/RELEASING.md](scripts/RELEASING.md)）。
 - 新增/变更功能 → 更新 `docs/04-功能文档/` 对应文件
 - 新增配置项 → 更新 `docs/05-配置参考.md`
 - 改前端源码 → 重建并提交 `web/`（CI 会比对产物，不一致直接失败）
-- 涉及版本 → 同一个 PR 内更新 8 个 `pyproject.toml` 与 `uv.lock`
+- 涉及版本 → 不要手改版本：由 QuailEgg 根据 `.changes/` 记录自动提升；详见 [scripts/RELEASING.md](scripts/RELEASING.md)
 
 ### 7. 关联 issue
 
@@ -217,7 +215,7 @@ gh api graphql -f query='{ repository(owner:"OWNER",name:"REPO") {
 - **PR 描述与 issue 不是一对一**：一个 PR 修多个 issue 就写多个 `Closes`；
   一个 issue 被多个 PR 分步修完，只有**最后一个**写 `Closes`，前面的写 `Refs`。
 - 关**别的仓库**的 issue 要写全限定名：`Closes owner/repo#123`。
-- 关闭关键字只在**目标分支 = 仓库默认分支**（本仓库是 `dev`）时生效；
+- 关闭关键字只在**目标分支 = 仓库默认分支**（本仓库是 `main`）时生效；
   指向其它分支时关键字被直接忽略——既不建立关联，合并也不会关 issue。
 - 没有对应 issue 的改动（文档、依赖、纯内部重构）不必硬凑一个——**别为此新建 issue**。
 

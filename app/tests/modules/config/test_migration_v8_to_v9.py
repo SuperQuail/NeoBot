@@ -308,7 +308,7 @@ def test_load_upgrades_handwritten_v8_config(monkeypatch, tmp_path) -> None:
 
     config = Config.load(cfg_path, BotConfig)
 
-    assert config.version == "0.9.0"
+    assert config.version == "0.10.0"
     definition = config.models.by_ref()["flash"]
     assert definition.reasoning_effort == "max"
     # 旧键保留（provider 兼容，用户不丢设置）
@@ -319,13 +319,13 @@ def test_load_upgrades_handwritten_v8_config(monkeypatch, tmp_path) -> None:
     assert registered.settings.reasoning_effort_format == "openai"
 
     raw = cfg_path.read_text(encoding="utf-8")
-    assert 'version = "0.9.0"' in raw
+    assert 'version = "0.10.0"' in raw
     assert 'reasoning_effort = "max"' in raw
     assert 'deepseek_reasoning_effort = "max"' in raw
 
 
-def test_chain_from_v3_reaches_v9(monkeypatch, tmp_path) -> None:
-    """0.3.0 的旧内联模型配置一路迁到 0.9.0：旧思考强度最终出现在顶层。"""
+def test_chain_from_v3_reaches_current_version(monkeypatch, tmp_path) -> None:
+    """0.3.0 的旧内联模型配置一路迁到当前版本：旧思考强度最终出现在顶层。"""
     _clear_platform_env(monkeypatch)
     for key, value in _DEEPSEEK_KEYS.items():
         monkeypatch.setenv(key, value)
@@ -348,7 +348,7 @@ def test_chain_from_v3_reaches_v9(monkeypatch, tmp_path) -> None:
 
     config = Config.load(cfg_path, BotConfig)
 
-    assert config.version == "0.9.0"
+    assert config.version == "0.10.0"
     assert not hasattr(config.chat, "group_prompt_template")
     # 0.6/0.7 两跳把旧内联模型搬进模型库、并把 deepseek-v4-pro 改名
     definition = config.models.by_ref()["deepseek-flash-max"]

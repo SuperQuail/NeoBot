@@ -12,7 +12,7 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/api_parts/plugins.py
   - app/src/neobot_app/builtin_plugins/dashboard/api_parts/_common.py
 verified_against: 21bfdff0
-verified_hash: 035f18585377
+verified_hash: c8abafeb9799
 ---
 
 # 09b 面板接口面：api.py 的端点分组 · 权限级别 · 错误码语义
@@ -197,11 +197,16 @@ flowchart LR
 | 快捷部署 | 2 | `/api/deploy/status · /api/deploy/onebot-token` | manage | status 逐项给出 `required`/`done`（`ready` 只看必填）；**出厂占位不算配好**（`_deploy_field_defaults` 现算 schema 默认值比对）；OneBot 段复用 `ReverseWsSettings.resolve` 并预留 `auto_connect`；生成 token 写回 `[adapter]` 并**用 extra_changed_paths=("adapter",)** 触发适配器按新 token 重连（没生效就如实说需重启） |
 | 插件 | 12 | `/api/plugins` 与 `/api/plugins/{name}/{toggle,reload,update,uninstall,config}` | 列表与探测只读；其余 manage | 插件运行时快照 + 插件目录文件 |
 | 本体配置 | 12 | `/api/config · config/validate · config/reload · config/models{,/library,/assignments,/test,/provider-models} · config/env{,/platform}` | 读只读、写 manage | config.toml / .env / 模型库 |
-| 提示词 | 5 | `/api/analysis/prompts · prompts · prompts/preview · prompts/save · prompts/reset` | 保存与重置 manage | prompt store + custom/prompts.toml |
+| 提示词 | 5 | `/api/analysis/prompts · prompts · prompts/preview · prompts/save · prompts/reset` | 保存与重置 manage | prompt store + custom/prompts.toml；`/api/prompts` 每分区带 `stage/scope/order/note` 元数据 |
 | 聊天流 | 5 | `/api/chat-flows{,,/detail,/prompts,/prompt,/prompts/clear}` | 清空 manage | 内存登记处 + 记录器 |
 | 档案 | 11 | `/api/archives{,/over-limit,/items,/item,/summarize,/summarize/over-limit,/snapshots,/snapshot}` | 编辑删除压缩 manage | 档案服务 + 总结服务 |
 | 定时任务 | 2 | `/api/scheduled-tasks · /action` | 读只读、写 manage | 管理器投影 + reminder 技能 |
 | 运维 | 7 | `/api/admin/{power,standby,resume,reboot,standby/onebot,restart,shutdown}` | 全部 manage（`shutdown` 另外只收本机） | 待机服务 / 进程重启信号 / 进程停机信号 |
+
+`/api/prompts` 的分区元数据由 `prompt_admin.describe_sections` 从 `prompt/blocks.py` 取：
+`stage` 是 `Stage.value`，`scope` 是作用域列表，`order` 与 `note` 原样透传；未登记的自定义分区
+这三项为 null / 空（不报错），前端据此归入「其它分区」。分组与折叠只在前端完成，
+接口始终返回平铺的分区列表。
 
 命名规律只在「档案」组破了一次：`/api/archives/summarize` 与 `/api/archives/summarize/over-limit`
 是两个**不同的**批量语义（单条异步 vs 批量异步），只看前缀会以为是同一个接口的两种方法。

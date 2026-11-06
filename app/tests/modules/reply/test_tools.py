@@ -40,20 +40,20 @@ def _make_executor(**overrides) -> ReplyToolExecutor:
 
 
 async def test_send_reply_rejects_non_list_images():
-    """images 不是列表时必须返回错误信息且不调用 handler。"""
+    """emoji_numbers 不是列表时必须返回错误信息且不调用 handler。"""
     called: list = []
 
     async def handler(**kwargs):
         called.append(kwargs)
 
     executor = _make_executor(send_reply_handler=handler)
-    result = await executor.execute("send_reply", {"text": "你好", "images": 42})
-    assert "images 必须为列表" in result
+    result = await executor.execute("send_reply", {"text": "你好", "emoji_numbers": 42})
+    assert "emoji_numbers 必须为列表" in result
     assert called == []
 
 
 async def test_send_reply_rejects_bad_reply_to_and_mention():
-    """reply_to 非整数、mention 非整数列表时必须返回对应错误信息。"""
+    """reply_to_number 非整数、mention_qqs 非整数列表时必须返回对应错误信息。"""
 
     async def handler(**kwargs):
         pass
@@ -61,18 +61,18 @@ async def test_send_reply_rejects_bad_reply_to_and_mention():
     executor = _make_executor(send_reply_handler=handler)
 
     bad_reply_to = await executor.execute(
-        "send_reply", {"text": "你好", "reply_to": "abc"}
+        "send_reply", {"text": "你好", "reply_to_number": "abc"}
     )
     bad_mention = await executor.execute(
-        "send_reply", {"text": "你好", "mention": ["x"]}
+        "send_reply", {"text": "你好", "mention_qqs": ["x"]}
     )
 
-    assert "reply_to 必须为整数" in bad_reply_to
-    assert "mention 必须为整数列表" in bad_mention
+    assert "reply_to_number 必须为整数" in bad_reply_to
+    assert "mention_qqs 必须为整数列表" in bad_mention
 
 
 async def test_send_reply_calls_handler_with_normalized_args():
-    """合法参数必须归一化后传给 handler（mention 转 int 列表），并返回发送条数摘要。"""
+    """合法参数必须归一化后传给 handler（mention_qqs 转 int 列表），并返回发送条数摘要。"""
     captured: dict = {}
 
     async def handler(**kwargs):
@@ -81,13 +81,37 @@ async def test_send_reply_calls_handler_with_normalized_args():
     executor = _make_executor(send_reply_handler=handler)
     result = await executor.execute(
         "send_reply",
-        {"text": "你好，今天天气不错", "reply_to": "7", "mention": ["10001", 10002]},
+        {"text": "你好，今天天气不错", "reply_to_number": "7", "mention_qqs": ["10001", 10002]},
     )
 
     assert captured["text"] == "你好，今天天气不错"
     assert captured["reply_to"] == 7
     assert captured["mention"] == [10001, 10002]
     assert "已发送" in result
+
+
+async def test_send_reply_accepts_legacy_param_names():
+    """兼容层：reply_to/mention/images 仍等价于新名字。"""
+    captured: list[dict] = []
+
+    async def handler(**kwargs):
+        captured.append(kwargs)
+
+    executor = _make_executor(send_reply_handler=handler)
+    new_result = await executor.execute(
+        "send_reply",
+        {"text": "你好", "reply_to_number": 7, "mention_qqs": [10001], "emoji_numbers": [1]},
+    )
+    legacy_result = await executor.execute(
+        "send_reply",
+        {"text": "你好", "reply_to": 7, "mention": [10001], "images": [1]},
+    )
+
+    assert legacy_result == new_result
+    assert captured[0] == captured[1]
+    assert captured[1]["reply_to"] == 7
+    assert captured[1]["mention"] == [10001]
+    assert captured[1]["images"] == [1]
 
 
 async def test_send_reply_missing_handler_returns_error():
@@ -130,7 +154,6 @@ async def test_send_reply_cleans_segments_and_drops_residue():
         {
             "text": "ignored",
             "segments": ["192:", "我是一条鱼", "AAA大肥鱼:", "<think>草稿</think>不是钱"],
-            "ai_check_approved": True,
         },
     )
 
@@ -292,6 +315,31 @@ async def test_send_long_reply_pre_rendered_image_skips_converter():
     assert sent[0]["caption"] == "说明"
 
 
+async def test_send_long_reply_accepts_legacy_id_params():
+    """兼容层：reply_to/mention 仍等价于 reply_to_number/mention_qqs。"""
+    sent: list[dict] = []
+
+    async def handler(**kwargs):
+        sent.append(kwargs)
+
+    executor = _make_executor(
+        markdown_image_converter=object(),
+        send_long_reply_handler=handler,
+    )
+    base = {"image_path": "pre/rendered.png", "markdown": "# 备注", "caption": "说明"}
+    new_result = json.loads(await executor.execute("send_long_reply", {
+        **base, "reply_to_number": 7, "mention_qqs": [10001],
+    }))
+    legacy_result = json.loads(await executor.execute("send_long_reply", {
+        **base, "reply_to": 7, "mention": [10001],
+    }))
+
+    assert new_result["ok"] is True and legacy_result["ok"] is True
+    assert sent[0] == sent[1]
+    assert sent[1]["reply_to"] == 7
+    assert sent[1]["mention"] == [10001]
+
+
 # ── 静态辅助 ─────────────────────────────────────────────────────
 
 
@@ -325,11 +373,9 @@ def test_definitions_include_tools_conditionally():
 
 
 def test_search_custom_emoji_requires_emoji_service():
-    handler_only = _make_executor(send_emoji_handler=lambda **kwargs: None)
-    handler_names = {d["function"]["name"] for d in handler_only.definitions()}
-    assert "send_emoji" in handler_names
-    assert "search_custom_emoji" not in handler_names
-    assert "list_emojis" not in handler_names
+    bare_names = {d["function"]["name"] for d in _make_executor().definitions()}
+    assert "search_custom_emoji" not in bare_names
+    assert "list_emojis" not in bare_names
 
     service_names = {
         d["function"]["name"]
@@ -747,7 +793,6 @@ def test_allowed_tools_filters_definitions_and_keeps_base():
         cancel_handler=lambda reason=None: None,
         send_reply_handler=lambda **kw: None,
         wait_handler=lambda s=20: "",
-        send_emoji_handler=lambda number=0, text="": None,
         emoji_service=object(),
         markdown_image_converter=object(),
         tts_service=type("TTS", (), {"enabled": True})(),
@@ -757,7 +802,7 @@ def test_allowed_tools_filters_definitions_and_keeps_base():
         skill_manager=_FakeSkillManagerPlain(
             [_skill_def("demo__ping"), _skill_def("demo__hack")]
         ),
-        allowed_tools={"send_emoji", "demo__ping"},
+        allowed_tools={"poke_user", "demo__ping"},
     )
     names = {d["function"]["name"] for d in executor.definitions()}
 
@@ -774,9 +819,9 @@ def test_allowed_tools_filters_definitions_and_keeps_base():
         "mark_scheduled_task_complete",
     ):
         assert base in names, f"基础工具 {base} 必须始终可用"
-    assert "send_emoji" in names  # 在 allowed_tools 内
+    assert "poke_user" in names  # 在 allowed_tools 内
     assert "demo__ping" in names  # 在 allowed_tools 内
-    assert "poke_user" not in names  # 白名单外
+    assert "send_emoji" not in names  # 已并入 send_reply.images
     assert "search_custom_emoji" not in names
     assert "demo__hack" not in names
 
@@ -784,7 +829,6 @@ def test_allowed_tools_filters_definitions_and_keeps_base():
 def test_allowed_tools_none_keeps_all_definitions():
     """allowed_tools=None 时不限制 definitions。"""
     executor = _make_executor(
-        send_emoji_handler=lambda number=0, text="": None,
         emoji_service=object(),
         poke_user_handler=lambda user_id=0: "ok",
     )
@@ -822,8 +866,81 @@ async def test_execute_blocks_tool_not_in_allowed_tools():
         poke_user_handler=lambda user_id=0: "ok",
         allowed_tools={"send_reply"},
     )
-    result = await executor.execute("poke_user", {"user_id": 1})
+    result = await executor.execute("poke_user", {"target_qq": 1})
     assert result == "Error: 工具 poke_user 不在当前技能允许的工具列表内"
+
+
+async def test_react_emoji_accepts_legacy_emoji_id():
+    """兼容层：emoji_id 仍等价于 qq_emoji_id。"""
+    calls: list[dict] = []
+
+    async def handler(**kwargs):
+        calls.append(kwargs)
+        return "ok"
+
+    executor = _make_executor(react_emoji_handler=handler)
+    new_result = await executor.execute(
+        "react_emoji", {"message_number": 3, "qq_emoji_id": 76}
+    )
+    legacy_result = await executor.execute(
+        "react_emoji", {"message_number": 3, "emoji_id": 76}
+    )
+
+    assert legacy_result == new_result == "ok"
+    assert calls == [
+        {"message_number": 3, "emoji_id": 76},
+        {"message_number": 3, "emoji_id": 76},
+    ]
+
+
+async def test_poke_user_accepts_legacy_user_id():
+    """兼容层：user_id 仍等价于 target_qq。"""
+    calls: list[int] = []
+
+    async def handler(user_id: int):
+        calls.append(user_id)
+        return "ok"
+
+    executor = _make_executor(poke_user_handler=handler)
+    new_result = await executor.execute("poke_user", {"target_qq": 10002})
+    legacy_result = await executor.execute("poke_user", {"user_id": 10002})
+
+    assert legacy_result == new_result == "ok"
+    assert calls == [10002, 10002]
+
+
+def test_id_tool_schemas_expose_only_new_names():
+    """schema 只暴露新参数名，旧名只存在于执行器兼容层。"""
+    executor = _make_executor(
+        markdown_image_converter=object(),
+        react_emoji_handler=lambda message_number, emoji_id: "ok",
+        poke_user_handler=lambda user_id=0: "ok",
+    )
+    definitions = {
+        item["function"]["name"]: item["function"] for item in executor.definitions()
+    }
+    expected = {
+        "send_reply": (
+            {"reply_to_number", "mention_qqs", "emoji_numbers"},
+            {"reply_to", "mention", "images"},
+        ),
+        "send_long_reply": (
+            {"reply_to_number", "mention_qqs"},
+            {"reply_to", "mention"},
+        ),
+        "react_emoji": ({"qq_emoji_id"}, {"emoji_id"}),
+        "poke_user": ({"target_qq"}, {"user_id"}),
+    }
+    for name, (new_names, old_names) in expected.items():
+        properties = set(definitions[name]["parameters"]["properties"])
+        assert new_names <= properties, name
+        assert not old_names & properties, name
+
+    assert definitions["react_emoji"]["parameters"]["required"] == [
+        "message_number",
+        "qq_emoji_id",
+    ]
+    assert definitions["poke_user"]["parameters"]["required"] == ["target_qq"]
 
 
 async def test_execute_base_tool_always_available_under_allowed_tools():

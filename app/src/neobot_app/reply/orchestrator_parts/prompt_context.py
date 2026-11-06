@@ -120,6 +120,7 @@ class PromptContextMixin:
             numbering=numbering,
             bot_account=self._get_bot_account(),
             include_boundary_markers=self._show_boundary_markers(),
+            prompt_store=getattr(self, "_prompt_store", None),
         )
 
         # 新成员档案(user 块内容,不插入 system 提示词)；渲染成功才登记 uid。

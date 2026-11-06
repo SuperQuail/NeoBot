@@ -51,14 +51,13 @@ async def test_send_reply_with_images_and_text_sends_separate_messages(tmp_path)
     async def handler(**args):
         return await sender.send_reply(
             event,
-            args["text"],
-            segments=args["segments"],
-            send_original=args["send_original"],
-            images=args["images"],
+            args.get("text", ""),
+            segments=args.get("segments"),
+            images=args.get("images"),
         )
 
     executor = ReplyToolExecutor(send_reply_handler=handler)
-    result = await executor.execute("send_reply", {"text": "哈哈", "images": [1]})
+    result = await executor.execute("send_reply", {"text": "哈哈", "emoji_numbers": [1]})
 
     assert "已发送" in result
     assert len(adapter.sent) == 2

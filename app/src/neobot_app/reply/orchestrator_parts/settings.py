@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from typing import Any
+
+from neobot_app.prompt.assets import raw_text
 from neobot_app.reply.event import ReplyEvent
 
 def _safe_int(value: object) -> int:
@@ -202,12 +204,7 @@ class SettingsMixin:
                 return val
         return _chat_default("cost_pipeline_threshold")
     def _get_long_reply_fallback_template(self) -> str:
-        default = "{bot_name}懒得和你说道理，你不配听"
-        if self._prompt_store is not None:
-            value = self._prompt_store.template("long_reply_fallback", default=default)
-            if value and value.strip():
-                return value
-        return default
+        return raw_text("long_reply_fallback", store=self._prompt_store)
     def _get_long_reply_max_length(self) -> int:
         if self._config is None:
             return 300

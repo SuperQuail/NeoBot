@@ -25,9 +25,25 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from neobot_app.message.queue import QueueEntryType
+from neobot_app.prompt.assets import text
 
 if TYPE_CHECKING:
     from neobot_app.message.numbering import MessageNumbering
+
+
+def _label(key: str, *, prompt_store: Any = None, **values: Any) -> str:
+    """读取内部标签：custom 覆盖 / enabled / 内置模板统一走 assets。"""
+    return text("label_message_meta", key, store=prompt_store, values=values)
+
+
+def _replied_prefix(prompt_store: Any = None) -> str:
+    """引用前缀 + 一个分隔空格。
+
+    assets 渲染会裁掉模板尾随空白（``replied_prefix`` 在 TOML 里带空格），
+    这里统一补回，保证默认输出与自定义覆盖都只有一个分隔空格。
+    """
+    value = _label("replied_prefix", prompt_store=prompt_store)
+    return f"{value.rstrip()} " if value.strip() else ""
 
 
 def _user_message(content: str) -> dict[str, Any]:
@@ -50,18 +66,20 @@ def _latest_message_epoch(entries: list) -> int | None:
     return max(times) if times else None
 
 
-def _format_message_age(occurred_at: int | None, reference: int | None) -> str:
+def _format_message_age(
+    occurred_at: int | None, reference: int | None, *, prompt_store: Any = None
+) -> str:
     """粗粒度年龄（刚刚 / N分钟前 / N小时前 / N天前）；无时间信息时返回空串。"""
     if occurred_at is None or reference is None:
         return ""
     age = max(0, int(reference) - int(occurred_at))
     if age < 60:
-        return "刚刚"
+        return _label("age_just_now", prompt_store=prompt_store)
     if age < 3600:
-        return f"{age // 60}分钟前"
+        return _label("age_minutes", prompt_store=prompt_store, minutes=age // 60)
     if age < 86400:
-        return f"{age // 3600}小时前"
-    return f"{age // 86400}天前"
+        return _label("age_hours", prompt_store=prompt_store, hours=age // 3600)
+    return _label("age_days", prompt_store=prompt_store, days=age // 86400)
 
 
 def _render_role_message(
@@ -73,6 +91,7 @@ def _render_role_message(
     content: str,
     replied: bool = False,
     age: str = "",
+    prompt_store: Any = None,
 ) -> dict[str, Any]:
     """按角色渲染一条聊天记录。
 
@@ -93,14 +112,23 @@ def _render_role_message(
         # 共用同一个签名，这里刻意不用它。
         body = content
         if replied:
-            body = f"[被回复消息] {content}"
+            body = _replied_prefix(prompt_store) + content
         return {"role": role, "content": body, "_history_msg_id": msg_id}
     prefix = f"{number}: " if number is not None else ""
-    marker = "[被回复消息] " if replied else ""
+    marker = _replied_prefix(prompt_store) if replied else ""
     age_label = f"[{age}] " if age else ""
     return {
         "role": role,
-        "content": f"[msg_id={msg_id}] {prefix}{marker}{age_label}{sender}: {content}",
+        "content": _label(
+            "line",
+            prompt_store=prompt_store,
+            msg_id=msg_id,
+            prefix=prefix,
+            marker=marker,
+            age=age_label,
+            sender=sender,
+            content=content,
+        ),
     }
 
 
@@ -159,6 +187,7 @@ def build_role_messages(
     include_boundary_markers: bool = False,
     last_reply_message_id: int | None = None,
     all_new: bool = False,
+    prompt_store: Any = None,
 ) -> list[dict[str, Any]]:
     """为一个队列的所有条目构建角色消息列表(全量)。"""
     return _build_from_entries(
@@ -169,6 +198,7 @@ def build_role_messages(
         include_boundary_markers=include_boundary_markers,
         last_reply_message_id=last_reply_message_id,
         all_new=all_new,
+        prompt_store=prompt_store,
     )
 
 
@@ -181,6 +211,7 @@ def build_role_messages_from_entries(
     bot_account: int = 0,
     include_boundary_markers: bool = False,
     context_entries: list | None = None,
+    prompt_store: Any = None,
 ) -> list[dict[str, Any]]:
     """为新增的队列条目构建角色消息列表(增量,用于挂起恢复等场景)。
 
@@ -202,6 +233,7 @@ def build_role_messages_from_entries(
         last_reply_message_id=None,
         all_new=False,
         label_context_entries=context_entries,
+        prompt_store=prompt_store,
     )
 
 
@@ -215,6 +247,7 @@ def _build_from_entries(
     last_reply_message_id: int | None,
     all_new: bool,
     label_context_entries: list | None = None,
+    prompt_store: Any = None,
 ) -> list[dict[str, Any]]:
     messages: list[dict[str, str]] = []
     # 发送者标签基于全量上下文计算,保证同一发送者在同一对话中身份恒定
@@ -234,7 +267,7 @@ def _build_from_entries(
         )
     if all_new or (last_reply_message_id is not None and not found_last_reply):
         if include_boundary_markers:
-            messages.append(_user_message("<当前均为新消息，没有上次回复过的内容>"))
+            messages.append(_user_message(_label("all_new", prompt_store=prompt_store)))
 
     new_section_opened = False
     new_section_content_emitted = False
@@ -248,7 +281,7 @@ def _build_from_entries(
                 and prev_entry.message.message_id == last_reply_message_id
             ):
                 if include_boundary_markers:
-                    messages.append(_user_message("<这是新的可能要回答的内容>"))
+                    messages.append(_user_message(_label("new_content_open", prompt_store=prompt_store)))
                     new_section_content_emitted = True
 
         if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
@@ -273,7 +306,12 @@ def _build_from_entries(
                         sender=sender,
                         content=content,
                         replied=True,
-                        age=_format_message_age(getattr(replied, "time", None), reference_epoch),
+                        age=_format_message_age(
+                            getattr(replied, "time", None),
+                            reference_epoch,
+                            prompt_store=prompt_store,
+                        ),
+                        prompt_store=prompt_store,
                     )
                 )
 
@@ -300,7 +338,8 @@ def _build_from_entries(
                     number=number,
                     sender=sender,
                     content=content,
-                    age=_format_message_age(entry.occurred_at, reference_epoch),
+                    age=_format_message_age(entry.occurred_at, reference_epoch, prompt_store=prompt_store),
+                    prompt_store=prompt_store,
                 )
             )
         elif entry.kind == QueueEntryType.TIMESTAMP:
@@ -337,12 +376,18 @@ def _build_from_entries(
             and entry.message.message_id == last_reply_message_id
         ):
             if include_boundary_markers:
-                messages.append(_user_message("<以上是上次对话回复过的内容>"))
+                messages.append(_user_message(_label("previous_content", prompt_store=prompt_store)))
             new_section_opened = True
             continue
     # 仅在确实输出过新区段内容/开标记时才追加闭合标记,避免残缺的
     # "</这是新的可能要回答的内容>" 单独出现(last_reply 位于队尾时)
     if new_section_opened and new_section_content_emitted:
         if include_boundary_markers:
-            messages.append(_user_message("</这是新的可能要回答的内容>"))
-    return _as_send_reply_tool_history(messages)
+            messages.append(_user_message(_label("new_content_close", prompt_store=prompt_store)))
+    return _as_send_reply_tool_history(
+        [
+            message
+            for message in messages
+            if message.get("role") != "user" or message.get("content")
+        ]
+    )

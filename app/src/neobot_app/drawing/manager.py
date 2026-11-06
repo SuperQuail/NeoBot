@@ -377,7 +377,7 @@ class BackgroundDrawingManager:
             return [
                 {
                     "action": "reply_to_user",
-                    "text": "绘图失败，告知用户稍后重试，不要复述技术错误",
+                    "text": "绘图失败，用 send_reply 告知用户稍后重试，不要复述技术错误",
                 },
                 {
                     "action": "note",
@@ -385,7 +385,7 @@ class BackgroundDrawingManager:
                 },
             ]
         actions: list[dict[str, Any]] = [
-            {"action": "reply_to_user", "text": "告知用户绘图已完成"}
+            {"action": "reply_to_user", "text": "用 send_reply 告知用户绘图已完成"}
         ]
         file_path = str((task.record_payload or {}).get("file_path") or "")
         if file_path:
@@ -448,7 +448,7 @@ class BackgroundDrawingManager:
             task,
             kind="draw_result",
             status="failed",
-            message="绘图失败，请告知用户失败原因并询问是否重试",
+            message="绘图失败，请用 send_reply 告知用户失败原因并询问是否重试",
         )
         await self._push_notification(task, notification)
 
@@ -517,7 +517,7 @@ class BackgroundDrawingManager:
                     task,
                     kind="draw_result_retry",
                     status="failed",
-                    message="绘图失败（重复提醒），请告知用户失败原因并询问是否重试",
+                    message="绘图失败（重复提醒），请用 send_reply 告知用户失败原因并询问是否重试",
                     attempt=task.notification_count,
                 )
             else:
@@ -558,14 +558,14 @@ class BackgroundDrawingManager:
                     task,
                     kind="draw_result_timeout",
                     status="failed",
-                    message="绘图失败且未能及时通知，请告知用户失败原因并询问是否重试",
+                    message="绘图失败且未能及时通知，请用 send_reply 告知用户失败原因并询问是否重试",
                 )
             else:
                 timeout_msg = self._notification_payload(
                     task,
                     kind="draw_result_timeout",
                     status="completed",
-                    message="图片已生成但未及时通知，请告知用户并可按 next 发送",
+                    message="图片已生成但未及时通知，请用 send_reply 告知用户并可按 next 发送",
                 )
             if self._notification_hub is not None:
                 await self._publish_hub_notification(task, timeout_msg)

@@ -4,7 +4,7 @@
   · PR 描述 → 目标分支上的提交正文（永远）
   · 提交信息不进目标分支（除非改用 rebase 合并），但评审会看，也请写清楚
 
-默认目标分支是 dev；main 只接收 dev 的 PR；release 只接收 main 的 PR 且版本号必须高于 release。
+默认目标分支是 `main`；`release` 由 QuailEgg 生成和维护，不接受人工 PR；`dev` 为普通分支。
 
 格式：<type>(<scope>): <中文简述>，破坏性变更加 !，不要自带 (#NN)。
 CI 会校验 PR 标题（scripts/check_pr_title.py）：标题概括，不要把子改动写成清单。
@@ -14,6 +14,8 @@ CI 会校验 PR 标题（scripts/check_pr_title.py）：标题概括，不要把
   中档 feat/refactor/新配置/新接口      → 需求、实现、验证、行为变化
   重档 bug 修复/并发与生命周期/破坏性变更/发版 → 现象、根因、修复、验证（+ 迁移）
 -->
+
+> 改动 `app/` 或 `packages/*` 时，建议用 `qegg commit` 写一条 `.changes/` 变更记录（PR CI 会检查；当前非阻断，见 scripts/RELEASING.md）。
 
 ## 变更
 

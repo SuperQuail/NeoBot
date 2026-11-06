@@ -106,8 +106,6 @@ class _DispatchMixin:
             return self._execute_get_willingness_config()
         if name == "manage_willing_config":
             return await self._execute_manage_willing_config(args)
-        if name == "send_emoji":
-            return await self._execute_send_emoji(args)
         if name == "list_emojis":
             return self._execute_list_emojis(args)
         if name == "search_custom_emoji":
