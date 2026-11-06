@@ -11,7 +11,7 @@ import { setQueryData, useQuery } from '../data/useQuery';
 import { QK } from '../data/queryKeys';
 import { isEditingSurfaceActive, useAutoRefresh } from '../hooks/useAutoRefresh';
 import { api } from '../api/endpoints';
-import type { PromptKeyView } from '../api/types';
+import type { PromptKeyView, PromptSectionView } from '../api/types';
 import PageHeader from '../components/ui/PageHeader';
 import { confirmAction } from '../components/ui/ConfirmDialog';
 import { useEditorGuard } from '../hooks/useEditorGuard';
@@ -57,6 +57,25 @@ const KEY_LABELS: Record<string, string> = {
   description: '功能描述',
   'runtime.template': '运行时模板',
 };
+// 后端按块注册表的 stage 分组；组内保持接口返回顺序，未登记的自定义分区归入最后一组。
+const STAGE_LABELS: Record<string, string> = {
+  system_prefix: 'cot 前置',
+  system_main: '主模板',
+  system_append: 'system 追加',
+  fragment: '共享片段',
+  context: '上下文块',
+  runtime_data: '运行时数据',
+  reminder: '提醒块',
+  time: '时间块',
+  tool_result: '工具结果',
+  status: '状态文案',
+  subagent: '子 Agent',
+  catalog: '内部标签与 B 站提示词',
+};
+const OTHER_STAGE = 'other';
+const STAGE_ORDER = [...Object.keys(STAGE_LABELS), OTHER_STAGE];
+// 默认只展开主模板；折叠状态保存在组件内，搜索命中时临时强制展开。
+const DEFAULT_COLLAPSED_STAGES = STAGE_ORDER.filter((stage) => stage !== 'system_main');
 
 interface Selection {
   section: string;
@@ -78,6 +97,9 @@ export default function Prompts() {
   const [mobileDetail, setMobileDetail] = useState(false);
   const [pane, setPane] = useState<'edit' | 'preview'>('edit');
   const [search, setSearch] = useState('');
+  const [collapsedStages, setCollapsedStages] = useState<ReadonlySet<string>>(
+    () => new Set(DEFAULT_COLLAPSED_STAGES),
+  );
   const [helpOpen, setHelpOpen] = useState(false);
   const editorRef = useRef<CodeEditorHandle>(null);
   const placeholdersRef = useRef<HTMLDetailsElement>(null);
@@ -282,6 +304,29 @@ export default function Prompts() {
     });
   }, [sections, search]);
 
+  const searching = search.trim().length > 0;
+  const stageGroups = useMemo(() => {
+    const buckets = new Map<string, PromptSectionView[]>();
+    for (const section of visibleSections) {
+      const stage = section.stage && STAGE_LABELS[section.stage] ? section.stage : OTHER_STAGE;
+      const bucket = buckets.get(stage);
+      if (bucket) bucket.push(section);
+      else buckets.set(stage, [section]);
+    }
+    return STAGE_ORDER.flatMap((stage) => {
+      const grouped = buckets.get(stage);
+      return grouped ? [{ stage, label: STAGE_LABELS[stage] || '其它分区', sections: grouped }] : [];
+    });
+  }, [visibleSections]);
+
+  const toggleStage = (stage: string) =>
+    setCollapsedStages((prev) => {
+      const next = new Set(prev);
+      if (next.has(stage)) next.delete(stage);
+      else next.add(stage);
+      return next;
+    });
+
   const insertPlaceholder = (name: string) => {
     if (!selection || !editable || saving) return;
     editorRef.current?.insertText(`{${name}}`);
@@ -346,75 +391,97 @@ export default function Prompts() {
               </div>
               <div className="workspace-scroll prompt-nav-scroll">
                 {visibleSections.length === 0 && <EmptyState compact>没有匹配的模板</EmptyState>}
-                {visibleSections.map((section) => {
-                  const sectionLabel = SECTION_LABELS[section.name] || section.name;
-                  const singleKey = sections.find((item) => item.name === section.name)?.keys.length === 1;
-                  return (
-                    <div
-                      key={section.name}
-                      className={'prompt-nav-section' + (singleKey ? ' is-single' : '')}
+                {stageGroups.map(({ stage, label, sections: stageSections }) => (
+                  <details
+                    key={stage}
+                    className="prompt-nav-group"
+                    open={searching || !collapsedStages.has(stage)}
+                  >
+                    <summary
+                      className="prompt-nav-group-heading"
+                      onClick={(event) => {
+                        // 由组件状态控制折叠；搜索时保持展开，避免命中的组被收起
+                        event.preventDefault();
+                        if (!searching) toggleStage(stage);
+                      }}
                     >
-                      {!singleKey && (
-                        <div className="prompt-nav-section-heading" title={section.name}>
-                          <strong>{sectionLabel}</strong>
-                          <span>{section.keys.length}</span>
+                      <Icon name="chevron" size={13} />
+                      <strong>{label}</strong>
+                      <span>{stageSections.length} 个分区</span>
+                    </summary>
+                    {stageSections.map((section) => {
+                      const sectionLabel = SECTION_LABELS[section.name] || section.name;
+                      const singleKey =
+                        sections.find((item) => item.name === section.name)?.keys.length === 1;
+                      return (
+                        <div
+                          key={section.name}
+                          className={'prompt-nav-section' + (singleKey ? ' is-single' : '')}
+                        >
+                          {!singleKey && (
+                            <div className="prompt-nav-section-heading" title={section.note || section.name}>
+                              <strong>{sectionLabel}</strong>
+                              <span>{section.keys.length}</span>
+                            </div>
+                          )}
+                          <ul>
+                            {section.keys.map((item) => {
+                              const active =
+                                selection?.section === section.name && selection?.path === item.path;
+                              return (
+                                <li key={item.path}>
+                                  <button
+                                    type="button"
+                                    className={'prompt-nav-key' + (active ? ' active' : '')}
+                                    aria-current={active}
+                                    aria-label={`${sectionLabel} · ${keyLabel(item)}`}
+                                    title={`${section.name}.${item.path}`}
+                                    onClick={async () => {
+                                      // 重复点当前键保持无副作用（原先就如此）
+                                      if (active) {
+                                        setMobileDetail(true);
+                                        return;
+                                      }
+                                      if (saving || operationRef.current) return;
+                                      if (
+                                        dirty &&
+                                        !(await confirmAction({
+                                          title: '放弃未保存的提示词',
+                                          description: '切换模板会丢弃当前修改。',
+                                          confirmLabel: '放弃修改',
+                                          danger: true,
+                                        }))
+                                      )
+                                        return;
+                                      // 与 selection 同一批处理，顺序确定；切键即丢弃未保存的草稿
+                                      setSelection({ section: section.name, path: item.path });
+                                      syncRevision.current++;
+                                      setEdit(null);
+                                      setPane('edit');
+                                      setMobileDetail(true);
+                                    }}
+                                  >
+                                    <strong>{singleKey ? sectionLabel : keyLabel(item)}</strong>
+                                    {item.overridden || (singleKey && section.customized) ? (
+                                      <span
+                                        className="prompt-override-dot"
+                                        role="img"
+                                        aria-label="已自定义"
+                                        title="已有自定义内容"
+                                      />
+                                    ) : (
+                                      <Icon name="chevron" size={13} />
+                                    )}
+                                  </button>
+                                </li>
+                              );
+                            })}
+                          </ul>
                         </div>
-                      )}
-                      <ul>
-                        {section.keys.map((item) => {
-                          const active = selection?.section === section.name && selection?.path === item.path;
-                          return (
-                            <li key={item.path}>
-                              <button
-                                type="button"
-                                className={'prompt-nav-key' + (active ? ' active' : '')}
-                                aria-current={active}
-                                aria-label={`${sectionLabel} · ${keyLabel(item)}`}
-                                title={`${section.name}.${item.path}`}
-                                onClick={async () => {
-                                  // 重复点当前键保持无副作用（原先就如此）
-                                  if (active) {
-                                    setMobileDetail(true);
-                                    return;
-                                  }
-                                  if (saving || operationRef.current) return;
-                                  if (
-                                    dirty &&
-                                    !(await confirmAction({
-                                      title: '放弃未保存的提示词',
-                                      description: '切换模板会丢弃当前修改。',
-                                      confirmLabel: '放弃修改',
-                                      danger: true,
-                                    }))
-                                  )
-                                    return;
-                                  // 与 selection 同一批处理，顺序确定；切键即丢弃未保存的草稿
-                                  setSelection({ section: section.name, path: item.path });
-                                  syncRevision.current++;
-                                  setEdit(null);
-                                  setPane('edit');
-                                  setMobileDetail(true);
-                                }}
-                              >
-                                <strong>{singleKey ? sectionLabel : keyLabel(item)}</strong>
-                                {item.overridden || (singleKey && section.customized) ? (
-                                  <span
-                                    className="prompt-override-dot"
-                                    role="img"
-                                    aria-label="已自定义"
-                                    title="已有自定义内容"
-                                  />
-                                ) : (
-                                  <Icon name="chevron" size={13} />
-                                )}
-                              </button>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </div>
-                  );
-                })}
+                      );
+                    })}
+                  </details>
+                ))}
               </div>
             </section>
           }
