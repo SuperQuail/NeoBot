@@ -47,6 +47,21 @@ jobs:
           python-version: "3.14"
       - name: Install qegg
         run: go install github.com/SuperQuail/QuailEgg/cmd/qegg@v0.12.0
+      - name: Workaround uv workspace build output
+        # qegg 的 Python Publisher 在成员目录执行 `uv build`，uv workspace 会把产物写到
+        # 仓库根 dist/；垫一个 uv shim，让 build 输出到当前包目录的 dist/ 供 uv publish 查找。
+        run: |
+          real_uv="$(command -v uv)"
+          mkdir -p "$RUNNER_TEMP/uv-shim"
+          cat > "$RUNNER_TEMP/uv-shim/uv" <<EOF
+          #!/usr/bin/env bash
+          if [ "\$1" = "build" ]; then
+            exec "$real_uv" build --out-dir "\$PWD/dist" "\${@:2}"
+          fi
+          exec "$real_uv" "\$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/uv-shim/uv"
+          echo "$RUNNER_TEMP/uv-shim" >> "$GITHUB_PATH"
       - name: Release
         run: qegg release --yes
         env:
