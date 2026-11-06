@@ -1,0 +1,37 @@
+name: QuailEgg PR
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: ["dev"]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: qegg-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: QuailEgg 检查（非阻断）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.26', cache: false }
+      - uses: astral-sh/setup-uv@v10.0.1
+      - name: Install qegg
+        run: go install github.com/SuperQuail/QuailEgg/cmd/qegg@v0.12.0
+      - name: Check
+        run: qegg check --ci
+      - name: Preview plan
+        run: |
+          qegg plan --markdown > plan.md
+          if [ -s plan.md ]; then
+            cat plan.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "当前没有待发布变更。" >> "$GITHUB_STEP_SUMMARY"
+          fi

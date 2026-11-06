@@ -173,3 +173,8 @@ scripts/flow/_commit_msg.txt
 __pycache__/
 *.py[cod]
 app/src/**/parts/__pycache__/
+
+# qegg runtime state
+/.quailegg/state/
+/.quailegg/lock
+/.quailegg/assets/
