@@ -13,14 +13,12 @@
 >
 > 合并对话框里会预填最终落地的那条 squash 信息，合并前看一眼——那是最后一次人工把关。
 
-### 0. 分支模型（2026-10-26 起）
+### 0. 分支模型（QuailEgg 发布，2026-11-06 起）
 
-- **`dev`**：默认分支，日常功能/修复 PR 都提到这里；
-- **`main`**：只接收来自 `dev` 的 PR（发布候选）；
-- **`release`**：只接收来自 `main` 的 PR；`main → release` 的 PR **版本号必须高于 release 当前版本**
-  （建议在 `dev` 上统一提升 8 个 `pyproject.toml` 并更新 `uv.lock`，随 `dev → main` 带入），
-  合并后由 release 推送触发 PyPI 发布；
-- 功能分支从 `dev` 切出；禁止跨级 PR（例如功能分支直接 PR 到 `main`/`release`）。
+- **`dev`**：唯一发布入口，日常功能/修复 PR 都提到这里；
+- 合并到 `dev` 后 Q Egg 根据 `.changes/` 记录创建发布 PR（分支 `qegg-release`），合并发布 PR 后自动发布 PyPI 并创建 tag/Release；
+- `main`/`release` 仅为历史保留，不再参与发布；`pr-gates` 里针对它们的分支流向检查暂时保留，后续清理；
+- 功能分支从 `dev` 切出；禁止直推 `dev`。
 
 PR 门禁会检查 base/head 流向（`scripts/check_pr_flow.py`）与 release PR 的版本号
 （`scripts/check_release_bump.py`）。
@@ -161,7 +159,7 @@ python scripts/check_pr_issue_link.py --pr <PR号>
 - **禁止**夹带与本 PR 无关的重构或格式化
 - **禁止**提交 `.env`、密钥、token、真实用户数据（占位符要登记到 `.secretsignore`）
 - **禁止**从历史里恢复已删除的调试脚本——CI hygiene job 会阻断，那些文件历史上带过硬编码密钥
-- **禁止**擅自改版本号或 `uv.lock`——只在发版 PR 里按 [scripts/RELEASING.md](scripts/RELEASING.md) 做
+- **禁止**擅自改版本号或 `uv.lock`——版本由 Q Egg 根据 `.changes/` 记录自动提升，按 [scripts/RELEASING.md](scripts/RELEASING.md) 操作
 - **禁止**留 AI 署名、工具痕迹或 `Generated with …`
 
 ### 6. 别忘了同步

@@ -57,35 +57,22 @@
 
 若上传部分失败，且仍有包缺失当前版本，可重跑该版本变更对应的工作流，或在 Actions 页面手动对 release 触发补齐发布：留空 `base_ref` 即按 PyPI 缺失情况补发，不需要知道版本变更提交是哪一个。若所有包的当前版本均已建立，但个别 wheel/sdist 文件缺失，自动流程会跳过，需使用下方本地 `publish.ps1` 补齐同一版本的文件。后续无版本变更的 PR 不会触发补发。不要用旧版本运行覆盖新发布；多个 release 推送的等待运行仍受 GitHub concurrency 队列规则影响。
 
+# 检查与发布
+
+## Q Egg 发布流程
+
+仓库发布由 [QuailEgg](https://github.com/SuperQuail/QuailEgg) 驱动，配置在 `.quailegg.toml`，采用 dev 上的 PR 发布模式。
+
+- 日常 PR 合入 `dev`；修改 `app/` 或 `packages/*` 时用 `qegg commit` 写一条 `.changes/<slug>.md`（或手写合法记录，字段见 `.changes/README.md`）。
+- 合并到 dev 后 [`.github/workflows/qegg-release.yml`](../.github/workflows/qegg-release.yml) 运行 `qegg release --yes`：
+  - 有变更记录时：按记录计算下一版本，同步 8 个 `pyproject.toml` 与 `uv.lock`，生成 `CHANGELOG.md`，创建/刷新发布 PR（分支 `qegg-release`，目标 `dev`）。
+  - 合并发布 PR 后：同一工作流再次运行，构建并发布 7 个 Python 包到 PyPI，创建 Git tag 与 GitHub Release。
+- 预发布：`qegg pre alpha|beta|rc` 写入 `.quailegg/pre-release.lock`；下一次发布生成对应渠道版本，预发布不写 `CHANGELOG.md`、不消费记录；`qegg pre exit` 后回到稳定版。
+- 发布 job 使用受保护的 `pypi` environment（已允许 `dev` 部署），`UV_PUBLISH_TOKEN` 来自 environment/repo secret；不要在仓库里提交 token。
+- 发布前校验由 `[verify].commands` 执行：`uv run ruff check .` 与全量 pytest（排除 browser/network/slow/llm）。
+- 中断恢复：用 `qegg resume`（CI 或本地），或按 Actions 运行记录重跑；**不要手工创建 tag/Release、不要手改版本号**。
+- 旧的 `publish.yml`（main→release）已移除；`scripts/versions.py`、`scripts/prepare_release.py`、`scripts/publish.ps1` 仅保留为历史/本地兜底，不再参与自动发布。
+- 分支模型：发布不再经过 `main`/`release`；这两个分支仅为历史保留，后续可清理。`dev` 是唯一发布入口。
+
 ## 本地发布
 
-要求已安装 uv、Node 22 和前端 `package.json` 指定的 pnpm。先按上述流程手动更新版本和锁文件。
-
-```powershell
-# 检查锁文件，不修改它
-uv lock --check
-
-# 无需 token，不上传；执行完整构建并联网检查 PyPI 已有文件
-./scripts/publish.ps1 -DryRun
-
-# 上传当前仓库版本，不自动改版本
-$env:UV_PUBLISH_TOKEN = '你的 PyPI API token'
-./scripts/publish.ps1
-```
-
-发布脚本可从任意目录调用；首先运行 `prepare_release.py --check-only` 离线校验所有版本，失败即停止（`-DryRun` 同样校验）；然后依次执行 `pnpm install --frozen-lockfile`、lint、typecheck、test、build，再清理 `dist/`、构建全部 Python 包并发布。任何步骤失败都会中止。`dist/` 是本次构建的输出目录。
-
-## QuailEgg（鹌鹑蛋）变更记录
-
-仓库已接入 [QuailEgg](https://github.com/SuperQuail/QuailEgg)：功能 PR 需要为 `app/`、`packages/*` 下的改动提供一条变更记录（`.changes/<slug>.md`），PR CI 会运行
-`qegg check --ci` 并把发版计划作为评论贴到 PR 上。
-
-- 配置在 `.quailegg.toml`：`version_scope = "shared"`（8 个 Python 包共用版本），发布目标 PyPI。
-- 安装：`go install github.com/SuperQuail/QuailEgg/cmd/qegg@v0.12.0`（或使用 GitHub Release 的 qegg 二进制）。
-- 生成记录：`qegg commit -m "<type>(<scope>): <简述>" --body "<一句用户可见的变化>" --packages "python@neobot-app:minor"`。`--packages` 的 key 必须是 `.quailegg.toml` 里的表键（如 `python@neobot-app`，不是 `neobot-app`）；slug ≤3 段、body 一句话 ≤120 字符。
-- 手写回退：`.changes/<slug>.md` 的 front matter 同 `qegg commit`；`release: false` 表示不升版本。
-- **按路径判断**：`docs/`、`.github/`、仓库根目录改动不需要记录；`app/` 或 `packages/*` 下任何改动（含纯内部/依赖改动）都需要一条合法记录，纯内部改动用 `release: false`（不升版本，但仍要有记录）。
-- **发布自动化仍走现有 `publish.yml`（main → release）**：`.quailegg.toml` 里 `[release.workflow] mode = "external"`，
-  未启用 qegg 生成的 release 工作流；`[release] branch = "qegg-release"` 避免与真实 `release` 分支冲突。
-  **当前禁止在本地运行 `qegg release`**，直到迁移方案确定；后续迁移时再单独改这一处。
-- 预发布：`qegg pre alpha` 会把渠道写进 `.quailegg/pre-release.lock`；在切换发布工作流前，该锁文件只用于版本规划，不会自动触发 PyPI 发布。

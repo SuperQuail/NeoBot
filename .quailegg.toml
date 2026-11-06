@@ -16,17 +16,19 @@ branch = "qegg-release"
 github_release = true
 commit_message = "chore(release): v{{version}}"
 version_scope = "shared"
+# 发布 job 使用受保护的 pypi environment
+environment = "pypi"
 
 [changes]
 dir = ".changes"
 scope = ["app", "packages/adapter", "packages/chat", "packages/contracts", "packages/memory", "packages/modloader", "packages/storage"]
 
-[release.workflow]
-mode = "external"
-
 [verify]
-commands = []
-timeout = "15m"
+commands = [
+  "uv run ruff check .",
+  "uv run pytest -m \"not browser and not network and not slow and not llm\"",
+]
+timeout = "30m"
 fail_fast = true
 
 [publish]

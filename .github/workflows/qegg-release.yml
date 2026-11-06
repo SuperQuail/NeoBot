@@ -1,0 +1,52 @@
+name: QuailEgg Release
+on:
+  push:
+    branches: ["dev"]
+    paths:
+      - ".changes/**"
+      - ".quailegg.toml"
+      - ".quailegg/pre-release.lock"
+      - ".quailegg/release.json"
+      - "CHANGELOG.md"
+      - "app/pyproject.toml"
+      - "packages/adapter/pyproject.toml"
+      - "packages/chat/pyproject.toml"
+      - "packages/contracts/pyproject.toml"
+      - "packages/memory/pyproject.toml"
+      - "packages/modloader/pyproject.toml"
+      - "packages/storage/pyproject.toml"
+      - "pyproject.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+concurrency:
+  group: qegg-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: pypi
+    if: github.actor != 'github-actions[bot]'
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.26', cache: false }
+      - uses: astral-sh/setup-uv@v10.0.1
+      - name: Install qegg
+        run: go install github.com/SuperQuail/QuailEgg/cmd/qegg@v0.12.0
+      - name: Release
+        run: qegg release --yes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UV_PUBLISH_TOKEN: ${{ secrets.UV_PUBLISH_TOKEN }}
