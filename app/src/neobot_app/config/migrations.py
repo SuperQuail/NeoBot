@@ -470,3 +470,54 @@ def migrate_v8_to_v9(old: dict) -> dict:
     new_models["registry"] = migrated
     new["models"] = new_models
     return new
+
+
+#: 旧配置里的布尔写法（手写配置可能是 bool / 0/1 / "false" 等）。
+_LEGACY_TRUE_TEXTS = frozenset({"true", "1", "yes", "on", "enabled", "enable", "是", "开启"})
+_LEGACY_FALSE_TEXTS = frozenset({"false", "0", "no", "off", "disabled", "disable", "unable", "否", "关闭"})
+
+
+def _legacy_bool(value: Any, default: bool = True) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value or "").strip().casefold()
+    if text in _LEGACY_FALSE_TEXTS:
+        return False
+    if text in _LEGACY_TRUE_TEXTS:
+        return True
+    return default
+
+
+@Config.migration(from_version="0.9.0", to_version="0.10.0")
+def migrate_v9_to_v10(old: dict) -> dict:
+    """迁移 0.9.0 -> 0.10.0：chat.gentle_language_enabled 搬到 [prompt_optimizations]。
+
+    旧字段在升级后删除；true/false 原样搬进新分区的 gentle_language（其余子块
+    由 schema 默认值 true 补齐），带旧配置的部署升级后行为保持一致。
+    """
+    new: dict[str, Any] = {"version": "0.10.0"}
+    for key, value in old.items():
+        if key in ("version", "chat", "prompt_optimizations"):
+            continue
+        new[key] = value
+
+    legacy_section = old.get("prompt_optimizations")
+    section = dict(legacy_section) if isinstance(legacy_section, dict) else None
+
+    chat = old.get("chat")
+    if isinstance(chat, dict):
+        migrated_chat = dict(chat)
+        legacy = migrated_chat.pop("gentle_language_enabled", None)
+        if legacy is not None:
+            if section is None:
+                section = {}
+            section.setdefault("gentle_language", _legacy_bool(legacy))
+    else:
+        migrated_chat = chat
+    if migrated_chat is not None:
+        new["chat"] = migrated_chat
+    if section is not None:
+        new["prompt_optimizations"] = section
+    return new

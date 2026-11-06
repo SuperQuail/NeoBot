@@ -5,42 +5,29 @@ from __future__ import annotations
 from typing import Any
 
 
+from neobot_app.prompt.assets import raw_text
 from neobot_app.prompt.render import render_template
-from neobot_app.prompt.store import get_template_value, packaged_template
 
 from .models import (
     ProblemSolverAgentConfig,
     _MAX_AGENT_ITERATIONS,
-    _MODE_NOTE_NATIVE,
-    _MODE_NOTE_PTC,
 )
 
 
 def prompt_text(prompt_store: Any, key: str) -> str:
     """读取 [problem_solver] 的文本键(自定义文件优先,缺失时用内置模板)。"""
-    return get_template_value(prompt_store, "problem_solver", key) or packaged_template(
-        "problem_solver", key
-    )
+    return raw_text("problem_solver", key, store=prompt_store)
 
 
 def load_mode_note(prompt_store: Any, mode: str) -> str:
     """按工具运行时模式读取 [problem_solver.runtime] 的任务模式说明。"""
     key = "mode_note_ptc" if mode == "ptc" else "mode_note_native"
-    if prompt_store is not None:
-        value = prompt_store.sub_section("problem_solver", "runtime").get(key)
-        if isinstance(value, str) and value.strip():
-            return value
-    return _MODE_NOTE_PTC if mode == "ptc" else _MODE_NOTE_NATIVE
+    return raw_text("problem_solver", f"runtime.{key}", store=prompt_store)
 
 
 def _runtime_template(prompt_store: Any) -> str:
     """读取 [problem_solver.runtime] 子表模板,缺失时用内置兜底。"""
-    if prompt_store is not None:
-        section = prompt_store.sub_section("problem_solver", "runtime")
-        value = section.get("template")
-        if isinstance(value, str) and value.strip():
-            return value
-    return _FALLBACK_RUNTIME_TEMPLATE
+    return raw_text("problem_solver", "runtime.template", store=prompt_store)
 
 
 def _build_system_prompt(
@@ -58,12 +45,7 @@ def _build_system_prompt(
     用户在 data/prompts/custom/prompts.toml 中覆盖。
     """
     cfg = config or ProblemSolverAgentConfig()
-    base = get_template_value(
-        prompt_store,
-        "problem_solver",
-        "system_prompt",
-        default=_FALLBACK_SYSTEM_PROMPT,
-    )
+    base = raw_text("problem_solver", "system_prompt", store=prompt_store)
     try:
         timeout_value = int(float(getattr(cfg, "timeout_seconds", 600.0) or 600.0))
     except (TypeError, ValueError):
@@ -81,10 +63,7 @@ def _build_system_prompt(
 
 
 #: 兼容旧导出名：内容来自 prompts.toml 的 [problem_solver]，代码不再维护副本。
-_FALLBACK_SYSTEM_PROMPT = packaged_template("problem_solver", "system_prompt")
+_FALLBACK_SYSTEM_PROMPT = raw_text("problem_solver", "system_prompt")
 
 
-_FALLBACK_RUNTIME_TEMPLATE = packaged_template(
-    "problem_solver", "runtime.template"
-)
-
+_FALLBACK_RUNTIME_TEMPLATE = raw_text("problem_solver", "runtime.template")

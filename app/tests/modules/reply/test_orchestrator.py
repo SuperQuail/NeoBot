@@ -919,7 +919,7 @@ def test_render_skills_escapes_xml_fully():
         name = "weather"
         description = "说\"好\"<a> & '引'"
 
-    text = ReplyOrchestrator._render_skills([_Skill()])
+    text = _make_orchestrator()._render_skills([_Skill()])
 
     assert "&amp;" in text
     assert "&lt;" in text
@@ -2472,6 +2472,9 @@ class _DisabledPromptStore:
 
     def get(self, key: str, sub: str = "template", default: str = "") -> str:
         return self._inner.get(key, sub, default=default)
+
+    def get_section(self, key: str):
+        return self._inner.get_section(key)
 
     def template(self, key: str, default: str = "") -> str:
         return self._inner.template(key, default)

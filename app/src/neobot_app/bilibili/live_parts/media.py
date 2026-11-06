@@ -95,7 +95,11 @@ class _MediaMixin:
                     "content": [
                         {
                             "type": "text",
-                            "text": _text("live_media", "frame_description"),
+                            "text": _text(
+                                "live_media",
+                                "frame_description",
+                                store=self._prompt_store,
+                            ),
                         },
                         part,
                     ],

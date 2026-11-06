@@ -14,7 +14,7 @@ from neobot_chat.schema.types import (
     ToolGuardContext,
 )
 
-from neobot_app.prompt.store import packaged_template as _packaged_template
+from neobot_app.prompt.assets import raw_text as _raw_text
 from neobot_app.time_context import monotonic_seconds
 
 
@@ -22,7 +22,7 @@ from neobot_app.time_context import monotonic_seconds
 EXPOSED_TO_MAIN_AGENT_NAME = "self_heal"
 # 文本在 prompt/templates/prompts.toml 的 [self_heal].description；
 # TOML 里按行折行保存，导出常量沿用旧的单行拼接（逐字兼容）。
-EXPOSED_TO_MAIN_AGENT_DESCRIPTION = _packaged_template("self_heal", "description").replace("\n", "")
+EXPOSED_TO_MAIN_AGENT_DESCRIPTION = _raw_text("self_heal", "description").replace("\n", "")
 
 # Source names used when publishing to BackgroundNotificationHub
 START_SOURCE = "self_heal_start"

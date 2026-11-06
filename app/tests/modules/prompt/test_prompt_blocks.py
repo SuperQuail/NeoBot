@@ -66,7 +66,7 @@ def _ctx(block: Block, store, config):
 
 def _run_stage(block: Block, composer: PromptComposer, ctx) -> tuple[bool, list[str]]:
     """按块自身阶段走对应构建路径，返回 (该块是否产出消息/文本, 产出文本列表)。"""
-    if block.stage in (Stage.SYSTEM_MAIN, Stage.SYSTEM_INSERT, Stage.SYSTEM_APPEND):
+    if block.stage in (Stage.SYSTEM_PREFIX, Stage.SYSTEM_MAIN, Stage.SYSTEM_APPEND):
         system = composer.build_system(ctx)
         return block.id in system.rendered, [system.text]
     if block.stage is Stage.CONTEXT:
@@ -115,21 +115,22 @@ def test_enabled_false_hides_block(block: Block, custom_store, bot_config):
     assert produced is False, f"{block.id}: enabled=false 后仍被产出"
 
 
-# ── 温和语言：插在人设块之后、回复要求之前 ───────────────────────────────────
+# ── 温和语言：cot 板块子块1，位于 system 最前面、主模板之前 ───────────────────
 
 
 @pytest.mark.parametrize("scope", [Scope.GROUP, Scope.PRIVATE], ids=lambda scope: scope.value)
-def test_gentle_language_sits_after_persona_before_reply_rules(scope: Scope, prompt_store, bot_config):
+def test_gentle_language_is_cot_subblock_before_main_template(scope: Scope, prompt_store, bot_config):
     composer = PromptComposer(prompt_store)
     ctx = make_context(config=bot_config, store=prompt_store, scope=scope)
     text = composer.build_system(ctx).text
 
     assert text.count(GENTLE_MARKER) == 1
-    assert text.index("</你是谁>") < text.index(GENTLE_MARKER) < text.index("<回复要求>")
+    assert text.startswith("<cot>")
+    assert text.index(GENTLE_MARKER) < text.index("</cot>") < text.index("<你是谁>")
 
 
 def test_gentle_language_survives_whole_group_chat_override(custom_store, bot_config):
-    """整段覆盖 [group_chat] 后，温和语言仍插在自定义人设块之后。"""
+    """整段覆盖 [group_chat] 后，cot 板块（含温和语言）仍在最前面。"""
     store = custom_store(
         '[group_chat]\ntemplate = """<你是谁>\n自定义人设\n</你是谁>\n<回复要求>自定义规则</回复要求>"""\n'
     )
@@ -139,7 +140,7 @@ def test_gentle_language_survives_whole_group_chat_override(custom_store, bot_co
 
     assert "自定义人设" in text
     assert text.count(GENTLE_MARKER) == 1
-    assert text.index("</你是谁>") < text.index(GENTLE_MARKER) < text.index("<回复要求>")
+    assert text.index("</cot>") < text.index("自定义人设")
 
 
 # ── 占位符去重：system 用掉 {member_list} 后，上下文块不再重复群友内容 ─────────

@@ -93,6 +93,9 @@ def test_listed_template_text_is_not_blank():
 
 @pytest.mark.parametrize("stage", list(Stage), ids=lambda stage: stage.value)
 def test_orders_are_unique_within_stage_and_scope(stage: Stage):
+    if stage is Stage.CATALOG:
+        # catalog 资产不参与注入排序，order 无意义
+        return
     for scope in Scope:
         orders = [block.order for block in blocks_for(stage, scope)]
         assert len(orders) == len(set(orders)), f"{stage.value}/{scope.value} order 冲突"
@@ -104,13 +107,39 @@ def test_orders_are_unique_within_stage_and_scope(stage: Stage):
 @pytest.mark.parametrize(
     ("stage", "scope", "expected"),
     [
+        # system 最前面的全局 cot 板块（子块顺序即注入顺序）
+        (
+            Stage.SYSTEM_PREFIX,
+            Scope.GROUP,
+            (
+                "cot_intro",
+                "cot_at_mention",
+                "gentle_language",
+                "cot_avoid_bot_chat",
+                "cot_no_bluffing",
+                "cot_no_game_topics",
+                "cot_no_echo_images",
+                "cot_outro",
+            ),
+        ),
+        (
+            Stage.SYSTEM_PREFIX,
+            Scope.PRIVATE,
+            (
+                "cot_intro",
+                "cot_at_mention",
+                "gentle_language",
+                "cot_avoid_bot_chat",
+                "cot_no_bluffing",
+                "cot_no_game_topics",
+                "cot_no_echo_images",
+                "cot_outro",
+            ),
+        ),
         # 主模板：每个会话作用域各自一个
         (Stage.SYSTEM_MAIN, Scope.GROUP, ("group_chat",)),
         (Stage.SYSTEM_MAIN, Scope.PRIVATE, ("friend_chat",)),
         (Stage.SYSTEM_MAIN, Scope.LIVE, ("live_chat",)),
-        # 人设块之后的定点插入
-        (Stage.SYSTEM_INSERT, Scope.GROUP, ("gentle_language",)),
-        (Stage.SYSTEM_INSERT, Scope.PRIVATE, ("gentle_language",)),
         # system 末尾追加（group 有 @ 提示，private 有私聊提示）
         (
             Stage.SYSTEM_APPEND,

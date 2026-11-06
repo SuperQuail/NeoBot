@@ -4,66 +4,44 @@
 没有 QQ 群聊语境，因此不套用 QQ 模板。本模块只负责拼装文本，
 调用 LLM、记忆档案读取与发送都在 reply_engine / monitors 里。
 
-提示词文本集中在同目录的 ``prompts.toml``（纯数据），本模块只做加载与组装。
+提示词文本统一在 ``prompt/templates/prompts.toml`` 的 ``bili_*`` 分区（纯数据），
+本模块只做加载与组装；builder 可传 ``prompt_store``，让 custom 覆盖生效。
 """
 
 from __future__ import annotations
 
-import tomllib
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
+from neobot_app.prompt.assets import raw_text as _asset_raw
 from neobot_app.prompt.render import render_template
 from neobot_app.time_context import get_current_time_values
 
 # ── 提示词数据 ──
 
-_PROMPTS_FILE = Path(__file__).with_name("prompts.toml")
 
-
-def _load_prompts() -> dict[str, dict[str, str]]:
-    """把 prompts.toml 读成 {分区: {键: 文本}}。"""
-    with _PROMPTS_FILE.open("rb") as handle:
-        data = tomllib.load(handle)
-    return {
-        str(section): {str(key): str(value) for key, value in table.items()}
-        for section, table in data.items()
-        if isinstance(table, dict)
-    }
-
-
-#: 模块导入时读一次，避免每次组装提示词都解析 TOML。
-_PROMPTS = _load_prompts()
-
-
-def _text(section: str, key: str = "template") -> str:
-    """读取一个提示词文本块。"""
-    return _PROMPTS[section][key]
+def _text(section: str, key: str = "template", store: Any = None) -> str:
+    """读取一个 B 站提示词块（全局注册为 bili_* 分区，由 assets 统一解析）。"""
+    return _asset_raw(f"bili_{section}", key, store=store, strip=False)
 
 
 #: B站场景的通用风格规则（评论与私信共用）。
 #: B站独立维护说话方式，不跟随 QQ 的 [human_feel]（场景/边界不同，避免互相污染）。
-BILI_HUMAN_FEEL = _text("human_feel")
-
-BILI_REPLY_REQUIREMENTS = _text("reply_requirements")
-
-BILI_REPLY_TOOL_RULE = _text("reply_tool_rule")
-
-BILI_DATA_RULE = _text("data_rule")
-
-BILI_STYLE_RULES = "\n".join(
-    [BILI_REPLY_REQUIREMENTS, BILI_HUMAN_FEEL, BILI_REPLY_TOOL_RULE, BILI_DATA_RULE]
-)
+def _style_rules(store: Any = None) -> str:
+    return "\n".join(
+        [
+            _text("reply_requirements", store=store),
+            _text("human_feel", store=store),
+            _text("reply_tool_rule", store=store),
+            _text("data_rule", store=store),
+        ]
+    )
 
 
 def _data(text: Any) -> str:
     """把外部文本当纯数据处理：尖括号转全角，避免伪造标签越权。"""
     return str(text or "").replace("<", "＜").replace(">", "＞")
-
-
-_DIARY_RULES = _text("diary", "rules")
 
 
 # ── 数据模型 ──
@@ -132,16 +110,24 @@ class PrivateMessageContext:
 # ── 对外入口 ──
 
 
-def build_comment_prompt(ctx: CommentContext, max_comments: int = 100) -> tuple[str, str]:
+def build_comment_prompt(
+    ctx: CommentContext, max_comments: int = 100, *, prompt_store: Any = None
+) -> tuple[str, str]:
     """返回评论回复的 (system, user) 两段提示词。"""
-    return _comment_system_prompt(ctx), _comment_user_prompt(ctx, max_comments)
+    return (
+        _comment_system_prompt(ctx, store=prompt_store),
+        _comment_user_prompt(ctx, max_comments, store=prompt_store),
+    )
 
 
 def build_private_prompt(
-    ctx: PrivateMessageContext, max_history: int = 30
+    ctx: PrivateMessageContext, max_history: int = 30, *, prompt_store: Any = None
 ) -> tuple[str, str]:
     """返回私信回复的 (system, user) 两段提示词。"""
-    return _private_system_prompt(ctx), _private_user_prompt(ctx, max_history)
+    return (
+        _private_system_prompt(ctx, store=prompt_store),
+        _private_user_prompt(ctx, max_history, store=prompt_store),
+    )
 
 
 def build_task_prompt(
@@ -153,25 +139,32 @@ def build_task_prompt(
     bot_uid: int = 0,
     bot_data: str = "",
     other_name: str = "",
+    prompt_store: Any = None,
 ) -> tuple[str, str]:
     """跨聊天任务：让 B站侧用一次 LLM 生成要发出去的那句话。"""
     system = "\n".join(
         [
-            _identity(bot_name, bot_uid, bot_data, other_name),
+            _identity(bot_name, bot_uid, bot_data, other_name, store=prompt_store),
             (
-                LIVE_DANMAKU_ADJUST
+                _live_adjust(prompt_store)
                 if live
-                else BILI_STYLE_RULES + "\n" + _text("scene", "general")
+                else _style_rules(prompt_store)
+                + "\n"
+                + _text("scene", "general", store=prompt_store)
             ),
-            _text("task", "cross_chat"),
+            _text("task", "cross_chat", store=prompt_store),
         ]
     )
     parts = []
     if history:
-        parts.append(_text("task", "background").format(history=_data(history)))
+        parts.append(
+            _text("task", "background", store=prompt_store).format(
+                history=_data(history)
+            )
+        )
     parts.append(
-        _text("task", "instruction").format(
-            task=_data(task) or _text("defaults", "empty_task")
+        _text("task", "instruction", store=prompt_store).format(
+            task=_data(task) or _text("defaults", "empty_task", store=prompt_store)
         )
     )
     return system, "\n".join(parts)
@@ -186,31 +179,38 @@ def build_diary_prompt(
     max_chars: int = 600,
     max_material_chars: int = 6000,
     requirement: str = "",
+    prompt_store: Any = None,
 ) -> tuple[str, str]:
     """B站动态日记：把今天的聊天/档案素材写成一条动态。"""
     system = "\n".join(
         [
-            _identity(bot_name, 0, bot_data, ""),
-            BILI_HUMAN_FEEL,
-            _text("diary", "cot"),
-            _text("diary", "material_tool"),
-            _DIARY_RULES,
-            BILI_DATA_RULE,
+            _identity(bot_name, 0, bot_data, "", store=prompt_store),
+            _text("human_feel", store=prompt_store),
+            _text("diary", "cot", store=prompt_store),
+            _text("diary", "material_tool", store=prompt_store),
+            _text("diary", "rules", store=prompt_store),
+            _text("data_rule", store=prompt_store),
             (
-                _text("diary", "requirement").format(requirement=requirement)
+                _text("diary", "requirement", store=prompt_store).format(
+                    requirement=requirement
+                )
                 if str(requirement or "").strip()
                 else ""
             ),
-            _text("diary", "length").format(max_chars=max_chars),
+            _text("diary", "length", store=prompt_store).format(max_chars=max_chars),
         ]
     )
     body = str(material or "").strip()
     if max_material_chars > 0 and len(body) > max_material_chars:
-        body = body[:max_material_chars] + _text("diary", "truncated")
+        body = body[:max_material_chars] + _text(
+            "diary", "truncated", store=prompt_store
+        )
     body = _data(body)
-    user = _text("diary", "date").format(date_text=date_text)
+    user = _text("diary", "date", store=prompt_store).format(date_text=date_text)
     if body:
-        user += "\n" + _text("diary", "material").format(material=body)
+        user += "\n" + _text("diary", "material", store=prompt_store).format(
+            material=body
+        )
     return system, user
 
 
@@ -218,41 +218,50 @@ def build_diary_prompt(
 
 
 def _identity(
-    bot_name: str, bot_uid: int, bot_data: str, other_name: str
+    bot_name: str,
+    bot_uid: int,
+    bot_data: str,
+    other_name: str,
+    *,
+    store: Any = None,
 ) -> str:
-    who = _text("identity", "name").format(
-        bot_name=bot_name or _text("defaults", "bot_name")
+    who = _text("identity", "name", store=store).format(
+        bot_name=bot_name or _text("defaults", "bot_name", store=store)
     )
     if bot_uid:
-        who += _text("identity", "uid").format(bot_uid=bot_uid)
+        who += _text("identity", "uid", store=store).format(bot_uid=bot_uid)
     if other_name:
-        who += _text("identity", "alias").format(other_name=other_name)
+        who += _text("identity", "alias", store=store).format(other_name=other_name)
     who += "."
     if bot_data:
         who += f"\n{bot_data}"
-    return _text("identity", "block").format(who=who)
+    return _text("identity", "block", store=store).format(who=who)
 
 
 def _time_text(moment: datetime | None) -> str:
     return get_current_time_values(moment)["current_time"]
 
 
-def _comment_system_prompt(ctx: CommentContext) -> str:
+def _comment_system_prompt(ctx: CommentContext, *, store: Any = None) -> str:
     return "\n".join(
         [
-            _identity(ctx.bot_name, ctx.bot_uid, ctx.bot_data, ctx.other_name),
-            BILI_STYLE_RULES,
-            _text("scene", "comment"),
+            _identity(
+                ctx.bot_name, ctx.bot_uid, ctx.bot_data, ctx.other_name, store=store
+            ),
+            _style_rules(store),
+            _text("scene", "comment", store=store),
         ]
     )
 
 
-def _private_system_prompt(ctx: PrivateMessageContext) -> str:
+def _private_system_prompt(ctx: PrivateMessageContext, *, store: Any = None) -> str:
     return "\n".join(
         [
-            _identity(ctx.bot_name, ctx.bot_uid, ctx.bot_data, ctx.other_name),
-            BILI_STYLE_RULES,
-            _text("scene", "private"),
+            _identity(
+                ctx.bot_name, ctx.bot_uid, ctx.bot_data, ctx.other_name, store=store
+            ),
+            _style_rules(store),
+            _text("scene", "private", store=store),
         ]
     )
 
@@ -260,67 +269,98 @@ def _private_system_prompt(ctx: PrivateMessageContext) -> str:
 # ── user 提示词 ──
 
 
-def _comment_user_prompt(ctx: CommentContext, max_comments: int) -> str:
+def _comment_user_prompt(
+    ctx: CommentContext, max_comments: int, *, store: Any = None
+) -> str:
     parts: list[str] = [
-        _text("shared", "current_time").format(current_time=_time_text(ctx.current_time))
+        _text("shared", "current_time", store=store).format(
+            current_time=_time_text(ctx.current_time)
+        )
     ]
-    parts.append(_text("comment", "target_info").format(target_info=_target_info(ctx)))
+    parts.append(
+        _text("comment", "target_info", store=store).format(
+            target_info=_target_info(ctx, store=store)
+        )
+    )
     if ctx.memory:
-        parts.append(_text("comment", "your_memory").format(memory=_data(ctx.memory)))
-    profiles = _commenter_profiles_section(ctx.commenter_profiles)
+        parts.append(
+            _text("comment", "your_memory", store=store).format(
+                memory=_data(ctx.memory)
+            )
+        )
+    profiles = _commenter_profiles_section(ctx.commenter_profiles, store=store)
     if profiles:
         parts.append(profiles)
     if ctx.video_context:
         parts.append(
-            _text("shared", "related_video").format(video_context=_data(ctx.video_context))
+            _text("shared", "related_video", store=store).format(
+                video_context=_data(ctx.video_context)
+            )
         )
     parts.append(
-        _text("comment", "target_comment_section").format(
-            target_comment=_target_comment(ctx)
+        _text("comment", "target_comment_section", store=store).format(
+            target_comment=_target_comment(ctx, store=store)
         )
     )
     if ctx.comment_tree:
         parts.append(
-            _text("comment", "comment_tree_section").format(
-                comment_tree=_render_comment_tree(ctx, max_comments)
+            _text("comment", "comment_tree_section", store=store).format(
+                comment_tree=_render_comment_tree(ctx, max_comments, store=store)
             )
         )
-    parts.append(_text("comment", "reply_guide"))
+    parts.append(_text("comment", "reply_guide", store=store))
     return "\n".join(parts)
 
 
-def _private_user_prompt(ctx: PrivateMessageContext, max_history: int) -> str:
+def _private_user_prompt(
+    ctx: PrivateMessageContext, max_history: int, *, store: Any = None
+) -> str:
     parts: list[str] = [
-        _text("shared", "current_time").format(current_time=_time_text(ctx.current_time))
+        _text("shared", "current_time", store=store).format(
+            current_time=_time_text(ctx.current_time)
+        )
     ]
-    sender_name = _data(ctx.sender_name) or _text("defaults", "private_peer")
+    sender_name = _data(ctx.sender_name) or _text(
+        "defaults", "private_peer", store=store
+    )
     if ctx.sender_remark:
-        target = _text("private", "peer_with_remark").format(
+        target = _text("private", "peer_with_remark", store=store).format(
             sender_name=sender_name,
             remark=_data(ctx.sender_remark),
             uid=ctx.sender_uid,
         )
     else:
-        target = _text("private", "peer").format(
+        target = _text("private", "peer", store=store).format(
             sender_name=sender_name, uid=ctx.sender_uid
         )
-    parts.append(_text("private", "target").format(target=target))
+    parts.append(_text("private", "target", store=store).format(target=target))
     if ctx.sender_profile:
         parts.append(
-            _text("private", "impression").format(impression=_data(ctx.sender_profile))
+            _text("private", "impression", store=store).format(
+                impression=_data(ctx.sender_profile)
+            )
         )
     if ctx.memory_list:
-        parts.append(_text("private", "memory").format(memory=_data(ctx.memory_list)))
+        parts.append(
+            _text("private", "memory", store=store).format(
+                memory=_data(ctx.memory_list)
+            )
+        )
     if ctx.video_context:
         parts.append(
-            _text("shared", "related_video").format(video_context=_data(ctx.video_context))
+            _text("shared", "related_video", store=store).format(
+                video_context=_data(ctx.video_context)
+            )
         )
     parts.append(
-        _text("private", "history_section").format(history=_history_text(ctx, max_history))
+        _text("private", "history_section", store=store).format(
+            history=_history_text(ctx, max_history, store=store)
+        )
     )
     parts.append(
-        _text("private", "current_message").format(
-            message=_data(ctx.current_message) or _text("defaults", "empty_message")
+        _text("private", "current_message", store=store).format(
+            message=_data(ctx.current_message)
+            or _text("defaults", "empty_message", store=store)
         )
     )
     return "\n".join(parts)
@@ -329,66 +369,89 @@ def _private_user_prompt(ctx: PrivateMessageContext, max_history: int) -> str:
 # ── 渲染细节 ──
 
 
-def _target_info(ctx: CommentContext) -> str:
+def _target_info(ctx: CommentContext, *, store: Any = None) -> str:
     prefix = (
-        _text("comment", "up_prefix").format(up_name=_data(ctx.target_up_name))
+        _text("comment", "up_prefix", store=store).format(
+            up_name=_data(ctx.target_up_name)
+        )
         if ctx.target_up_name
         else ""
     )
-    text = _text("comment", "summary").format(
+    text = _text("comment", "summary", store=store).format(
         prefix=prefix,
         target_type=ctx.target_type,
-        title=_data(ctx.target_title) or _text("defaults", "unknown"),
+        title=_data(ctx.target_title) or _text("defaults", "unknown", store=store),
         oid=ctx.target_oid,
     )
     if ctx.target_url:
-        text += _text("comment", "url").format(url=_data(ctx.target_url))
+        text += _text("comment", "url", store=store).format(
+            url=_data(ctx.target_url)
+        )
     if ctx.target_desc:
-        text += _text("comment", "desc").format(desc=_data(ctx.target_desc)[:500])
+        text += _text("comment", "desc", store=store).format(
+            desc=_data(ctx.target_desc)[:500]
+        )
     return text
 
 
-def _target_comment(ctx: CommentContext) -> str:
+def _target_comment(ctx: CommentContext, *, store: Any = None) -> str:
     if not ctx.reply_target_rpid:
-        return _text("defaults", "no_target_comment")
+        return _text("defaults", "no_target_comment", store=store)
     node = _find_node(ctx.comment_tree, ctx.reply_target_rpid)
     if node is None:
-        return _text("defaults", "missing_comment").format(rpid=ctx.reply_target_rpid)
-    return _text("comment", "target_detail").format(
+        return _text("defaults", "missing_comment", store=store).format(
+            rpid=ctx.reply_target_rpid
+        )
+    return _text("comment", "target_detail", store=store).format(
         uname=_data(node.uname),
         uid=node.uid,
         when=_format_ts(node.ctime),
         content=_data(node.content),
-        replied=_text("comment", "replied_note") if node.up_replied else "",
+        replied=_text("comment", "replied_note", store=store)
+        if node.up_replied
+        else "",
     )
 
 
-def _render_comment_tree(ctx: CommentContext, max_comments: int) -> str:
+def _render_comment_tree(
+    ctx: CommentContext, max_comments: int, *, store: Any = None
+) -> str:
     nodes = _flatten(ctx.comment_tree)
     if max_comments > 0 and len(nodes) > max_comments:
         keep = nodes[:max_comments]
-        head = _text("comment_tree", "truncated_head").format(
+        head = _text("comment_tree", "truncated_head", store=store).format(
             total=len(nodes), kept=len(keep)
         )
         lines = [head]
-        _render_nodes(keep, ctx.reply_target_rpid, lines)
+        _render_nodes(keep, ctx.reply_target_rpid, lines, store=store)
         return "\n".join(lines)
     lines: list[str] = []
-    _render_nodes(ctx.comment_tree, ctx.reply_target_rpid, lines)
+    _render_nodes(ctx.comment_tree, ctx.reply_target_rpid, lines, store=store)
     return "\n".join(lines)
 
 
 def _render_nodes(
-    nodes: list[CommentNode], target_rpid: int, parts: list[str], depth: int = 0
+    nodes: list[CommentNode],
+    target_rpid: int,
+    parts: list[str],
+    depth: int = 0,
+    *,
+    store: Any = None,
 ) -> None:
     indent = "  " * depth
     for node in nodes:
         marker = (
-            _text("comment_tree", "target_marker") if node.rpid == target_rpid else ""
+            _text("comment_tree", "target_marker", store=store)
+            if node.rpid == target_rpid
+            else ""
         )
-        replied = _text("comment_tree", "replied_marker") if node.up_replied else ""
+        replied = (
+            _text("comment_tree", "replied_marker", store=store)
+            if node.up_replied
+            else ""
+        )
         parts.append(
-            _text("comment_tree", "node_line").format(
+            _text("comment_tree", "node_line", store=store).format(
                 indent=indent,
                 uname=_data(node.uname),
                 uid=node.uid,
@@ -399,22 +462,30 @@ def _render_nodes(
         )
         content = _data(node.content).replace("\n", " ")[:200]
         if len(node.content) > 200:
-            content += _text("comment_tree", "content_truncated")
+            content += _text("comment_tree", "content_truncated", store=store)
         parts.append(
-            _text("comment_tree", "content_line").format(indent=indent, content=content)
+            _text("comment_tree", "content_line", store=store).format(
+                indent=indent, content=content
+            )
         )
         if node.children:
-            _render_nodes(node.children, target_rpid, parts, depth + 1)
+            _render_nodes(
+                node.children, target_rpid, parts, depth + 1, store=store
+            )
 
 
-def _commenter_profiles_section(profiles: list[dict]) -> str:
+def _commenter_profiles_section(
+    profiles: list[dict], *, store: Any = None
+) -> str:
     if not profiles:
         return ""
     entries: list[str] = []
     for index, profile in enumerate(profiles, start=1):
         parts = [
-            _text("profile", "uname").format(uname=_data(profile.get("uname", "?"))),
-            _text("profile", "uid").format(uid=profile.get("uid", "?")),
+            _text("profile", "uname", store=store).format(
+                uname=_data(profile.get("uname", "?"))
+            ),
+            _text("profile", "uid", store=store).format(uid=profile.get("uid", "?")),
         ]
         for key in (
             "remark",
@@ -427,24 +498,31 @@ def _commenter_profiles_section(profiles: list[dict]) -> str:
             value = str(profile.get(key) or "").strip()
             if value:
                 parts.append(
-                    _text("profile", "line").format(
-                        label=_text("profile_labels", key), value=_data(value)
+                    _text("profile", "line", store=store).format(
+                        label=_text("profile_labels", key, store=store),
+                        value=_data(value),
                     )
                 )
         entries.append(
-            _text("profile", "entry").format(index=index, parts=",".join(parts))
+            _text("profile", "entry", store=store).format(
+                index=index, parts=",".join(parts)
+            )
         )
-    return _text("profile", "section").format(entries="\n".join(entries))
+    return _text("profile", "section", store=store).format(entries="\n".join(entries))
 
 
-def _history_text(ctx: PrivateMessageContext, max_history: int) -> str:
+def _history_text(
+    ctx: PrivateMessageContext, max_history: int, *, store: Any = None
+) -> str:
     if not ctx.history:
-        return _text("history", "empty")
+        return _text("history", "empty", store=store)
     history = ctx.history
     lines: list[str] = []
     if max_history > 0 and len(history) > max_history:
         lines.append(
-            _text("history", "truncated").format(total=len(history), kept=max_history)
+            _text("history", "truncated", store=store).format(
+                total=len(history), kept=max_history
+            )
         )
         history = history[-max_history:]
     for index, msg in enumerate(history, start=1):
@@ -453,7 +531,7 @@ def _history_text(ctx: PrivateMessageContext, max_history: int) -> str:
         when = _format_ts(int(msg.get("time", 0) or 0))
         if role in ("bot", "self"):
             lines.append(
-                _text("history", "bot_line").format(
+                _text("history", "bot_line", store=store).format(
                     index=index,
                     when=when,
                     bot_name=ctx.bot_name,
@@ -461,11 +539,11 @@ def _history_text(ctx: PrivateMessageContext, max_history: int) -> str:
                 )
             )
         else:
-            who = msg.get("sender_name") or _text("history", "sender_fallback").format(
-                uid=msg.get("sender_uid", "?")
-            )
+            who = msg.get("sender_name") or _text(
+                "history", "sender_fallback", store=store
+            ).format(uid=msg.get("sender_uid", "?"))
             lines.append(
-                _text("history", "peer_line").format(
+                _text("history", "peer_line", store=store).format(
                     index=index, when=when, who=_data(who), content=_data(content)
                 )
             )
@@ -503,18 +581,17 @@ def _format_ts(timestamp: int) -> str:
 #: B站直播弹幕硬上限；发送前必须预拦截。
 MAX_LIVE_DANMAKU_CHARS = 20
 
+
 #: QQ 群/评论区规则搬到直播间时需要调整的差异，集中在一个块里。
-LIVE_DANMAKU_SCENE = _text("scene", "live")
-
-LIVE_DANMAKU_ADJUST = "\n".join(
-    [LIVE_DANMAKU_SCENE, BILI_HUMAN_FEEL, BILI_REPLY_TOOL_RULE, BILI_DATA_RULE]
-)
-
-LIVE_REPLY_TO_RULE = _text("live", "reply_to_rule")
-
-LIVE_DANMAKU_HISTORY = _text("live", "danmaku_history")
-
-LIVE_SCHEDULED_HISTORY = _text("live", "scheduled_history")
+def _live_adjust(store: Any = None) -> str:
+    return "\n".join(
+        [
+            _text("scene", "live", store=store),
+            _text("human_feel", store=store),
+            _text("reply_tool_rule", store=store),
+            _text("data_rule", store=store),
+        ]
+    )
 
 
 @dataclass
@@ -534,137 +611,194 @@ class LiveDanmakuContext:
     viewer_memory: str = ""
 
 
-def _render_live_persona(live_persona: str, ctx: LiveDanmakuContext) -> str:
+def _render_live_persona(
+    live_persona: str, ctx: LiveDanmakuContext, *, store: Any = None
+) -> str:
     if not live_persona.strip():
         return ""
     return render_template(
         live_persona,
         {
-            "bot_name": ctx.bot_name or _text("defaults", "live_bot_name"),
+            "bot_name": ctx.bot_name
+            or _text("defaults", "live_bot_name", store=store),
             "bot_data": ctx.bot_data,
         },
     ).strip()
 
 
 def build_live_danmaku_prompt(
-    ctx: LiveDanmakuContext, live_persona: str = ""
+    ctx: LiveDanmakuContext, live_persona: str = "", *, prompt_store: Any = None
 ) -> tuple[str, str]:
     """组装直播间弹幕的 system/user；live_chat 配了独立人格就用它。"""
-    system = _render_live_persona(live_persona, ctx) or "\n".join(
+    system = _render_live_persona(
+        live_persona, ctx, store=prompt_store
+    ) or "\n".join(
         [
-            _identity(ctx.bot_name, 0, ctx.bot_data, ""),
-            LIVE_DANMAKU_ADJUST,
-            LIVE_DANMAKU_HISTORY.format(
-                bot_name=ctx.bot_name or _text("defaults", "live_bot_name")
+            _identity(ctx.bot_name, 0, ctx.bot_data, "", store=prompt_store),
+            _live_adjust(prompt_store),
+            _text("live", "danmaku_history", store=prompt_store).format(
+                bot_name=ctx.bot_name
+                or _text("defaults", "live_bot_name", store=prompt_store)
             ),
-            LIVE_REPLY_TO_RULE,
+            _text("live", "reply_to_rule", store=prompt_store),
         ]
     )
-    parts = [_text("shared", "current_time").format(current_time=_time_text(None))]
+    parts = [
+        _text("shared", "current_time", store=prompt_store).format(
+            current_time=_time_text(None)
+        )
+    ]
     parts.append(
-        _text("live", "room").format(
-            room=_data(ctx.room_name) or _text("defaults", "live_room")
+        _text("live", "room", store=prompt_store).format(
+            room=_data(ctx.room_name)
+            or _text("defaults", "live_room", store=prompt_store)
         )
     )
     parts.append(
-        _text("live", "viewer").format(
-            viewer=_data(ctx.viewer_name) or _text("defaults", "live_viewer")
+        _text("live", "viewer", store=prompt_store).format(
+            viewer=_data(ctx.viewer_name)
+            or _text("defaults", "live_viewer", store=prompt_store)
         )
     )
     if ctx.room_memory or ctx.memory:
         parts.append(
-            _text("live", "room_memory").format(
+            _text("live", "room_memory", store=prompt_store).format(
                 memory=_data(ctx.room_memory or ctx.memory)
             )
         )
     if ctx.viewer_memory:
         parts.append(
-            _text("live", "viewer_memory").format(memory=_data(ctx.viewer_memory))
+            _text("live", "viewer_memory", store=prompt_store).format(
+                memory=_data(ctx.viewer_memory)
+            )
         )
     if ctx.recent_history:
         parts.append(
-            _text("live", "recent_history").format(history=_data(ctx.recent_history))
+            _text("live", "recent_history", store=prompt_store).format(
+                history=_data(ctx.recent_history)
+            )
         )
     if ctx.frame_context:
-        parts.append(_text("live", "frame").format(frame=_data(ctx.frame_context)))
-    parts.append(_text("live", "pending_danmaku").format(text=_data(ctx.text)))
+        parts.append(
+            _text("live", "frame", store=prompt_store).format(
+                frame=_data(ctx.frame_context)
+            )
+        )
+    parts.append(
+        _text("live", "pending_danmaku", store=prompt_store).format(
+            text=_data(ctx.text)
+        )
+    )
     return system, "\n".join(parts)
 
 
 def build_live_scheduled_prompt(
-    ctx: LiveDanmakuContext, live_persona: str = ""
+    ctx: LiveDanmakuContext, live_persona: str = "", *, prompt_store: Any = None
 ) -> tuple[str, str]:
     """组装直播间主动定时弹幕的 system/user。"""
-    system = _render_live_persona(live_persona, ctx) or "\n".join(
+    system = _render_live_persona(
+        live_persona, ctx, store=prompt_store
+    ) or "\n".join(
         [
-            _identity(ctx.bot_name, 0, ctx.bot_data, ""),
-            LIVE_DANMAKU_ADJUST,
-            LIVE_SCHEDULED_HISTORY.format(
-                bot_name=ctx.bot_name or _text("defaults", "live_bot_name")
+            _identity(ctx.bot_name, 0, ctx.bot_data, "", store=prompt_store),
+            _live_adjust(prompt_store),
+            _text("live", "scheduled_history", store=prompt_store).format(
+                bot_name=ctx.bot_name
+                or _text("defaults", "live_bot_name", store=prompt_store)
             ),
-            _text("live", "scheduled_task"),
+            _text("live", "scheduled_task", store=prompt_store),
         ]
     )
-    parts = [_text("shared", "current_time").format(current_time=_time_text(None))]
+    parts = [
+        _text("shared", "current_time", store=prompt_store).format(
+            current_time=_time_text(None)
+        )
+    ]
     parts.append(
-        _text("live", "room").format(
-            room=_data(ctx.room_name) or _text("defaults", "live_room")
+        _text("live", "room", store=prompt_store).format(
+            room=_data(ctx.room_name)
+            or _text("defaults", "live_room", store=prompt_store)
         )
     )
     if ctx.room_memory or ctx.memory:
         parts.append(
-            _text("live", "room_memory").format(
+            _text("live", "room_memory", store=prompt_store).format(
                 memory=_data(ctx.room_memory or ctx.memory)
             )
         )
     if ctx.viewer_memory:
         parts.append(
-            _text("live", "viewer_memory").format(memory=_data(ctx.viewer_memory))
+            _text("live", "viewer_memory", store=prompt_store).format(
+                memory=_data(ctx.viewer_memory)
+            )
         )
     if ctx.recent_history:
         parts.append(
-            _text("live", "recent_history").format(history=_data(ctx.recent_history))
+            _text("live", "recent_history", store=prompt_store).format(
+                history=_data(ctx.recent_history)
+            )
         )
     if ctx.frame_context:
-        parts.append(_text("live", "frame").format(frame=_data(ctx.frame_context)))
+        parts.append(
+            _text("live", "frame", store=prompt_store).format(
+                frame=_data(ctx.frame_context)
+            )
+        )
     parts.append(
-        _text("live", "scheduled_message").format(text=_data(ctx.scheduled_prompt))
+        _text("live", "scheduled_message", store=prompt_store).format(
+            text=_data(ctx.scheduled_prompt)
+        )
     )
     return system, "\n".join(parts)
 
 
 def build_live_observation_prompt(
-    ctx: LiveDanmakuContext, live_persona: str = ""
+    ctx: LiveDanmakuContext, live_persona: str = "", *, prompt_store: Any = None
 ) -> tuple[str, str]:
     """组装主动观察直播画面的 system/user；允许 cancel。"""
-    system = _render_live_persona(live_persona, ctx) or "\n".join(
+    system = _render_live_persona(
+        live_persona, ctx, store=prompt_store
+    ) or "\n".join(
         [
-            _identity(ctx.bot_name, 0, ctx.bot_data, ""),
-            LIVE_DANMAKU_ADJUST,
-            _text("live", "observation_task"),
+            _identity(ctx.bot_name, 0, ctx.bot_data, "", store=prompt_store),
+            _live_adjust(prompt_store),
+            _text("live", "observation_task", store=prompt_store),
         ]
     )
-    parts = [_text("shared", "current_time").format(current_time=_time_text(None))]
+    parts = [
+        _text("shared", "current_time", store=prompt_store).format(
+            current_time=_time_text(None)
+        )
+    ]
     parts.append(
-        _text("live", "room").format(
-            room=_data(ctx.room_name) or _text("defaults", "live_room")
+        _text("live", "room", store=prompt_store).format(
+            room=_data(ctx.room_name)
+            or _text("defaults", "live_room", store=prompt_store)
         )
     )
     if ctx.room_memory or ctx.memory:
         parts.append(
-            _text("live", "room_memory").format(
+            _text("live", "room_memory", store=prompt_store).format(
                 memory=_data(ctx.room_memory or ctx.memory)
             )
         )
     if ctx.viewer_memory:
         parts.append(
-            _text("live", "viewer_memory").format(memory=_data(ctx.viewer_memory))
+            _text("live", "viewer_memory", store=prompt_store).format(
+                memory=_data(ctx.viewer_memory)
+            )
         )
     if ctx.recent_history:
         parts.append(
-            _text("live", "recent_history").format(history=_data(ctx.recent_history))
+            _text("live", "recent_history", store=prompt_store).format(
+                history=_data(ctx.recent_history)
+            )
         )
     if ctx.frame_context:
-        parts.append(_text("live", "frame").format(frame=_data(ctx.frame_context)))
-    parts.append(_text("live", "observation_user"))
+        parts.append(
+            _text("live", "frame", store=prompt_store).format(
+                frame=_data(ctx.frame_context)
+            )
+        )
+    parts.append(_text("live", "observation_user", store=prompt_store))
     return system, "\n".join(parts)

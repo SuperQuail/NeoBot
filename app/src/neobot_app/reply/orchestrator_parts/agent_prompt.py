@@ -87,7 +87,9 @@ class AgentPromptMixin:
             )
             if skill_instructions:
                 round_dynamic["skill_instructions"] = skill_instructions
-                package_index = _render_tool_package_index(self._skill_manager)
+                package_index = _render_tool_package_index(
+                    self._skill_manager, prompt_store=self._prompt_store
+                )
                 if package_index:
                     round_dynamic["tool_package_index"] = package_index
 

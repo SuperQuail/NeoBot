@@ -6,7 +6,7 @@ covers:
   - app/src/neobot_app/agents/
   - app/src/neobot_app/agent_tools/invocation.py
 verified_against: d525a5b
-verified_hash: 123e699382c9
+verified_hash: c6b2c2e2a1a3
 ---
 
 # 04 Agent 循环：工具迭代 / 轮次上限 / 失败语义 / 自修复

@@ -43,6 +43,7 @@ class AgentPipelineMixin:
                 numbering=numbering,
                 bot_account=self._get_bot_account(),
                 include_boundary_markers=self._show_boundary_markers(),
+                prompt_store=getattr(self, "_prompt_store", None),
             )
             member_block = ""
             if is_group:
@@ -311,6 +312,7 @@ class AgentPipelineMixin:
                 numbering=numbering,
                 bot_account=self._get_bot_account(),
                 include_boundary_markers=self._show_boundary_markers(),
+                prompt_store=getattr(self, "_prompt_store", None),
             )
             if new_role_messages:
                 messages.extend(new_role_messages)

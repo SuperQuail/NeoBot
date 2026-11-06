@@ -14,7 +14,7 @@ from neobot_chat.schema.types import (
 from neobot_chat.tools.toolset import ToolSpec, Toolset
 from neobot_contracts.ports.logging import Logger, NullLogger
 
-from neobot_app.prompt.store import packaged_template as _packaged_template
+from neobot_app.prompt.assets import raw_text
 from neobot_app.statistics.tracker import (
     CURRENT_CONVERSATION_ID,
     CURRENT_CONVERSATION_KIND,
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
 #: 兼容旧导出名：内容来自 ``prompts.toml`` 的 ``[self_heal].system_prompt``，
 #: 代码里不再维护第二份文案（旧调用方/测试仍可 import）。
-_FALLBACK_SYSTEM_PROMPT = _packaged_template("self_heal", "system_prompt")
+_FALLBACK_SYSTEM_PROMPT = raw_text("self_heal", "system_prompt")
 
 
 def _build_system_prompt(
@@ -45,24 +45,14 @@ def _build_system_prompt(
     prompt_store: Any = None,
 ) -> str:
     from neobot_app.prompt.render import render_template
-    from neobot_app.prompt.store import packaged_template
 
-    base = ""
-    runtime = ""
-    if prompt_store is not None:
-        base = prompt_store.get("self_heal", "system_prompt", default="")
-        runtime = prompt_store.get("self_heal", "runtime", default="")
-    if not base:
-        base = packaged_template("self_heal", "system_prompt")
-    if not runtime:
-        runtime = packaged_template("self_heal", "runtime")
+    base = raw_text("self_heal", "system_prompt", store=prompt_store)
+    runtime = raw_text("self_heal", "runtime", store=prompt_store)
     detail = render_template(
         runtime,
         {"timeout_seconds": config.timeout_seconds, "peer_descriptions": peer_descriptions},
     )
     return base + "\n\n" + detail + "\n"
-
-
 
 
 class SelfHealAgent:
@@ -88,7 +78,7 @@ class SelfHealAgent:
         cfg = config or SelfHealAgentConfig()
         self.description = EXPOSED_TO_MAIN_AGENT_DESCRIPTION
         if prompt_store is not None:
-            desc = prompt_store.get("self_heal", "description", default="")
+            desc = raw_text("self_heal", "description", store=prompt_store)
             if desc:
                 self.description = desc
         self._manager = manager

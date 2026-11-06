@@ -1159,15 +1159,42 @@ async def test_live_reply_passes_reply_to(tmp_path: Path) -> None:
 
 async def test_live_persona_uses_live_chat_section(tmp_path: Path) -> None:
     from neobot_app.bilibili.prompts import LiveDanmakuContext, build_live_danmaku_prompt
+    from neobot_app.prompt.store import PromptStore
 
-    class _Store:
-        def get(self, section, sub="template", default=""):
-            return "自定义直播人格" if section == "live_chat" else ""
+    custom = tmp_path / "prompts" / "custom" / "prompts.toml"
+    custom.parent.mkdir(parents=True)
+    custom.write_text('[live_chat]\ntemplate = "自定义直播人格"\n', encoding="utf-8")
+    store = PromptStore(tmp_path)
 
-    interactor = BilibiliLiveInteractor(None, data_dir=tmp_path, prompt_store=_Store())
+    interactor = BilibiliLiveInteractor(None, data_dir=tmp_path, prompt_store=store)
     assert interactor._live_persona() == "自定义直播人格"
-    system, _user = build_live_danmaku_prompt(LiveDanmakuContext(), interactor._live_persona())
+    system, _user = build_live_danmaku_prompt(
+        LiveDanmakuContext(), interactor._live_persona(), prompt_store=store
+    )
     assert system == "自定义直播人格"
+
+
+async def test_live_generation_reads_custom_bili_live_text(tmp_path: Path) -> None:
+    from neobot_app.prompt.store import PromptStore
+
+    custom = tmp_path / "prompts" / "custom" / "prompts.toml"
+    custom.parent.mkdir(parents=True)
+    custom.write_text(
+        '[bili_live]\nroom = "<直播间>{room}</直播间>自定义直播间-MARK"\n',
+        encoding="utf-8",
+    )
+    provider = _FakeProvider("欢迎")
+    interactor, _client, _ = await _enabled(tmp_path, provider=provider, at_only=False)
+    interactor._prompt_store = PromptStore(tmp_path)
+
+    await interactor._handle_danmu("5440", {"uid": 9, "name": "观众", "text": "在吗"})
+
+    user = next(
+        str(item.get("content") or "")
+        for item in provider.messages[0]
+        if item.get("role") == "user"
+    )
+    assert "自定义直播间-MARK" in user
 
 
 async def test_history_keeps_500_for_prompt(tmp_path: Path) -> None:

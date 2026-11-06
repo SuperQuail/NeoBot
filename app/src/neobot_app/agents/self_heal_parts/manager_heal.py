@@ -9,7 +9,7 @@ from neobot_chat.schema.types import (
     State,
 )
 
-from neobot_app.prompt.store import get_template_value, packaged_template
+from neobot_app.prompt.assets import raw_text
 from neobot_app.statistics.tracker import (
     CURRENT_USAGE_MODULE,
 )
@@ -28,10 +28,7 @@ class SelfHealManagerHealMixin:
 
     def _prompt_text(self, key: str) -> str:
         """读取 [self_heal] 的提示词文本(自定义文件优先,缺失时用内置模板)。"""
-        store = getattr(self, "_prompt_store", None)
-        return get_template_value(store, "self_heal", key) or packaged_template(
-            "self_heal", key
-        )
+        return raw_text("self_heal", key, store=getattr(self, "_prompt_store", None))
 
     async def _publish_start_notification(self, heal: HealTask) -> None:
         """Send the «已开始工作» notification to the admin private chat."""
@@ -213,7 +210,7 @@ class SelfHealManagerHealMixin:
             )
 
     def _build_initial_prompt(self, heal: HealTask) -> str:
-        # 模板经 packaged_template 读取会去掉首尾空白；旧文案末尾带一个换行，补回来逐字一致。
+        # 模板经 assets 读取会去掉首尾空白；旧文案末尾带一个换行，补回来逐字一致。
         return (
             safe_format(
                 self._prompt_text("initial_prompt"),

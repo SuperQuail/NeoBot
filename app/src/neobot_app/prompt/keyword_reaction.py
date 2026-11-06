@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
-from neobot_app.prompt.labels import render_label
+from neobot_app.prompt.assets import text
 
 if TYPE_CHECKING:
     from neobot_app.config.schemas.bot import KeyWordRule
@@ -22,9 +22,16 @@ class KeywordReactionItem:
 
 
 class KeywordReactionBuilder:
-    def __init__(self, rules: list["KeyWordRule"] | None, logger: Logger | None = None) -> None:
+    def __init__(
+        self,
+        rules: list["KeyWordRule"] | None,
+        logger: Logger | None = None,
+        *,
+        prompt_store: Any = None,
+    ) -> None:
         self._rules = rules or []
         self._logger = logger or NullLogger()
+        self._prompt_store = prompt_store
         # 预计算:规则关键词的 casefold 结果(匹配热路径避免逐消息重复 casefold)
         self._prepared_rules: list[dict] = []
         for rule in self._rules:
@@ -57,15 +64,21 @@ class KeywordReactionBuilder:
             matched_depths=" | ".join(",".join(str(depth) for depth in item.matched_depths) for item in items),
         )
         return "\n".join(
-            render_label(
-                "keyword_reaction",
-                "entry",
-                '<追加信息_{index}>对于"{keywords}",{prompt_text}</追加信息_{index}>',
-                index=index,
-                keywords="、".join(item.matched_keywords),
-                prompt_text=item.prompt_text,
+            entry
+            for entry in (
+                text(
+                    "label_keyword_reaction",
+                    "entry",
+                    store=self._prompt_store,
+                    values={
+                        "index": index,
+                        "keywords": "、".join(item.matched_keywords),
+                        "prompt_text": item.prompt_text,
+                    },
+                )
+                for index, item in enumerate(items, start=1)
             )
-            for index, item in enumerate(items, start=1)
+            if entry
         )
 
     def collect(
@@ -176,7 +189,7 @@ class KeywordReactionBuilder:
         matches: list[tuple[str, int]] = []
         matched_map: dict[str, int] = {}
 
-        for depth, text in enumerate(casefolded_texts if ignore_case else message_texts):
+        for depth, message_text in enumerate(casefolded_texts if ignore_case else message_texts):
             if min_depth != -1 and depth < min_depth:
                 continue
             if max_depth != -1 and depth > max_depth:
@@ -188,7 +201,7 @@ class KeywordReactionBuilder:
                 normalized_keyword = (
                     casefold_keywords[keyword_index] if ignore_case else keyword
                 )
-                if normalized_keyword and normalized_keyword in text:
+                if normalized_keyword and normalized_keyword in message_text:
                     matched_map[keyword] = depth
                     if match_mode == "any":
                         return [(keyword, depth)]

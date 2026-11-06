@@ -188,7 +188,9 @@ class AgentToolsetMixin:
             if cross_chat_loaded
             else reply_toolset.definitions()
         )
-        vision_context = ReplyVisionContext()
+        vision_context = ReplyVisionContext(
+            prompt_store=getattr(self, "_prompt_store", None)
+        )
         from neobot_app.skills.image_context_skill import ImageContextSkill
 
         default_image_loader = ImageContextSkill(
