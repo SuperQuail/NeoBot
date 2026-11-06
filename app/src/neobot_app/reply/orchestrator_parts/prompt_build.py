@@ -1,17 +1,44 @@
 """system 提示词与角色消息构建。"""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from neobot_contracts.models import ConversationRef
+from neobot_app.prompt.blocks import Stage, blocks_for
+from neobot_app.prompt.context import Scope
 from neobot_app.reply.event import ReplyEvent, ReplyState
 from ._runtime import asyncio
-from .prompt_blocks import _AT_MENTION_PRIORITY_BLOCK
 if TYPE_CHECKING:
     from neobot_adapter.model.message import GroupMessage, PrivateMessage
     from neobot_app.message.numbering import MessageNumbering
     from neobot_app.message.queue import MessageQueue
 
+
 class PromptBuildMixin:
+    def _append_round_blocks(
+        self,
+        prompt: str,
+        *,
+        scope: Scope,
+        dynamic: dict[str, Any],
+        features: dict[str, bool],
+    ) -> str:
+        """把编排器负责的 system 块按注册表顺序追加到 system 末尾。
+
+        这些块的内容每轮由调用方给出（@ 提示 / agent 模式技能说明 / 原生视觉），
+        注入时机决定上下文缓存能否命中，所以不交给 builder 的稳定 system 构建；
+        文本、启停与相对顺序仍来自注册表，由组合器渲染。
+        """
+        ctx = self._runtime_ctx(scope=scope, dynamic=dynamic)
+        ctx.features.update(features)
+        composer = self._prompt_composer_service()
+        parts = [prompt]
+        for block in blocks_for(Stage.SYSTEM_APPEND, scope):
+            if block.per_round:
+                text = composer.render_status_text(block.id, ctx)
+                if text:
+                    parts.append(text)
+        return "\n".join(parts)
+
     async def _build_prompt(
         self,
         event: ReplyEvent,
@@ -21,6 +48,9 @@ class PromptBuildMixin:
         last_reply_message_id: int | None = None,
         all_new: bool = False,
         context_blocks: list[dict[str, str]] | None = None,
+        agent_mode: bool = False,
+        dynamic: dict[str, Any] | None = None,
+        features: dict[str, bool] | None = None,
     ) -> str:
         # 等待该队列所有待处理的图片解析完成
         if self._image_parse_service is not None:
@@ -49,6 +79,9 @@ class PromptBuildMixin:
         if event.conversation_ref is None:
             raise ValueError("ReplyEvent.conversation_ref is None")
 
+        round_dynamic = dict(dynamic or {})
+        round_features = {"agent_mode": agent_mode, **dict(features or {})}
+
         if event.conversation_ref.kind == "group":
             try:
                 prompt = await asyncio.wait_for(
@@ -71,7 +104,13 @@ class PromptBuildMixin:
                             "at_mention_wait_hint_injected", event, queue_key=queue_key
                         )
                 if self._is_at_mentioned_event(event):
-                    prompt = prompt + "\n" + _AT_MENTION_PRIORITY_BLOCK
+                    round_dynamic["at_mention"] = True
+                prompt = self._append_round_blocks(
+                    prompt,
+                    scope=Scope.GROUP,
+                    dynamic=round_dynamic,
+                    features=round_features,
+                )
                 after_prompt = await self._emit_runtime_event(
                     "prompt.build.after", event, queue_key=queue_key, prompt=prompt
                 )
@@ -96,6 +135,12 @@ class PromptBuildMixin:
                     context_blocks=context_blocks,
                 ),
                 timeout=self._get_prompt_timeout_seconds(),
+            )
+            prompt = self._append_round_blocks(
+                prompt,
+                scope=Scope.PRIVATE,
+                dynamic=round_dynamic,
+                features=round_features,
             )
             after_prompt = await self._emit_runtime_event(
                 "prompt.build.after", event, queue_key=queue_key, prompt=prompt

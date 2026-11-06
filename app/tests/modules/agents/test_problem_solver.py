@@ -9,13 +9,18 @@ from pathlib import Path
 import tomlkit
 
 from neobot_app.agents.problem_solver import (
+    EXPOSED_TO_MAIN_AGENT_DESCRIPTION,
+    EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION,
     _FALLBACK_RUNTIME_TEMPLATE,
     _FALLBACK_SYSTEM_PROMPT,
+    _MODE_NOTE_NATIVE,
+    _MODE_NOTE_PTC,
     _SOLUTION_RESULT,
     ProblemSolverAgentConfig,
     ProblemSolverManager,
     _build_system_prompt,
 )
+from neobot_app.agents.problem_solver_parts.prompts import load_mode_note, prompt_text
 from neobot_app.prompt.store import PromptStore, sync_default_prompts
 
 TEMPLATE_FILE = (
@@ -281,6 +286,22 @@ def test_builtin_template_matches_inline_fallback() -> None:
 
     assert section["system_prompt"].strip() == _FALLBACK_SYSTEM_PROMPT.strip()
     assert section["runtime"]["template"].strip() == _FALLBACK_RUNTIME_TEMPLATE.strip()
+    # 迁移到数据文件的模式说明/描述：兼容导出名必须与 TOML 逐字一致
+    assert section["runtime"]["mode_note_ptc"] == _MODE_NOTE_PTC
+    assert section["runtime"]["mode_note_native"] == _MODE_NOTE_NATIVE
+    assert section["short_description"] == EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION
+    assert "".join(section["description"].split("\n")) == EXPOSED_TO_MAIN_AGENT_DESCRIPTION
+
+
+def test_mode_note_and_prompt_text_are_loaded_from_store(tmp_path) -> None:
+    """模式说明与通知文本从提示词文件读取（默认 store 与内置模板同源）。"""
+    sync_default_prompts(tmp_path)
+    store = PromptStore(tmp_path)
+
+    assert load_mode_note(store, "ptc") == _MODE_NOTE_PTC
+    assert load_mode_note(store, "native") == _MODE_NOTE_NATIVE
+    assert load_mode_note(None, "ptc") == _MODE_NOTE_PTC
+    assert prompt_text(store, "resume_prompt") == prompt_text(None, "resume_prompt")
 
 
 def test_build_system_prompt_renders_runtime_placeholders(tmp_path) -> None:

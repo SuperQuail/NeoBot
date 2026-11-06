@@ -59,9 +59,6 @@ from neobot_app.reply.orchestrator_parts.empty_turn import (
 )
 from neobot_app.reply.orchestrator_parts.lifecycle_hooks import _hook_name as _hook_name
 from neobot_app.reply.orchestrator_parts.prompt_blocks import (
-    _AT_MENTION_PRIORITY_BLOCK as _AT_MENTION_PRIORITY_BLOCK,
-    _NO_TOOL_CALL_REMINDER as _NO_TOOL_CALL_REMINDER,
-    _SILENT_NUDGE_TEXT as _SILENT_NUDGE_TEXT,
     _xml_escape as _xml_escape,
 )
 from neobot_app.reply.orchestrator_parts.sending import _segment_file_hint as _segment_file_hint

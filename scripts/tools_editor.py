@@ -30,9 +30,6 @@ from pathlib import Path
 from tkinter import ttk, messagebox
 from typing import Any
 
-# ── Prompt Builder integration ────────────────────────────────────────────
-from prompt_builder import PromptBuilderApp
-
 # ── Paths ────────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 APP_SRC = PROJECT_ROOT / "app" / "src"
@@ -1027,9 +1024,6 @@ class ToolsEditorApp:
         self._current_tools: list[ToolInfo] = []
         self._current_agent_key: str = "main"
 
-        # Prompt builder (lazy init in tab 3)
-        self._prompt_builder_app: Any = None
-
         # Agent registry for delegate (lazy init)
         self._agent_registry: Any = None
         self._agent_registry_built = False
@@ -1382,9 +1376,6 @@ class ToolsEditorApp:
         # ── Tab 2: Chat Stream Simulation ──
         self._build_chat_sim_tab()
 
-        # ── Tab 3: Prompt Editor (from prompt_builder.py) ──
-        self._build_prompt_editor_tab()
-
     def _build_chat_sim_tab(self) -> None:
         """Build Tab 2: chat stream simulation."""
         tab2 = ttk.Frame(self._main_notebook)
@@ -1504,54 +1495,6 @@ class ToolsEditorApp:
         right_pane.add(input_frame, stretch="always")
 
         self._main_notebook.add(tab2, text="聊天流模拟")
-
-    def _build_prompt_editor_tab(self) -> None:
-        """Build Tab 3: embedded prompt builder from prompt_builder.py."""
-        tab3 = ttk.Frame(self._main_notebook)
-        # Use a container frame with padding
-        self._prompt_builder_app = PromptBuilderApp(
-            parent=tab3,
-            on_save_callback=self._on_prompt_saved,
-            get_chat_streams=self._get_chat_streams_for_prompt,
-        )
-        self._main_notebook.add(tab3, text="提示词编辑")
-
-        # Add a convenient button to open sub-agent editor
-        sub_agent_btn = ttk.Button(
-            tab3, text="子Agent 描述编辑器",
-            command=self._open_sub_agent_editor_from_prompt,
-        )
-        sub_agent_btn.pack(side=tk.TOP, anchor=tk.NE, padx=8, pady=(4, 0))
-
-    def _open_sub_agent_editor_from_prompt(self) -> None:
-        """Open the sub-agent prompt editor from the embedded prompt builder."""
-        if self._prompt_builder_app is not None:
-            self._prompt_builder_app._open_sub_agent_editor()
-
-    def _on_prompt_saved(self) -> None:
-        """Called when prompt builder saves — refresh tools in sync."""
-        self._all_tools = collect_all_tools()
-        # Refresh current agent's tool list in the tree
-        if self._current_agent_key in self._all_tools:
-            self._current_tools = self._all_tools[self._current_agent_key]
-            self._tool_tree.delete(*self._tool_tree.get_children())
-            for t in self._current_tools:
-                self._tool_tree.insert("", tk.END, values=(t.name,))
-        self._set_status("提示词已保存 — 工具列表已同步更新")
-
-    def _get_chat_streams_for_prompt(self) -> dict[str, dict[str, Any]]:
-        """Return chat streams data for the prompt builder preview tab."""
-        result: dict[str, dict[str, Any]] = {}
-        for sid, s in self._chat_streams.items():
-            result[s.name] = {
-                "stream_id": sid,
-                "name": s.name,
-                "conversation_type": s.conversation_type,
-                "group_id": s.group_id,
-                "user_id": s.user_id,
-                "messages": s.messages,
-            }
-        return result
 
     # ── Status bar ───────────────────────────────────────────────────────
 
@@ -2486,9 +2429,6 @@ class ToolsEditorApp:
     def _reload_config(self) -> None:
         self.config = load_config()
         self._exec_env = ToolExecutionEnv(self.config, self._ws_client, virtual_mode=self._virtual_mode.get())
-        # Also reload prompt builder config if embedded
-        if self._prompt_builder_app is not None:
-            self._prompt_builder_app._reload_config()
         self._set_status("配置已重新加载")
 
     def _open_virtual_template_editor(self) -> None:
@@ -2500,10 +2440,6 @@ class ToolsEditorApp:
         self._status_var.set(msg)
 
     def _on_close(self) -> None:
-        # Check prompt builder for unsaved changes
-        if self._prompt_builder_app is not None and self._prompt_builder_app._modified:
-            if not messagebox.askyesno("未保存的更改", "提示词编辑器中有未保存的更改，确定退出？"):
-                return
         self._ws_client.disconnect()
         self._async_mgr.stop()
         self.root.destroy()

@@ -17,6 +17,7 @@ from typing import Any
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
+from neobot_app.prompt.assets import raw_text
 from neobot_app.time_context import epoch_seconds, from_epoch_seconds, monotonic_seconds
 
 # 睡眠剩余时间播报间隔(秒)
@@ -25,22 +26,16 @@ SLEEP_TICKER_INTERVAL_SECONDS = 60
 # 睡眠时长上限:12 小时
 MAX_SLEEP_SECONDS = 12 * 3600
 
-# 唤醒提示词默认值(可由自定义提示词系统的 [wake_up] 分区覆盖)
-DEFAULT_WAKE_PROMPT = "你刚刚正在睡觉,现在被叫醒了,还有点困."
+# 唤醒提示词默认值(可由自定义提示词系统的 [wake_up] 分区覆盖；文本在 prompts.toml)
+DEFAULT_WAKE_PROMPT = raw_text("wake_up")
 
 # /sleep 命令的提示词默认值(提示词分区 [sleep_cmd]，spec(5) §4.1 / R2)
-DEFAULT_SLEEP_CMD_PROMPT = (
-    "你刚刚答应去睡觉（睡眠 {duration}，预计 {wake_at} 醒来）。"
-    "请用你自己的语气自然回应一句，不要复述本条状态说明。"
-)
+DEFAULT_SLEEP_CMD_PROMPT = raw_text("sleep_cmd")
 
 # /awake 命令的提示词默认值(提示词分区 [awake_cmd])。
 # 与 [wake_up] 分工不同：wake_up 是「群聊被@叫醒」的状态注入，
 # awake_cmd 是「用户执行 /awake」的回复提示，两者不合并。
-DEFAULT_AWAKE_CMD_PROMPT = (
-    "你刚被叫醒了（睡了 {elapsed}）。"
-    "请用你自己的语气自然回应一句，不要复述本条状态说明。"
-)
+DEFAULT_AWAKE_CMD_PROMPT = raw_text("awake_cmd")
 
 _DURATION_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([smhd]?)\s*$", re.IGNORECASE)
 # 占位符只认「标识符形态」的花括号：未知占位符原样保留，畸形花括号不报错
@@ -292,10 +287,4 @@ class SleepService:
 
     def _template(self, key: str, default: str) -> str:
         """读取提示词分区:自定义文件覆盖默认,缺失时回退内置兜底。"""
-        if self._prompt_store is not None:
-            value = self._prompt_store.template(key, default=default)
-            if value and value.strip():
-                return value
-        from neobot_app.prompt.store import fallback_template
-
-        return fallback_template(key, default=default)
+        return raw_text(key, store=self._prompt_store) or default

@@ -6,8 +6,8 @@ covers:
   - app/src/neobot_app/runtime/notifications.py
   - app/src/neobot_app/runtime/temp_cleaner.py
   - app/src/neobot_app/builtin_plugins/speaking_schedule/
-verified_against: 957a34d
-verified_hash: e5c3f4f4ffcc
+verified_against: d525a5b
+verified_hash: 403d1f67292f
 ---
 
 # 16 定时任务 · 睡眠 · 后台通知 · 临时清理
@@ -175,7 +175,10 @@ flowchart TD
 
 `is_sleeping` / `remaining_seconds` / `wake_up_at` / `wake_up_time_text`（`:148-184`）是只读观测面，
 面板与意愿判定都靠它们。`wake_prompt` / `sleep_prompt` / `awake_prompt` 三个提示词方法
-（`:260-293`）决定「睡眠/唤醒」时给模型什么上下文。
+（`:249-290`）决定「睡眠/唤醒」时给模型什么上下文：模板统一走
+`prompt.assets.raw_text("wake_up" / "sleep_cmd" / "awake_cmd")`，数据在
+`prompt/templates/prompts.toml` 的对应分区，自定义覆盖生效；分区 `enabled=false` 时
+`raw_text` 返回空串、被 `DEFAULT_*_PROMPT` 兜底接住，所以这三个块实际不受分区开关控制。
 **睡眠不阻断命令**：命令解析在事件管道里早于意愿判定（见 `02c-event-pipeline.md`）。
 </details>
 

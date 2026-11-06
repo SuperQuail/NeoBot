@@ -43,6 +43,7 @@ class AgentPipelineMixin:
                 numbering=numbering,
                 bot_account=self._get_bot_account(),
                 include_boundary_markers=self._show_boundary_markers(),
+                prompt_store=getattr(self, "_prompt_store", None),
             )
             member_block = ""
             if is_group:
@@ -94,8 +95,10 @@ class AgentPipelineMixin:
         # into a labelled user appendix at the END of every model request.
         vision_context.manual_parts.extend(image_parts)
         if vision_just_disabled:
-            messages.append(
-                {"role": "user", "content": "[原生视觉回退] 图片未发送；非视觉模型和外部图片解析工具已恢复。"}
+            self._append_block(
+                messages,
+                "vision_fallback_notice",
+                dynamic={"vision_fallback": True},
             )
 
         # 已经回复过:清零轮次与时间基准,本次管线激活不再提醒
@@ -309,6 +312,7 @@ class AgentPipelineMixin:
                 numbering=numbering,
                 bot_account=self._get_bot_account(),
                 include_boundary_markers=self._show_boundary_markers(),
+                prompt_store=getattr(self, "_prompt_store", None),
             )
             if new_role_messages:
                 messages.extend(new_role_messages)

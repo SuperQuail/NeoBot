@@ -26,10 +26,10 @@ from .test_orchestrator import (
 )
 
 
-@pytest.mark.parametrize("section", ["group_chat", "friend_chat"])
-def test_default_prompts_require_a_real_cancel_tool_call(section):
+def test_default_prompts_require_a_real_cancel_tool_call():
     prompts = tomllib.loads((TEMPLATES_DIR / "prompts.toml").read_text(encoding="utf-8"))
-    text = prompts[section]["template"]
+    # 规则在 [qq_chat]，取消/引用的写法说明在共享回复样例里
+    text = prompts["qq_chat"]["template"] + prompts["qq_chat_examples"]["template"]
     assert "取消本轮回复必须直接调用 cancel 工具" in text
     assert "讨论或引用这个词不等于调用工具" in text
     assert "所有对外发言都必须通过工具调用" in text

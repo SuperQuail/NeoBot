@@ -919,7 +919,7 @@ def test_render_skills_escapes_xml_fully():
         name = "weather"
         description = "说\"好\"<a> & '引'"
 
-    text = ReplyOrchestrator._render_skills([_Skill()])
+    text = _make_orchestrator()._render_skills([_Skill()])
 
     assert "&amp;" in text
     assert "&lt;" in text
@@ -2373,7 +2373,15 @@ async def test_common_native_vision_loads_current_message_without_tools():
     messages, tools = provider.calls[0]
     assert tools is None
     assert messages[-1]["role"] == "user"
-    assert any(part.get("type") == "image_url" for part in messages[-1]["content"])
+    # 契约：图片上下文属于 RUNTIME_DATA，排在提醒/时间块之前；时间块仍是最后一条
+    assert "<当前时间>" in messages[-1]["content"]
+    image_messages = [
+        item
+        for item in messages
+        if isinstance(item.get("content"), list)
+        and any(part.get("type") == "image_url" for part in item["content"])
+    ]
+    assert image_messages, "原生视觉图片消息缺失"
     await orch.shutdown()
 
 
@@ -2464,6 +2472,9 @@ class _DisabledPromptStore:
 
     def get(self, key: str, sub: str = "template", default: str = "") -> str:
         return self._inner.get(key, sub, default=default)
+
+    def get_section(self, key: str):
+        return self._inner.get_section(key)
 
     def template(self, key: str, default: str = "") -> str:
         return self._inner.template(key, default)
@@ -2893,8 +2904,9 @@ async def test_avoid_repeat_appended_once_per_activation_verbatim(monkeypatch):
 
     first = provider.calls[0][0]
     second = provider.calls[1][0]
-    assert first[-1] == {"role": "user", "content": text}
-    assert "<当前时间>" in first[-2]["content"]
+    # 契约：REMINDER 在 TIME 之前，时间块是请求的最后一条消息
+    assert first[-2] == {"role": "user", "content": text}
+    assert "<当前时间>" in first[-1]["content"]
     assert _count_content(first, text) == 1
     assert _count_content(second, text) == 1
 
@@ -2935,8 +2947,9 @@ async def test_common_path_appends_avoid_repeat_once(monkeypatch):
     await _wait_until_idle(orch)
 
     messages = provider.calls[0][0]
-    assert messages[-1] == {"role": "user", "content": text}
-    assert "<当前时间>" in messages[-2]["content"]
+    # 契约：防重复提醒在时间块之前，时间块始终是最后一条消息
+    assert messages[-2] == {"role": "user", "content": text}
+    assert "<当前时间>" in messages[-1]["content"]
     assert _count_content(messages, text) == 1
     await orch.shutdown()
 

@@ -14,6 +14,7 @@ from neobot_chat.schema.types import (
     ToolGuardContext,
 )
 
+from neobot_app.prompt.assets import raw_text as _raw_text
 from neobot_app.time_context import monotonic_seconds
 from neobot_app.agent_tools.contracts import ToolContext
 
@@ -21,30 +22,15 @@ from neobot_app.agent_tools.contracts import ToolContext
 
 _MAX_AGENT_ITERATIONS = 20
 
+# 提示词文本在 prompt/templates/prompts.toml（数据文件），这里只保留兼容导出名。
 # 任务模式说明:绑定工具运行时后按模式写入 [problem_solver.runtime] 的 {mode_note}
-_MODE_NOTE_PTC = (
-    "当前任务模式为PTC，只能调用 run_code；业务 get_chat_context / submit_solution "
-    "也在程序内调用。新版文件工具使用 read/write/edit/glob/grep，搜索使用 "
-    "web_search/web_fetch，图片使用 read_image；旧同类别名不再提供。"
-)
-_MODE_NOTE_NATIVE = (
-    "当前任务模式为普通模式，直接调用精简工具；复杂编排仅在PTC模式提供。"
-    "新版文件工具使用 read/write/edit/glob/grep，搜索使用 web_search/web_fetch，"
-    "图片使用 read_image；旧同类别名不再提供。"
-)
+_MODE_NOTE_PTC = _raw_text("problem_solver", "runtime.mode_note_ptc")
+_MODE_NOTE_NATIVE = _raw_text("problem_solver", "runtime.mode_note_native")
 
 EXPOSED_TO_MAIN_AGENT_NAME = "problem_solver"
-EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
-    "复杂问题解题。仅在问题非常复杂、需要长时间深度推理时才使用本 agent。"
-    "适用场景：高难度数学证明与计算、复杂编程算法设计与实现、"
-    "深度科学推理与计算、需要多步骤推演的逻辑问题。"
-    "解题为后台任务，提交后立即返回状态，"
-    "完成后会通过通知将解答结果（文本/文件路径等）告知主Agent，由主Agent决定如何回复。"
-    "注意：简单问答、常识性问题、日常聊天、普通信息查询/搜索等不应委托本 agent。"
-    "简单搜索查询请使用联网搜索工具包(先 unlock web_search)自行完成。"
-    "只有确认问题需要深度推理（非简单搜索能解决）时才使用本 agent。"
-)
-EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = "复杂问题解题（数学/编程/科学推理），仅高难度深度推理时使用。简单搜索/信息查询请使用联网搜索工具包，不要委托本agent"
+# TOML 里 description 按行折行保存；导出常量沿用旧的单行拼接（逐字兼容）。
+EXPOSED_TO_MAIN_AGENT_DESCRIPTION = _raw_text("problem_solver", "description").replace("\n", "")
+EXPOSED_TO_MAIN_AGENT_SHORT_DESCRIPTION = _raw_text("problem_solver", "short_description")
 
 
 _SOLVER_CHAT_CONTEXT: ContextVar[str] = ContextVar("solver_chat_context", default="")

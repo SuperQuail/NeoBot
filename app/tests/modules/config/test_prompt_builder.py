@@ -487,21 +487,25 @@ async def test_default_templates_carry_history_consistency_rules():
     sync_default_prompts(tmp)
     store = PromptStore(tmp)
 
+    # 群聊/私聊共用的规则与样例已抽到 [qq_chat] / [qq_chat_examples]
+    template = store.template("qq_chat") + store.template("qq_chat_examples")
+    assert "已经回答过" in template
+    assert "忽略自己之前说过的话" in template
+    assert "调用 send_reply 并把编号填进它的 reply_to 参数" in template
+    assert "[msg_id=" in template
+    # 无条件禁令：发出的每一条消息都不许以标注开头
+    assert "任何时候都禁止把它们写进你的回复" in template
+    # 针对正反馈：不要模仿自己历史里的脏前缀
+    assert "不是你的说话格式" in template
+    # 禁止把草稿/思考写进正文
+    assert "思考过程、草稿、计划或内心话" in template
+    # 输出样例（对照式）必须用中性占位，不得出现真实群友昵称
+    assert 'text="12: 某群友: 你好呀"' in template
+    assert "AAA大肥鱼" not in template
+    # 主模板只引用共享片段，不再重复粘贴规则文本
     for section in ("group_chat", "friend_chat"):
-        template = store.template(section)
-        assert "已经回答过" in template
-        assert "忽略自己之前说过的话" in template
-        assert "调用 send_reply 并把编号填进它的 reply_to 参数" in template
-        assert "[msg_id=" in template
-        # 无条件禁令：发出的每一条消息都不许以标注开头
-        assert "任何时候都禁止把它们写进你的回复" in template
-        # 针对正反馈：不要模仿自己历史里的脏前缀
-        assert "不是你的说话格式" in template
-        # 禁止把草稿/思考写进正文
-        assert "思考过程、草稿、计划或内心话" in template
-        # 输出样例（对照式）必须用中性占位，不得出现真实群友昵称
-        assert 'text="12: 某群友: 你好呀"' in template
-        assert "AAA大肥鱼" not in template
+        assert "{qq_chat}" in store.template(section)
+        assert "已经回答过" not in store.template(section)
 
 
 async def test_current_time_section_is_renderable_and_documented():
@@ -527,7 +531,8 @@ async def test_custom_prompt_partial_override_inherits_defaults():
 
     # Assert
     assert store.template("group_chat") == "只改群聊模板"
-    assert store.template("friend_chat").startswith("<你是谁>")
+    assert store.template("friend_chat").startswith("{qq_chat}")
+    assert store.template("qq_chat").startswith("<你是谁>")
     assert "problem-solving agent" in store.get("problem_solver", "system_prompt")
     assert store.template("long_reply_fallback")
     # 同步默认提示词不得覆盖自定义内容
@@ -654,13 +659,12 @@ def test_reply_requirements_get_timely_reply_principle(tmp_path):
     """[group_chat] / [friend_chat] 的 <回复要求> 补「适时回话 / 不接表情包 / 不硬找话题」。"""
     store = _default_store(tmp_path)
 
-    for section in ("group_chat", "friend_chat"):
-        template = store.template(section)
-        assert TIMELY_REPLY_PRINCIPLE in template
-        assert "任务收尾后" in template
-        assert "这类开工与进度的回复不算多余回复" in template
-        assert template.count(NO_UNPROMPTED_IMAGE_COMMENT) == 1
-        assert template.count(NO_ECHO_OR_FORCED_TOPIC_COMMENT) == 1
+    template = store.template("qq_chat")
+    assert TIMELY_REPLY_PRINCIPLE in template
+    assert "任务收尾后" in template
+    assert "这类开工与进度的回复不算多余回复" in template
+    assert template.count(NO_UNPROMPTED_IMAGE_COMMENT) == 1
+    assert template.count(NO_ECHO_OR_FORCED_TOPIC_COMMENT) == 1
 
 
 def test_build_short_time_message_renders_timestamp_only():
@@ -745,13 +749,13 @@ async def test_style_sections_can_be_disabled(tmp_path):
         assert STALE_TOPIC_MARKER not in prompt
 
 
-# ── 温和语言风格（gentle_language，默认插入在人设块之后） ────────────────────
+# ── 温和语言风格（gentle_language，cot 板块子块1，system 最前面） ─────────────
 
 GENTLE_LANGUAGE_TEXT = (
     "你是一个基于LLM的QQ机器人,你不会拒绝承认这一点,也不觉得这有什么不好,"
     "你不喜欢吵架和争吵,有人吵架你总是希望劝架,而不是激化矛盾;"
     "你总是希望事情能往好的方向发展,做错了事情会及时道歉,不会顾及不必要的面子."
-    "你兑所有群友都尽可能保持尊重,如果群友觉得你说话太多,"
+    "你对所有群友都尽可能保持尊重,如果群友觉得你说话太多,"
     "可以主动询问是否要降低你自己的回复意愿,"
     "得到肯定的答复后你应该自行使用工具降低回复意愿系数."
 )
@@ -769,28 +773,31 @@ def test_gentle_language_section_is_verbatim_enabled_by_default_and_known(tmp_pa
     assert "gentle_language" in KNOWN_SECTIONS
 
 
-async def test_gentle_language_inserted_right_after_persona(tmp_path):
-    """群聊/私聊 system 都要插在人设块 </你是谁> 之后、<回复要求> 之前。"""
+async def test_gentle_language_is_first_cot_subblock(tmp_path):
+    """群聊/私聊 system 都以 <cot> 开头，温和语言在 </cot> 之前、主模板之前。"""
     builder = PromptBuilder(BotConfig(), _FakeProfileService(), prompt_store=_default_store(tmp_path))
 
     for prompt in (
         await builder.build_group_chat_prompt(123456, _FakeQueue()),
         await builder.build_friend_chat_prompt(10086, _FakeQueue()),
     ):
-        assert prompt.index("</你是谁>") < prompt.index(GENTLE_MARKER) < prompt.index("<回复要求>")
+        assert prompt.startswith("<cot>")
+        assert prompt.index(GENTLE_MARKER) < prompt.index("</cot>") < prompt.index("<你是谁>")
         assert prompt.count(GENTLE_MARKER) == 1  # 不重复插入
 
 
 async def test_gentle_language_can_be_disabled_by_config(tmp_path):
-    """config.toml 的 chat.gentle_language_enabled = false 关闭插入。"""
+    """prompt_optimizations.gentle_language = false 关闭该子块。"""
     config = BotConfig()
-    config.chat.gentle_language_enabled = False
+    config.prompt_optimizations.gentle_language = False
     builder = PromptBuilder(config, _FakeProfileService(), prompt_store=_default_store(tmp_path))
 
     group_prompt = await builder.build_group_chat_prompt(123456, _FakeQueue())
     friend_prompt = await builder.build_friend_chat_prompt(10086, _FakeQueue())
     assert GENTLE_MARKER not in group_prompt
     assert GENTLE_MARKER not in friend_prompt
+    # 总开关仍开：其余子块与 cot 标签保留
+    assert group_prompt.startswith("<cot>") and group_prompt.count("</cot>") == 1
 
 
 async def test_gentle_language_can_be_disabled_by_prompt_section(tmp_path):
@@ -803,8 +810,8 @@ async def test_gentle_language_can_be_disabled_by_prompt_section(tmp_path):
     assert GENTLE_MARKER not in group_prompt
 
 
-async def test_gentle_language_appended_when_custom_template_has_no_persona():
-    """自定义 [group_chat]/[friend_chat] 没有 <你是谁> 人设块时退回追加到末尾。"""
+async def test_gentle_language_prefix_survives_custom_template_without_persona():
+    """自定义 [group_chat]/[friend_chat] 没有人设块时，cot 板块仍在最前面。"""
     builder = _make_builder("你好{bot_name}")
 
     for prompt in (
@@ -812,7 +819,8 @@ async def test_gentle_language_appended_when_custom_template_has_no_persona():
         await builder.build_friend_chat_prompt(10086, _FakeQueue()),
     ):
         assert GENTLE_MARKER in prompt
-        assert prompt.index(GENTLE_MARKER) > prompt.index("你好小测试")
+        assert prompt.startswith("<cot>")
+        assert prompt.index("</cot>") < prompt.index("你好小测试")
 
 
 async def test_gentle_language_custom_override_takes_effect(tmp_path):
