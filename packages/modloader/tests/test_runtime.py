@@ -129,7 +129,7 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             plugin_file.write_text(
                 "from neobot_modloader import Plugin\n"
                 "plugin = Plugin('hot')\n"
-                "plugin.version = '1'\n",
+                "plugin.generation = '1'\n",
                 encoding="utf-8",
             )
             runtime = PluginRuntime(
@@ -141,18 +141,18 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             runtime.load_all()
             await runtime.load_registered()
             await runtime.start_all()
-            self.assertEqual(runtime.manager.get_plugin("hot").version, "1")
+            self.assertEqual(runtime.manager.get_plugin("hot").generation, "1")
 
             plugin_file.write_text(
                 "from neobot_modloader import Plugin\n"
                 "plugin = Plugin('hot')\n"
-                "plugin.version = '2'\n",
+                "plugin.generation = '2'\n",
                 encoding="utf-8",
             )
 
             self.assertTrue(await runtime.reload_plugin("hot"))
 
-            self.assertEqual(runtime.manager.get_plugin("hot").version, "2")
+            self.assertEqual(runtime.manager.get_plugin("hot").generation, "2")
 
     async def test_concurrent_reloads_serialize_complete_generations(self) -> None:
         class LifecyclePlugin:
@@ -353,7 +353,7 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             plugin_file.write_text(
                 "from neobot_modloader import Plugin\n"
                 "plugin = Plugin('hot')\n"
-                "plugin.version = '1'\n",
+                "plugin.generation = '1'\n",
                 encoding="utf-8",
             )
             runtime = PluginRuntime(
@@ -368,7 +368,7 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(result.ok)
             self.assertEqual(result.name, "hot")
             self.assertEqual(result.state, "running")
-            self.assertEqual(runtime.manager.get_plugin("hot").version, "1")
+            self.assertEqual(runtime.manager.get_plugin("hot").generation, "1")
 
     async def test_unload_cleans_host_registrations_and_runtime_tracking(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -488,7 +488,8 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             (package / "__init__.py").write_text(
                 "from neobot_modloader import Plugin\n"
                 "from .impl import VERSION\n"
-                "plugin = Plugin('dup', version=VERSION)\n",
+                "plugin = Plugin('dup')\n"
+                "plugin.generation = VERSION\n",
                 encoding="utf-8",
             )
             (package / "impl.py").write_text("VERSION = '1'\n", encoding="utf-8")
@@ -499,7 +500,7 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 logger_factory=FakeLoggerFactory(),
             )
             # 预置同名单插件占用名字，让 load_all 的 _register 走到 except 分支
-            occupier = Plugin("dup", version="0")
+            occupier = Plugin("dup")
             occupier_ctx = RuntimePluginContext(
                 plugin_name="dup",
                 plugin_dir=Path("."),
@@ -518,14 +519,13 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             stale = [n for n in sys.modules if n.startswith("neobot_user_plugins.dup_")]
             self.assertEqual(stale, [])
 
-            # 修复代码、释放名字后重载：新代码生效（版本 2）
+            # 修复代码、释放名字后重载：新代码生效（清单版本不变，只能看 generation）
             (package / "impl.py").write_text("VERSION = '2'\n", encoding="utf-8")
-            (package / "plugin.toml").write_text('name = "dup"\nversion = "2"\n', encoding="utf-8")
             await runtime.manager.remove_plugin("dup")
             result = await runtime.control.load_path(package)
 
             self.assertTrue(result.ok)
-            self.assertEqual(runtime.manager.get_plugin("dup").version, "2")
+            self.assertEqual(runtime.manager.get_plugin("dup").generation, "2")
 
     async def test_self_unload_inside_on_load_does_not_deadlock(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -920,7 +920,7 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             package.mkdir()
             (package / "plugin.toml").write_text('name = "off"\nversion = "1"\n', encoding="utf-8")
             (package / "__init__.py").write_text(
-                "from neobot_modloader import Plugin\nplugin = Plugin('off', version='1')\n", encoding="utf-8"
+                "from neobot_modloader import Plugin\nplugin = Plugin('off')\n", encoding="utf-8"
             )
             result = await runtime.control.load_path(package)
             self.assertTrue(result.ok)
@@ -1231,7 +1231,7 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             runtime = self.make_runtime(root)
             plugin_file = runtime.plugin_dir / "transaction.py"
             plugin_file.write_text(
-                "from neobot_modloader import Plugin\nplugin = Plugin('transaction')\nplugin.version = '1'\n",
+                "from neobot_modloader import Plugin\nplugin = Plugin('transaction')\nplugin.generation = '1'\n",
                 encoding="utf-8",
             )
             self.assertTrue((await runtime.control.load_path(plugin_file)).ok)
@@ -1239,7 +1239,7 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             plugin_file.write_text(
                 "from neobot_modloader import Plugin\n"
                 "plugin = Plugin('transaction')\n"
-                "plugin.version = '2'\n"
+                "plugin.generation = '2'\n"
                 "@plugin.on_load\n"
                 "async def load(ctx):\n"
                 "    raise RuntimeError('new generation failed')\n",
@@ -1251,7 +1251,7 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(result.ok)
             self.assertEqual(result.state, PluginState.RUNNING.value)
             self.assertIn("new generation failed", result.error or "")
-            self.assertEqual(runtime.manager.get_plugin("transaction").version, "1")
+            self.assertEqual(runtime.manager.get_plugin("transaction").generation, "1")
             self.assertEqual(runtime._loaded_modules["transaction"], old_modules)
             self.assertTrue(all(module in sys.modules for module in old_modules))
             live_generations = {
@@ -1269,7 +1269,7 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             plugin_file.write_text(
                 "from neobot_modloader import Plugin\n"
                 "plugin = Plugin('stop-failure')\n"
-                "plugin.version = '1'\n"
+                "plugin.generation = '1'\n"
                 "@plugin.on_shutdown\n"
                 "async def shutdown(ctx):\n"
                 "    await ctx.plugin_control.unload('stop-failure')\n"
@@ -1280,7 +1280,7 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             plugin_file.write_text(
                 "from neobot_modloader import Plugin\n"
                 "plugin = Plugin('stop-failure')\n"
-                "plugin.version = '2'\n",
+                "plugin.generation = '2'\n",
                 encoding="utf-8",
             )
 
@@ -1288,7 +1288,7 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
             self.assertFalse(result.ok)
             self.assertIn("old generation stop failed", result.error or "")
-            self.assertEqual(runtime.manager.get_plugin("stop-failure").version, "1")
+            self.assertEqual(runtime.manager.get_plugin("stop-failure").generation, "1")
             self.assertNotEqual(runtime.manager.get_state("stop-failure"), PluginState.RUNNING)
             self.assertTrue((await runtime.control.force_unload("stop-failure")).ok)
 

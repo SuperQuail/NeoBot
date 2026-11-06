@@ -14,8 +14,8 @@ covers:
   - app/src/neobot_app/runtime/hot_reload_registry.py
   - app/src/neobot_app/runtime/plugin_config_reload.py
   - app/src/neobot_app/bootstrap/_skills.py
-verified_against: 957a34d
-verified_hash: 3382f09fb697
+verified_against: ce2b0d5
+verified_hash: 3ba064500973
 ---
 
 # 08 插件系统：扫描 · 加载 · 启停 · 依赖 · 配置热重载
@@ -144,7 +144,7 @@ flowchart TD
 ```
 
 类型校验点（任一不合法该插件变成 `PluginLoadError`，不影响其它插件）：`enabled` 必须 bool、`priority` 必须 int、`dependencies` 必须是 string list、`python_dependencies` 不能含空串、`tags` 最多 16 项且单项不超过 32 字符、`[config]` 必须是 table。`min_neobot_version` 只在 `runtime.py:260 _host_version_error` 里比较，且**只在插件 enabled 时检查**；无法比较（源码运行、版本号非数字开头）时跳过检查并打 warning。
-单文件插件（`plugins/foo.py`）没有 manifest 可读：版本缺省为 `0.1.0`（可用实例属性 `plugin.version` 显式声明），依赖/优先级/热重载能力全部取 `Plugin(...)` 上的属性；包插件的版本则只认 `plugin.toml`。
+单文件插件（`plugins/foo.py`）没有 manifest 可读：版本固定 `0.1.0`（代码里的声明同样不生效），依赖/优先级/热重载能力全部取 `Plugin(...)` 上的属性；包插件的版本则只认 `plugin.toml`。
 </details>
 
 <details>

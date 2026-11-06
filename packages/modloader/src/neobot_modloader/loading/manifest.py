@@ -96,9 +96,9 @@ def read_tags(metadata: dict[str, Any]) -> tuple[str, ...]:
 
 
 def validate_manifest_conflicts(metadata: dict[str, Any], plugin: Any) -> None:
-    """清单与代码都声明同一字段时必须一致。
+    """只校验 name：清单与代码声明不一致时直接失败。
 
-    版本号不在此列：它只认 plugin.toml，Plugin(version=...) 保留为空壳参数。
+    版本号不在比对范围：它只认 plugin.toml，Plugin(version=...) 保留为空壳参数。
     """
     manifest_name = metadata.get("name")
     if manifest_name is not None and str(manifest_name) != plugin.name:

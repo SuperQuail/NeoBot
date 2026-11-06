@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import re
+import warnings
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -41,8 +42,8 @@ class Plugin:
         self,
         name: str,
         *,
-        # 兼容保留：版本号只认 plugin.toml，这里的声明不参与加载
-        version: str = "0.1.0",
+        # 兼容保留：版本号只认 plugin.toml，这里的声明不参与加载（仅提示迁移）
+        version: str | None = None,
         description: str = "",
         usage: str = "",
         author: str = "",
@@ -56,7 +57,13 @@ class Plugin:
         config_hot_reload: bool = True,
     ) -> None:
         self.name = validate_plugin_name(name)
-        # 包插件的版本由加载器按 plugin.toml 注入；单文件插件没有清单，保持默认值
+        if version is not None:
+            warnings.warn(
+                "Plugin(version=...) 已不再生效：包插件版本只认 plugin.toml，单文件插件固定 0.1.0",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        # 包插件的版本由加载器按 plugin.toml 注入；单文件插件没有清单，固定 0.1.0
         self.version = "0.1.0"
         self.description = description
         self.usage = usage

@@ -10,7 +10,7 @@ from neobot_modloader.loader import DiscoveredPlugin, FilesystemPluginLoader, Lo
 from neobot_modloader.plugin import Plugin
 
 
-PLUGIN_SOURCE = "from neobot_modloader import Plugin\nplugin = Plugin({name!r}, version={version!r})\n"
+PLUGIN_SOURCE = "from neobot_modloader import Plugin\nplugin = Plugin({name!r})\n"
 
 
 class FilesystemPluginLoaderTest(unittest.TestCase):
@@ -265,6 +265,22 @@ class FilesystemPluginLoaderTest(unittest.TestCase):
         plugin = Plugin("kept_version", version="9.9.9")
 
         self.assertEqual(plugin.version, "0.1.0")
+
+    def test_file_plugin_version_is_fixed_even_without_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "solo.py").write_text(
+                "from neobot_modloader import Plugin\nplugin = Plugin('solo')\nplugin.version = '1.2.0'\n",
+                encoding="utf-8",
+            )
+
+            result = FilesystemPluginLoader().load_all(root)[0]
+
+            self.assertIsInstance(result, LoadedPlugin)
+            assert isinstance(result, LoadedPlugin)
+            # 单文件插件没有清单，版本固定 0.1.0：模块里的赋值同样不生效
+            self.assertEqual(result.version, "0.1.0")
+            self.assertEqual(result.plugin.version, "0.1.0")
 
 
 if __name__ == "__main__":

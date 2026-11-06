@@ -424,7 +424,7 @@ class IntegrationTest(unittest.IsolatedAsyncioTestCase):
                 class Config(BaseModel):
                     reply: str
 
-                plugin = Plugin("ping", version="1.0.0", config=Config)
+                plugin = Plugin("ping", config=Config)
 
                 @plugin.command("ping")
                 async def ping(reply: Reply, config: Config):

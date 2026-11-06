@@ -262,7 +262,7 @@ async def test_source_validates_native_toml_defaults_without_json_coercion(runti
         "    model_config = ConfigDict(strict=True)\n"
         f"    deadline: {annotation}\n"
         "    interval: int\n"
-        "plugin = Plugin('strict_defaults', version='1.0.0', config=Config)\n",
+        "plugin = Plugin('strict_defaults', config=Config)\n",
         encoding="utf-8",
     )
     rt.load_all()
@@ -300,15 +300,15 @@ async def test_contracts_distinguish_model_availability(runtime, loaded, declare
         encoding="utf-8",
     )
     (root / "__init__.py").write_text(
-        "from neobot_modloader import Plugin\nplugin = Plugin('plain', version='1.0.0')\n"
+        "from neobot_modloader import Plugin\nplugin = Plugin('plain')\n"
         if loaded
         else "raise AssertionError('disabled plugin entry must not execute')\n",
         encoding="utf-8",
     )
     if not loaded:
         plugin = Plugin("plain", config=_SourceConfig if declared_model else None)
-        # 版本只认 plugin.toml：契约身份必须和清单里的 1.0.0 一致
-        plugin.version = "1.0.0"
+        # 这条用例绕开了加载器，手工补契约身份；版本必须与清单一致
+        plugin.version = str(tomllib.loads((root / "plugin.toml").read_text(encoding="utf-8"))["version"])
         (root / "plugin.contract.json").write_text(json.dumps(plugin.surface.describe(plugin)), encoding="utf-8")
     rt.load_all()
     await rt.load_registered()

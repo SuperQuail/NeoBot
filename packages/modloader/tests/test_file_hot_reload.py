@@ -333,3 +333,32 @@ async def test_save_during_dependency_cascade_is_not_swallowed_by_restored_gener
     await watcher.poll_once(now=2)
     assert runtime.manager.get_plugin("addon").generation == "2"
     await runtime.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_manifest_version_change_reloads_and_refreshes_snapshot(tmp_path: Path) -> None:
+    package = tmp_path / "plugins" / "versioned"
+    package.mkdir(parents=True)
+    (package / "plugin.toml").write_text('name = "versioned"\nversion = "1.0.0"\n')
+    (package / "__init__.py").write_text("from neobot_modloader import Plugin\nplugin = Plugin('versioned')\n")
+    runtime = PluginRuntime(
+        plugin_dir=tmp_path / "plugins",
+        data_dir=tmp_path / "data",
+        adapter=object(),
+        logger_factory=_LoggerFactory(),
+    )
+    runtime.load_all()
+    await runtime.load_registered()
+    await runtime.start_all()
+    watcher = PluginHotReloader(runtime, debounce=0)
+    await watcher.poll_once(now=0)
+    try:
+        assert runtime.manager.get_plugin("versioned").version == "1.0.0"
+        # 版本只认清单：只改 plugin.toml 也要重载，并同步到面板快照
+        (package / "plugin.toml").write_text('name = "versioned"\nversion = "2.0.0"\n')
+        await watcher.poll_once(now=1)
+        assert runtime.manager.get_plugin("versioned").version == "2.0.0"
+        snapshots = {item.name: item.version for item in runtime.snapshot_plugins()}
+        assert snapshots["versioned"] == "2.0.0"
+    finally:
+        await runtime.stop_all()

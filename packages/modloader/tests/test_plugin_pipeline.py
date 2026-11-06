@@ -39,9 +39,9 @@ def write_plugin(root: Path, name: str, *, version: str = "0.1.0", extra: str = 
         encoding="utf-8",
     )
     (directory / "__init__.py").write_text(
-        "from neobot_modloader import Plugin\n\nplugin = Plugin(__PLUGIN_NAME__, version=__PLUGIN_VERSION__)\n".replace(
+        "from neobot_modloader import Plugin\n\nplugin = Plugin(__PLUGIN_NAME__)\n".replace(
             "__PLUGIN_NAME__", repr(name)
-        ).replace("__PLUGIN_VERSION__", repr(version)),
+        ),
         encoding="utf-8",
     )
     return directory
@@ -294,7 +294,7 @@ async def test_installer_installs_from_archive(tmp_path: Path) -> None:
     archive = build_zip(
         {
             "demo-main/plugin.toml": 'name = "demo"\nversion = "1.2.3"\n',
-            "demo-main/__init__.py": "from neobot_modloader import Plugin\n\nplugin = Plugin('demo', version='1.0.0')\n",
+            "demo-main/__init__.py": "from neobot_modloader import Plugin\n\nplugin = Plugin('demo')\n",
         }
     )
 
@@ -321,7 +321,7 @@ async def test_installer_installs_from_archive(tmp_path: Path) -> None:
     updated = build_zip(
         {
             "demo-main/plugin.toml": 'name = "demo"\nversion = "2.0.0"\n',
-            "demo-main/__init__.py": "from neobot_modloader import Plugin\n\nplugin = Plugin('demo', version='2.0.0')\n",
+            "demo-main/__init__.py": "from neobot_modloader import Plugin\n\nplugin = Plugin('demo')\n# replaced: 2.0.0\n",
         }
     )
 
@@ -333,7 +333,7 @@ async def test_installer_installs_from_archive(tmp_path: Path) -> None:
     assert replaced.ok is True
     assert replaced.version == "2.0.0"
     assert replaced.backup_path is not None and replaced.backup_path.is_dir()
-    assert "version='2.0.0'" in (tmp_path / "plugins" / "demo" / "__init__.py").read_text(encoding="utf-8")
+    assert "replaced: 2.0.0" in (tmp_path / "plugins" / "demo" / "__init__.py").read_text(encoding="utf-8")
 
 
 async def test_installer_rejects_path_traversal(tmp_path: Path) -> None:
@@ -428,7 +428,7 @@ async def test_runtime_exposes_plugin_control_for_install(tmp_path: Path) -> Non
     archive = build_zip(
         {
             "demo-main/plugin.toml": 'name = "demo"\nversion = "1.0.0"\n',
-            "demo-main/__init__.py": "from neobot_modloader import Plugin\n\nplugin = Plugin('demo', version='1.0.0')\n",
+            "demo-main/__init__.py": "from neobot_modloader import Plugin\n\nplugin = Plugin('demo')\n",
         }
     )
 

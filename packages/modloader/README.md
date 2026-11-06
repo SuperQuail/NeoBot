@@ -450,8 +450,9 @@ async def weather(city: str | None, config: Config, reply: Reply):
 ```
 
 如果 `plugin.toml` 声明了和 `Plugin(...)` 冲突的 `name`，插件加载会失败；
-版本号只从 `plugin.toml` 读取，`Plugin(version=...)` 仍可传（兼容既有插件源码）但不参与加载，
-包插件缺省时按 `0.1.0` 处理，单文件插件缺省为 `0.1.0`。
+版本号只从 `plugin.toml` 读取，`Plugin(version=...)` 仍可传（兼容既有插件源码，会给一条 `DeprecationWarning`）但不参与加载，
+缺少 `version` 时按 `0.1.0` 处理，单文件插件（无清单）同样固定 `0.1.0`。
+注入发生在插件模块 import 之后，所以模块顶层读到的 `plugin.version` 仍是 `0.1.0`。
 
 ## 注册子 Agent
 
