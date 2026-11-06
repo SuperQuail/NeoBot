@@ -305,6 +305,13 @@ BLOCKS: tuple[Block, ...] = (
     ),
     # ── system 末尾追加（稳定内容） ──
     Block(
+        "reply_tool_contract",
+        Stage.SYSTEM_APPEND,
+        CHAT_SCOPES,
+        order=1,
+        note="agent 模式 QQ 群聊/私聊回复工具契约",
+    ),
+    Block(
         "friend_chat_hint",
         Stage.SYSTEM_APPEND,
         frozenset({Scope.PRIVATE}),

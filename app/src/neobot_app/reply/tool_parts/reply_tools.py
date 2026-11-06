@@ -344,7 +344,8 @@ class _ReplyToolsMixin:
                     "cancel",
                     "主动结束本轮回复事件。当认为自己不适合参与当前话题、不需要回复、"
                     "或已通过其他方式完成互动时调用。调用后本轮回复立即结束，不再发送任何消息。"
-                    "取消必须真正调用本工具，不要先发送 cancel 或取消说明；reason 不会发到聊天。",
+                    "取消必须真正调用本工具，不要先发送 cancel 或取消说明；reason 不会发到聊天。"
+                    "要对外说话请用 send_reply/send_long_reply；直接输出的正文不会发送。",
                     {
                         "properties": {
                             "reason": {

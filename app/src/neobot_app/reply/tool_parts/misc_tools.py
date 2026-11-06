@@ -79,6 +79,7 @@ class _MiscToolsMixin:
                 _tool_def(
                     "wait",
                     "等待一段时间让其他人发言。当认为当前话题未结束或聊天还可继续时调用。"
+                    "wait 不发送消息；要说话请用 send_reply。"
                     "等待期间的新消息会被收集并在返回结果中呈现。默认等待20秒。",
                     {
                         "properties": {
