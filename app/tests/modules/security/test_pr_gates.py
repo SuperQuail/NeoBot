@@ -1,4 +1,4 @@
-"""PR 门禁脚本：体积 / 评审 / issue 关联。
+"""PR 门禁脚本：体积 / 评审 / issue 关联 / 分支流向。
 
 CI 用同一个脚本阻断（.github/workflows/pr-gates.yml）；这里锁住判定规则，
 包含阈值边界、事件解析与时间比较。
@@ -124,9 +124,13 @@ def test_flow_allows_feature_to_main() -> None:
     assert FLOW.evaluate("main", "dev")[0] is True
     assert FLOW.evaluate("main", "release")[0] is True
     assert FLOW.evaluate("dev", "feat/x")[0] is True
+    assert FLOW.evaluate("dev", "main")[0] is True
 
 
-def test_flow_rejects_managed_release_and_self_merge() -> None:
+def test_flow_rejects_managed_release_and_bad_targets() -> None:
     assert FLOW.evaluate("release", "main")[0] is False
+    assert FLOW.evaluate("dev", "release")[0] is False
+    assert FLOW.evaluate("feat/base", "feat/x")[0] is False
     assert FLOW.evaluate("main", "main")[0] is False
     assert FLOW.evaluate("", "feat/x")[0] is False
+    assert FLOW.evaluate("main", "")[0] is False

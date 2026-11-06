@@ -16,6 +16,7 @@ import os
 import sys
 
 MAIN = "main"
+DEV = "dev"
 RELEASE = "release"
 
 
@@ -30,8 +31,12 @@ def evaluate(base: str, head: str) -> tuple[bool, str]:
             "release 由 QuailEgg 生成和维护，不接受人工 PR；"
             "发布走 release → main 的 QuailEgg 发布 PR。"
         )
+    if base not in (MAIN, DEV):
+        return False, f"PR 目标分支只能是 {MAIN}（或普通分支 {DEV}），当前是 {base}。"
     if base == MAIN and head == MAIN:
         return False, "不能从 main 向 main 提 PR。"
+    if head == RELEASE and base != MAIN:
+        return False, "release 只能作为 QuailEgg 发布 PR 的来源进入 main。"
     return True, f"分支流向允许：{head} → {base}。"
 
 
