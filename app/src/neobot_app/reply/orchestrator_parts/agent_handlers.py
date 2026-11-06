@@ -24,6 +24,7 @@ class AgentHandlersMixin:
         self, state: AgentLoopState, event: ReplyEvent, reason: str | None = None
     ) -> None:
         state.cancelled = True
+        self._clear_unsent_marker(event)
         event.error = reason or "agent 主动取消回复"
         if not event.is_terminal:
             event.transition(ReplyState.CANCELLED)
@@ -88,6 +89,7 @@ class AgentHandlersMixin:
             )
         if delivered is not False:
             state.reply_sent = True
+            self._clear_unsent_marker(event)
             self._record_reply_delivered(
                 event, queue, queue_key, before_message_id=before_message_id
             )
@@ -227,6 +229,7 @@ class AgentHandlersMixin:
         # 与 send_reply 同语义：语音真实发出即视为已回复
         if delivered is not False:
             state.reply_sent = True
+            self._clear_unsent_marker(event)
             event.send_response = delivered
             self._record_reply_delivered(
                 event, queue, queue_key, before_message_id=before_message_id
@@ -333,6 +336,7 @@ class AgentHandlersMixin:
             )
         if image_delivered is not False or caption_delivered is not False:
             state.reply_sent = True
+            self._clear_unsent_marker(event)
             event.send_response = (
                 image_delivered if image_delivered is not False else caption_delivered
             )

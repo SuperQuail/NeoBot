@@ -254,33 +254,42 @@ class AgentLoopMixin:
                     )
                     continue
                 if not tool_calls:
+                    content = response.get("content", "")
+                    text = (
+                        content.strip()
+                        if isinstance(content, str)
+                        else str(content)
+                    )
                     if not state.reply_sent:
                         if no_tool_reminders < 1:
-                            no_tool_reminders += 1
-                            self._append_block(
+                            appended = self._append_block(
                                 messages,
                                 "no_tool_call_reminder",
                                 dynamic={"no_tool_call_reminder": True},
                             )
-                            self._record_debug(
-                                "no_tool_call_reminder",
-                                event,
-                                queue_key=queue_key,
-                                iteration=iteration + 1,
-                            )
-                            self._logger.info(
-                                "模型未调用工具，已追加 send_reply/cancel 确认提示",
+                            if appended:
+                                no_tool_reminders += 1
+                                self._record_debug(
+                                    "no_tool_call_reminder",
+                                    event,
+                                    queue_key=queue_key,
+                                    iteration=iteration + 1,
+                                    draft_preview=text[:200],
+                                )
+                                self._logger.info(
+                                    "模型未调用工具，已追加 send_reply/cancel 确认提示",
+                                    event_id=event.event_id,
+                                    queue_key=queue_key,
+                                    iteration=iteration + 1,
+                                    draft_preview=text[:200],
+                                )
+                                continue
+                            self._logger.warning(
+                                "no_tool_call_reminder 分区被关闭或渲染为空，跳过提醒",
                                 event_id=event.event_id,
                                 queue_key=queue_key,
                                 iteration=iteration + 1,
                             )
-                            continue
-                        content = response.get("content", "")
-                        text = (
-                            content.strip()
-                            if isinstance(content, str)
-                            else str(content)
-                        )
                         review_pending = bool(
                             getattr(reply_toolset.executor, "ai_check_pending", False)
                         )
@@ -306,6 +315,14 @@ class AgentLoopMixin:
                                 queue_key=queue_key,
                                 iteration=iteration + 1,
                             )
+                    else:
+                        self._record_debug(
+                            "unsent_prose_after_reply",
+                            event,
+                            queue_key=queue_key,
+                            iteration=iteration + 1,
+                            draft_preview=text[:200],
+                        )
                     break
                 # 只有本轮确实产生了 tool_calls 才计入"埋头干"轮数
                 nudge_rounds += 1

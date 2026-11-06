@@ -28,6 +28,7 @@ _DYNAMIC: dict[str, dict[str, object]] = {
     "vision_fallback_notice": {"vision_fallback": "原生视觉回退说明"},
     "silent_nudge": {"silent_nudge": True},
     "no_tool_call_reminder": {"no_tool_call_reminder": True},
+    "prev_no_tool_call_reminder": {"prev_no_tool_call_reminder": True},
     "current_time": {"time_variant": "full"},
     "current_time_short": {"time_variant": "short"},
 }
