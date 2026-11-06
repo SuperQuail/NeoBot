@@ -98,12 +98,14 @@ class _ReplyToolsMixin:
                 images = [int(n) for n in raw_images]
             except (ValueError, TypeError):
                 return f"错误：images 必须为整数列表，收到 {raw_images}"
-            if images and self._emoji is None:
-                return "错误：表情包服务不可用，无法发送图片，未发送；请去掉 images 后重试"
-            if images:
-                missing = [n for n in images if self._emoji.get_entry(n) is None]
-                if missing:
-                    return f"错误：表情包编号不存在，未发送：{missing}（用 list_emojis / search_custom_emoji 查看可用编号）"
+            if images and self._emoji is not None:
+                valid = [n for n in images if self._emoji.get_entry(n) is not None]
+                if not valid:
+                    if not text.strip() and not segments:
+                        return "错误：表情包编号不存在，未发送；请用 list_emojis / search_custom_emoji 查看可用编号"
+                    images = None
+                else:
+                    images = valid
         reply_to = args.get("reply_to")
         if reply_to is not None:
             try:
