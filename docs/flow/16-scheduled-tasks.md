@@ -6,8 +6,8 @@ covers:
   - app/src/neobot_app/runtime/notifications.py
   - app/src/neobot_app/runtime/temp_cleaner.py
   - app/src/neobot_app/builtin_plugins/speaking_schedule/
-verified_against: d525a5b
-verified_hash: 403d1f67292f
+verified_against: b2c1529
+verified_hash: 37f3f488cf69
 ---
 
 # 16 定时任务 · 睡眠 · 后台通知 · 临时清理
