@@ -34,7 +34,8 @@ registries = ["pypi"]
 name = "neobot"
 path = "."
 resolver = "python"
-publish = true
+# 根项目没有 build-system，只参与共享版本，不发布到 PyPI
+publish = false
 
 [packages."python@neobot-adapter"]
 name = "neobot-adapter"
