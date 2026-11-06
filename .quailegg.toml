@@ -25,10 +25,11 @@ scope = ["app", "packages/adapter", "packages/chat", "packages/contracts", "pack
 
 [verify]
 commands = [
+  "uv sync --all-packages --locked",
   "uv run ruff check .",
-  "uv run pytest -m \"not browser and not network and not slow and not llm\"",
+  "uv run pytest --strict-markers -m \"not browser and not network and not slow and not llm\"",
 ]
-timeout = "30m"
+timeout = "45m"
 fail_fast = true
 
 [publish]
