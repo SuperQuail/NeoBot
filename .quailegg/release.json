@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "version": "2.1.0-a1",
-  "created_at": "2026-11-06T11:54:04.061362706Z",
+  "version": "2.1.0-a2",
+  "created_at": "2026-11-06T15:00:20.644559792Z",
   "mode": "pr",
   "channel": "alpha",
-  "fingerprint": "sha256:1481e2a9e0d64e161044b5e8c560fc1a9b08cd885f1e4a1eebd98da6bda4be74",
+  "fingerprint": "sha256:5040437d10ee75aaf89784c9a93fa499f43e13ef4163ce5215437d4c3dd661b3",
   "repo": {
     "host": "github.com",
     "owner": "SuperQuail",
@@ -18,95 +18,95 @@
       "uv run pytest --strict-markers -m \"not browser and not network and not slow and not llm\""
     ],
     "skipped": false,
-    "at": "2026-11-06T11:54:04.061363307Z"
+    "at": "2026-11-06T15:00:20.644560864Z"
   },
   "packages": [
     {
       "name": "python@neobot",
       "path": ".",
       "resolver": "python",
-      "current": "2.0.2-a15",
-      "next": "2.1.0-a1",
+      "current": "2.1.0-a1",
+      "next": "2.1.0-a2",
       "bump": "minor",
-      "tag": "v2.1.0a1",
+      "tag": "v2.1.0a2",
       "publish": false
     },
     {
       "name": "python@neobot-app",
       "path": "app",
       "resolver": "python",
-      "current": "2.0.2-a15",
-      "next": "2.1.0-a1",
+      "current": "2.1.0-a1",
+      "next": "2.1.0-a2",
       "bump": "minor",
-      "tag": "v2.1.0a1",
+      "tag": "v2.1.0a2",
       "publish": true
     },
     {
       "name": "python@neobot-contracts",
       "path": "packages/contracts",
       "resolver": "python",
-      "current": "2.0.2-a15",
-      "next": "2.1.0-a1",
+      "current": "2.1.0-a1",
+      "next": "2.1.0-a2",
       "bump": "minor",
-      "tag": "v2.1.0a1",
+      "tag": "v2.1.0a2",
       "publish": true
     },
     {
       "name": "python@neobot-adapter",
       "path": "packages/adapter",
       "resolver": "python",
-      "current": "2.0.2-a15",
-      "next": "2.1.0-a1",
+      "current": "2.1.0-a1",
+      "next": "2.1.0-a2",
       "bump": "minor",
-      "tag": "v2.1.0a1",
+      "tag": "v2.1.0a2",
       "publish": true
     },
     {
       "name": "python@neobot-chat",
       "path": "packages/chat",
       "resolver": "python",
-      "current": "2.0.2-a15",
-      "next": "2.1.0-a1",
+      "current": "2.1.0-a1",
+      "next": "2.1.0-a2",
       "bump": "minor",
-      "tag": "v2.1.0a1",
+      "tag": "v2.1.0a2",
       "publish": true
     },
     {
       "name": "python@neobot-memory",
       "path": "packages/memory",
       "resolver": "python",
-      "current": "2.0.2-a15",
-      "next": "2.1.0-a1",
+      "current": "2.1.0-a1",
+      "next": "2.1.0-a2",
       "bump": "minor",
-      "tag": "v2.1.0a1",
+      "tag": "v2.1.0a2",
       "publish": true
     },
     {
       "name": "python@neobot-modloader",
       "path": "packages/modloader",
       "resolver": "python",
-      "current": "2.0.2-a15",
-      "next": "2.1.0-a1",
+      "current": "2.1.0-a1",
+      "next": "2.1.0-a2",
       "bump": "minor",
-      "tag": "v2.1.0a1",
+      "tag": "v2.1.0a2",
       "publish": true
     },
     {
       "name": "python@neobot-storage",
       "path": "packages/storage",
       "resolver": "python",
-      "current": "2.0.2-a15",
-      "next": "2.1.0-a1",
+      "current": "2.1.0-a1",
+      "next": "2.1.0-a2",
       "bump": "minor",
-      "tag": "v2.1.0a1",
+      "tag": "v2.1.0a2",
       "publish": true
     }
   ],
   "releases": [
     {
-      "version": "2.1.0-a1",
-      "tag": "v2.1.0a1",
-      "previous_tag": "v2.0.2a15",
+      "version": "2.1.0-a2",
+      "tag": "v2.1.0a2",
+      "previous_tag": "v2.1.0a1",
       "packages": [
         "python@neobot",
         "python@neobot-adapter",
@@ -133,6 +133,20 @@
       "commit_url": "https://github.com/SuperQuail/NeoBot/commit/fc35fcd6f0c4a8c0059d077e9e23049255174970",
       "pull_number": 266,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/266",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/gentle-language-xml.md",
+      "type": "refactor",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Wrap the gentle-language cot block in a pseudo-XML tag like the other cot sub-blocks.",
+      "commit": "17053075d8f88e4207286f568917694f7ee64d58",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/17053075d8f88e4207286f568917694f7ee64d58",
+      "pull_number": 271,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/271",
       "author": "Tang-Tian-dev"
     },
     {
@@ -164,6 +178,48 @@
       "author": "Tang-Tian-dev"
     },
     {
+      "file": ".changes/reply-contract-corrections.md",
+      "type": "fix",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Correct the reply contract's tool description, sub-agent channel and fallback wording.",
+      "commit": "a12fb24923f6a492154a78467130020df014817d",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/a12fb24923f6a492154a78467130020df014817d",
+      "pull_number": 277,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/277",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/reply-cross-activation.md",
+      "type": "fix",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Keep a one-shot correction when plain assistant prose was cancelled so the next activation stops repeating it.",
+      "commit": "fab04470253bc1044e92ad7473f7790470d11b1c",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/fab04470253bc1044e92ad7473f7790470d11b1c",
+      "pull_number": 275,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/275",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/reply-marker-lifecycle.md",
+      "type": "fix",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Keep the cross-activation correction marker until a successful send or cancel.",
+      "commit": "493fb5253dbf8e735a9230e7bb12c5a7d518eb95",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/493fb5253dbf8e735a9230e7bb12c5a7d518eb95",
+      "pull_number": 279,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/279",
+      "author": "Tang-Tian-dev"
+    },
+    {
       "file": ".changes/reply-receipt-raw.md",
       "type": "feat",
       "bump": "minor",
@@ -175,6 +231,20 @@
       "commit_url": "https://github.com/SuperQuail/NeoBot/commit/3bd0be8df178db2bf49502443df72fe033102f94",
       "pull_number": 264,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/264",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/reply-tool-contract.md",
+      "type": "refactor",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Make every QQ reply instruction point at send_reply/cancel and document the agent tool contract.",
+      "commit": "afe672ed8b65575112c1fcdd588ef759f891117f",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/afe672ed8b65575112c1fcdd588ef759f891117f",
+      "pull_number": 273,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/273",
       "author": "Tang-Tian-dev"
     },
     {
@@ -191,6 +261,13 @@
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/265",
       "author": "Tang-Tian-dev"
     }
+  ],
+  "previous_changes": [
+    ".changes/dashboard-prompt-folding.md",
+    ".changes/prompt-assets-cot.md",
+    ".changes/prompt-registry-refactor.md",
+    ".changes/reply-receipt-raw.md",
+    ".changes/reply-tool-ids.md"
   ],
   "qegg": {
     "version": "0.12.0"
