@@ -18,6 +18,9 @@ from neobot_app.prompt.blocks import BLOCKS, Block, Stage, block_by_id
 from neobot_app.prompt.render import render_template
 from neobot_app.prompt.store import fallback_template, packaged_template
 
+#: 禁止关闭的机制性资产：主模板关闭会丢人设；label_message_meta 关闭会让聊天记录渲染成空行进而被整条丢弃
+_ALWAYS_ENABLED_ASSETS = frozenset({"group_chat", "friend_chat", "label_message_meta"})
+
 #: 已注册的提示词资产（有 TOML 分区的块）；id 全局唯一
 _ASSETS: dict[str, Block] = {
     block.id: block for block in BLOCKS if block.template_section is not None
@@ -45,9 +48,9 @@ def asset_keys(asset_id: str) -> tuple[str, ...]:
 
 
 def asset_enabled(asset_id: str, store: Any = None, default: bool = True) -> bool:
-    """资产是否启用；主模板永远启用（安全例外），其余按分区 enabled 判定。"""
+    """资产是否启用；主模板与机制标签永远启用（安全例外），其余按分区 enabled 判定。"""
     block = block_by_id(asset_id)
-    if block.stage is Stage.SYSTEM_MAIN:
+    if block.id in _ALWAYS_ENABLED_ASSETS:
         return True
     if store is None:
         return default

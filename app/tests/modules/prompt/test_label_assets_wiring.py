@@ -154,11 +154,13 @@ def test_custom_label_vision_context_applies(custom_store):
 # ── enabled = false：文本为空 / 不注入 ──
 
 
-def test_disabled_label_message_meta_drops_lines(custom_store):
+def test_label_message_meta_cannot_be_disabled(custom_store):
+    """机制标签禁用会让聊天记录整条消失；enabled=false 对 label_* 不生效。"""
     store = custom_store("[label_message_meta]\nenabled = false\n")
 
-    assert build_role_messages(_role_queue("你好"), KEY, prompt_store=store) == []
-    assert _format_message_age(BASE, BASE + 60, prompt_store=store) == ""
+    messages = build_role_messages(_role_queue("你好"), KEY, prompt_store=store)
+    assert messages
+    assert _format_message_age(BASE, BASE + 60, prompt_store=store)
 
 
 def test_disabled_label_keyword_reaction_is_not_injected(custom_store):
