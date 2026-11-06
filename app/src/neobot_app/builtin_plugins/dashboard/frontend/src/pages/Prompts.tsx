@@ -59,8 +59,8 @@ const KEY_LABELS: Record<string, string> = {
 };
 // 后端按块注册表的 stage 分组；组内保持接口返回顺序，未登记的自定义分区归入最后一组。
 const STAGE_LABELS: Record<string, string> = {
+  system_prefix: 'cot 前置',
   system_main: '主模板',
-  system_insert: 'system 插入',
   system_append: 'system 追加',
   fragment: '共享片段',
   context: '上下文块',
