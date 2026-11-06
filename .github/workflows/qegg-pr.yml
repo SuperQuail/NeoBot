@@ -2,11 +2,11 @@ name: QuailEgg PR
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    branches: ["dev"]
+    branches: ["main"]
 
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
 
 concurrency:
   group: qegg-pr-${{ github.event.pull_request.number }}
@@ -14,24 +14,25 @@ concurrency:
 
 jobs:
   check:
-    name: QuailEgg 检查（非阻断）
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    if: github.head_ref != 'release'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
       - uses: actions/setup-go@v5
-        with: { go-version: '1.26', cache: false }
-      - uses: astral-sh/setup-uv@v10.0.1
+        with: { go-version: '1.26', cache: true }
       - name: Install qegg
         run: go install github.com/SuperQuail/QuailEgg/cmd/qegg@v0.12.0
       - name: Check
         run: qegg check --ci
-      - name: Preview plan
+      - name: Preview
         run: |
           qegg plan --markdown > plan.md
           if [ -s plan.md ]; then
-            cat plan.md >> "$GITHUB_STEP_SUMMARY"
+            gh pr comment ${{ github.event.pull_request.number }} --edit-last --create-if-none -F plan.md
           else
-            echo "当前没有待发布变更。" >> "$GITHUB_STEP_SUMMARY"
+            echo "no pending release; skipping the plan comment"
           fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
