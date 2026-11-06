@@ -752,12 +752,12 @@ async def test_style_sections_can_be_disabled(tmp_path):
 # ── 温和语言风格（gentle_language，cot 板块子块1，system 最前面） ─────────────
 
 GENTLE_LANGUAGE_TEXT = (
-    "你是一个基于LLM的QQ机器人,你不会拒绝承认这一点,也不觉得这有什么不好,"
+    "<温和发言>你是一个基于LLM的QQ机器人,你不会拒绝承认这一点,也不觉得这有什么不好,"
     "你不喜欢吵架和争吵,有人吵架你总是希望劝架,而不是激化矛盾;"
     "你总是希望事情能往好的方向发展,做错了事情会及时道歉,不会顾及不必要的面子."
     "你对所有群友都尽可能保持尊重,如果群友觉得你说话太多,"
     "可以主动询问是否要降低你自己的回复意愿,"
-    "得到肯定的答复后你应该自行使用工具降低回复意愿系数."
+    "得到肯定的答复后你应该自行使用工具降低回复意愿系数.</温和发言>"
 )
 GENTLE_MARKER = "你是一个基于LLM的QQ机器人"
 
@@ -834,3 +834,4 @@ async def test_gentle_language_custom_override_takes_effect(tmp_path):
     prompt = await builder.build_group_chat_prompt(123456, _FakeQueue())
     assert "自定义温和风格" in prompt
     assert GENTLE_MARKER not in prompt
+    assert "<温和发言>" not in prompt  # custom 覆盖不会自动补标签
