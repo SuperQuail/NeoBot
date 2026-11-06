@@ -1,0 +1,198 @@
+{
+  "schema_version": 1,
+  "version": "2.1.0-a1",
+  "created_at": "2026-11-06T11:54:04.061362706Z",
+  "mode": "pr",
+  "channel": "alpha",
+  "fingerprint": "sha256:1481e2a9e0d64e161044b5e8c560fc1a9b08cd885f1e4a1eebd98da6bda4be74",
+  "repo": {
+    "host": "github.com",
+    "owner": "SuperQuail",
+    "name": "NeoBot",
+    "url": "https://github.com/SuperQuail/NeoBot"
+  },
+  "verified": {
+    "commands": [
+      "uv sync --all-packages --locked",
+      "uv run ruff check .",
+      "uv run pytest --strict-markers -m \"not browser and not network and not slow and not llm\""
+    ],
+    "skipped": false,
+    "at": "2026-11-06T11:54:04.061363307Z"
+  },
+  "packages": [
+    {
+      "name": "python@neobot",
+      "path": ".",
+      "resolver": "python",
+      "current": "2.0.2-a15",
+      "next": "2.1.0-a1",
+      "bump": "minor",
+      "tag": "v2.1.0a1",
+      "publish": false
+    },
+    {
+      "name": "python@neobot-app",
+      "path": "app",
+      "resolver": "python",
+      "current": "2.0.2-a15",
+      "next": "2.1.0-a1",
+      "bump": "minor",
+      "tag": "v2.1.0a1",
+      "publish": true
+    },
+    {
+      "name": "python@neobot-contracts",
+      "path": "packages/contracts",
+      "resolver": "python",
+      "current": "2.0.2-a15",
+      "next": "2.1.0-a1",
+      "bump": "minor",
+      "tag": "v2.1.0a1",
+      "publish": true
+    },
+    {
+      "name": "python@neobot-adapter",
+      "path": "packages/adapter",
+      "resolver": "python",
+      "current": "2.0.2-a15",
+      "next": "2.1.0-a1",
+      "bump": "minor",
+      "tag": "v2.1.0a1",
+      "publish": true
+    },
+    {
+      "name": "python@neobot-chat",
+      "path": "packages/chat",
+      "resolver": "python",
+      "current": "2.0.2-a15",
+      "next": "2.1.0-a1",
+      "bump": "minor",
+      "tag": "v2.1.0a1",
+      "publish": true
+    },
+    {
+      "name": "python@neobot-memory",
+      "path": "packages/memory",
+      "resolver": "python",
+      "current": "2.0.2-a15",
+      "next": "2.1.0-a1",
+      "bump": "minor",
+      "tag": "v2.1.0a1",
+      "publish": true
+    },
+    {
+      "name": "python@neobot-modloader",
+      "path": "packages/modloader",
+      "resolver": "python",
+      "current": "2.0.2-a15",
+      "next": "2.1.0-a1",
+      "bump": "minor",
+      "tag": "v2.1.0a1",
+      "publish": true
+    },
+    {
+      "name": "python@neobot-storage",
+      "path": "packages/storage",
+      "resolver": "python",
+      "current": "2.0.2-a15",
+      "next": "2.1.0-a1",
+      "bump": "minor",
+      "tag": "v2.1.0a1",
+      "publish": true
+    }
+  ],
+  "releases": [
+    {
+      "version": "2.1.0-a1",
+      "tag": "v2.1.0a1",
+      "previous_tag": "v2.0.2a15",
+      "packages": [
+        "python@neobot",
+        "python@neobot-adapter",
+        "python@neobot-app",
+        "python@neobot-chat",
+        "python@neobot-contracts",
+        "python@neobot-memory",
+        "python@neobot-modloader",
+        "python@neobot-storage"
+      ],
+      "prerelease": "alpha"
+    }
+  ],
+  "changes": [
+    {
+      "file": ".changes/dashboard-prompt-folding.md",
+      "type": "feat",
+      "bump": "minor",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Group prompt sections by stage and collapse the long list in the dashboard page.",
+      "commit": "fc35fcd6f0c4a8c0059d077e9e23049255174970",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/fc35fcd6f0c4a8c0059d077e9e23049255174970",
+      "pull_number": 266,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/266",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/prompt-assets-cot.md",
+      "type": "feat",
+      "bump": "minor",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Make every prompt editable through one asset entry and add an optional cot prefix.",
+      "commit": "78bf7a2cbe5f3dd99a0c11f058fa2be460b0ed99",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/78bf7a2cbe5f3dd99a0c11f058fa2be460b0ed99",
+      "pull_number": 262,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/262",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/prompt-registry-refactor.md",
+      "type": "refactor",
+      "bump": "minor",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Rebuild prompt assembly around a block registry and one shared data file.",
+      "commit": "e71934c6d47d88c20fd923af8f6872185d31638b",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/e71934c6d47d88c20fd923af8f6872185d31638b",
+      "pull_number": 263,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/263",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/reply-receipt-raw.md",
+      "type": "feat",
+      "bump": "minor",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Report exactly how each reply was split and keep selected statements unsplit.",
+      "commit": "3bd0be8df178db2bf49502443df72fe033102f94",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/3bd0be8df178db2bf49502443df72fe033102f94",
+      "pull_number": 264,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/264",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/reply-tool-ids.md",
+      "type": "refactor",
+      "bump": "minor",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Give every reply tool ID parameter one clear name and remove redundant switches.",
+      "commit": "19acd46a894c4d4ef23cfb20d5edc0ac461cd3af",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/19acd46a894c4d4ef23cfb20d5edc0ac461cd3af",
+      "pull_number": 265,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/265",
+      "author": "Tang-Tian-dev"
+    }
+  ],
+  "qegg": {
+    "version": "0.12.0"
+  }
+}
