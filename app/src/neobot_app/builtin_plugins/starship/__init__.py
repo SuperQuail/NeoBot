@@ -31,7 +31,6 @@ from .web_extension import StarshipWebExtension
 
 plugin = Plugin(
     "starship",
-    version="1.0.0",
     description="NeoBot 星舰：把控制台搬进一艘可自由探索的 3D 科幻战舰",
     author="NeoBot",
     config=StarshipConfig,

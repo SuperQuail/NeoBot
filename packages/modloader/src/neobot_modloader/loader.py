@@ -269,7 +269,8 @@ class FilesystemPluginLoader:
             validate_manifest_conflicts(metadata, plugin)
             plugin_name = str(getattr(plugin, "name", name) or name)
             self._validate_plugin_name(plugin_name)
-            plugin_version = str(getattr(plugin, "version", version) or version)
+            # 版本只认 plugin.toml：Plugin(version=...) 保留但不参与加载
+            plugin.version = version
             if "dependencies" not in metadata:
                 dependencies = tuple(getattr(plugin, "dependencies", ()) or ())
             # 清单优先级在加载时确定，运行期的反向依赖与停用联动复用同一份结果。
@@ -289,7 +290,7 @@ class FilesystemPluginLoader:
                 config_hot_reload = bool(getattr(plugin, "config_hot_reload", True))
             return LoadedPlugin(
                 name=plugin_name,
-                version=plugin_version,
+                version=version,
                 plugin=plugin,
                 plugin_dir=path,
                 config=dict(config),

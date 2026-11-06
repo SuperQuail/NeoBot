@@ -41,6 +41,7 @@ class Plugin:
         self,
         name: str,
         *,
+        # 兼容保留：版本号只认 plugin.toml，这里的声明不参与加载
         version: str = "0.1.0",
         description: str = "",
         usage: str = "",
@@ -55,7 +56,8 @@ class Plugin:
         config_hot_reload: bool = True,
     ) -> None:
         self.name = validate_plugin_name(name)
-        self.version = str(version)
+        # 包插件的版本由加载器按 plugin.toml 注入；单文件插件没有清单，保持默认值
+        self.version = "0.1.0"
         self.description = description
         self.usage = usage
         self.author = author

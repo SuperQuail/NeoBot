@@ -128,7 +128,8 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             plugin_file = plugin_dir / "hot.py"
             plugin_file.write_text(
                 "from neobot_modloader import Plugin\n"
-                "plugin = Plugin('hot', version='1')\n",
+                "plugin = Plugin('hot')\n"
+                "plugin.version = '1'\n",
                 encoding="utf-8",
             )
             runtime = PluginRuntime(
@@ -144,7 +145,8 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
             plugin_file.write_text(
                 "from neobot_modloader import Plugin\n"
-                "plugin = Plugin('hot', version='2')\n",
+                "plugin = Plugin('hot')\n"
+                "plugin.version = '2'\n",
                 encoding="utf-8",
             )
 
@@ -302,7 +304,8 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             (package / "__init__.py").write_text(
                 "from neobot_modloader import Plugin\n"
                 "from .child import VERSION\n"
-                "plugin = Plugin('hot-package', version=VERSION)\n",
+                "plugin = Plugin('hot-package')\n"
+                "plugin.generation = VERSION\n",
                 encoding="utf-8",
             )
             child = package / "child.py"
@@ -321,7 +324,7 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await runtime.reload_plugin("hot-package"))
 
             new_modules = runtime._loaded_modules["hot-package"]
-            self.assertEqual(runtime.manager.get_plugin("hot-package").version, "2")
+            self.assertEqual(runtime.manager.get_plugin("hot-package").generation, "2")
             self.assertTrue(set(old_modules).isdisjoint(new_modules))
             self.assertTrue(all(name in sys.modules for name in new_modules))
             self.assertTrue(all(name not in sys.modules for name in old_modules))
@@ -349,7 +352,8 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             plugin_file = plugin_dir / "hot.py"
             plugin_file.write_text(
                 "from neobot_modloader import Plugin\n"
-                "plugin = Plugin('hot', version='1')\n",
+                "plugin = Plugin('hot')\n"
+                "plugin.version = '1'\n",
                 encoding="utf-8",
             )
             runtime = PluginRuntime(
@@ -1227,14 +1231,15 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             runtime = self.make_runtime(root)
             plugin_file = runtime.plugin_dir / "transaction.py"
             plugin_file.write_text(
-                "from neobot_modloader import Plugin\nplugin = Plugin('transaction', version='1')\n",
+                "from neobot_modloader import Plugin\nplugin = Plugin('transaction')\nplugin.version = '1'\n",
                 encoding="utf-8",
             )
             self.assertTrue((await runtime.control.load_path(plugin_file)).ok)
             old_modules = runtime._loaded_modules["transaction"]
             plugin_file.write_text(
                 "from neobot_modloader import Plugin\n"
-                "plugin = Plugin('transaction', version='2')\n"
+                "plugin = Plugin('transaction')\n"
+                "plugin.version = '2'\n"
                 "@plugin.on_load\n"
                 "async def load(ctx):\n"
                 "    raise RuntimeError('new generation failed')\n",
@@ -1263,7 +1268,8 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             plugin_file = runtime.plugin_dir / "stop_failure.py"
             plugin_file.write_text(
                 "from neobot_modloader import Plugin\n"
-                "plugin = Plugin('stop-failure', version='1')\n"
+                "plugin = Plugin('stop-failure')\n"
+                "plugin.version = '1'\n"
                 "@plugin.on_shutdown\n"
                 "async def shutdown(ctx):\n"
                 "    await ctx.plugin_control.unload('stop-failure')\n"
@@ -1273,7 +1279,8 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue((await runtime.control.load_path(plugin_file)).ok)
             plugin_file.write_text(
                 "from neobot_modloader import Plugin\n"
-                "plugin = Plugin('stop-failure', version='2')\n",
+                "plugin = Plugin('stop-failure')\n"
+                "plugin.version = '2'\n",
                 encoding="utf-8",
             )
 

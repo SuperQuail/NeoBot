@@ -306,7 +306,9 @@ async def test_contracts_distinguish_model_availability(runtime, loaded, declare
         encoding="utf-8",
     )
     if not loaded:
-        plugin = Plugin("plain", version="1.0.0", config=_SourceConfig if declared_model else None)
+        plugin = Plugin("plain", config=_SourceConfig if declared_model else None)
+        # 版本只认 plugin.toml：契约身份必须和清单里的 1.0.0 一致
+        plugin.version = "1.0.0"
         (root / "plugin.contract.json").write_text(json.dumps(plugin.surface.describe(plugin)), encoding="utf-8")
     rt.load_all()
     await rt.load_registered()

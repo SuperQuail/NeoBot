@@ -24,7 +24,8 @@ class FilesystemPluginLoaderTest(unittest.TestCase):
             self.assertIsInstance(result, LoadedPlugin)
             assert isinstance(result, LoadedPlugin)
             self.assertEqual(result.name, "ping")
-            self.assertEqual(result.version, "1.0.0")
+            # 单文件插件没有清单：Plugin(version=...) 不再生效，版本保持默认值
+            self.assertEqual(result.version, "0.1.0")
             self.assertIsInstance(result.plugin, Plugin)
 
     def test_rejects_setup_plugin(self) -> None:
@@ -225,6 +226,45 @@ class FilesystemPluginLoaderTest(unittest.TestCase):
                 self.assertIn("missing", result.reason)
 
             self.assertFalse(any(name.startswith("neobot_user_plugins.dependent_") for name in sys.modules))
+
+    def test_package_version_comes_from_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            package = root / "versioned"
+            package.mkdir()
+            (package / "plugin.toml").write_text('name = "versioned"\nversion = "2.0.0"\n', encoding="utf-8")
+            (package / "__init__.py").write_text(
+                PLUGIN_SOURCE.format(name="versioned", version="1.0.0"), encoding="utf-8"
+            )
+
+            result = FilesystemPluginLoader().load_all(root)[0]
+
+            self.assertIsInstance(result, LoadedPlugin)
+            assert isinstance(result, LoadedPlugin)
+            # 版本只认 plugin.toml：代码里的声明被忽略，也不再因为不一致报错
+            self.assertEqual(result.version, "2.0.0")
+            self.assertEqual(result.plugin.version, "2.0.0")
+
+    def test_package_without_manifest_version_uses_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            package = root / "unversioned"
+            package.mkdir()
+            (package / "plugin.toml").write_text('name = "unversioned"\n', encoding="utf-8")
+            (package / "__init__.py").write_text(
+                PLUGIN_SOURCE.format(name="unversioned", version="1.0.0"), encoding="utf-8"
+            )
+
+            result = FilesystemPluginLoader().load_all(root)[0]
+
+            self.assertIsInstance(result, LoadedPlugin)
+            assert isinstance(result, LoadedPlugin)
+            self.assertEqual(result.version, "0.1.0")
+
+    def test_constructor_version_is_kept_but_ignored(self) -> None:
+        plugin = Plugin("kept_version", version="9.9.9")
+
+        self.assertEqual(plugin.version, "0.1.0")
 
 
 if __name__ == "__main__":

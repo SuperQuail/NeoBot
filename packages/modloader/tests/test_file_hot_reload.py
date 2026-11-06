@@ -22,8 +22,10 @@ async def _runtime(root: Path, *, hot_reload: bool = True, watch: bool = False) 
     nested = package / "nested"
     nested.mkdir(parents=True)
     (package / "plugin.toml").write_text(f'name = "hot"\nhot_reload = {str(hot_reload).lower()}\n')
+    # 版本号只认 plugin.toml，这里用实例属性 generation 标记当前加载的代
     (package / "__init__.py").write_text(
-        "from neobot_modloader import Plugin\nfrom .nested.values import VALUE\nplugin = Plugin('hot', version=VALUE)\n"
+        "from neobot_modloader import Plugin\nfrom .nested.values import VALUE\n"
+        "plugin = Plugin('hot')\nplugin.generation = VALUE\n"
     )
     (nested / "__init__.py").write_text("")
     source = nested / "values.py"
@@ -57,7 +59,7 @@ async def test_saved_nested_source_reloads_after_debounce(tmp_path: Path) -> Non
     await watcher.poll_once(now=1.4)
     assert runtime.manager.get_plugin("hot") is previous
     await watcher.poll_once(now=1.6)
-    assert runtime.manager.get_plugin("hot").version == "3"
+    assert runtime.manager.get_plugin("hot").generation == "3"
     assert runtime.manager.get_state("hot") is PluginState.RUNNING
     await runtime.stop_all()
 
@@ -77,7 +79,7 @@ async def test_invalid_save_retains_old_generation_and_retries_only_new_content(
     assert runtime.reload_plugin_result.await_count == 1
     source.write_text("VALUE = '2'\n")
     await watcher.poll_once(now=3)
-    assert runtime.manager.get_plugin("hot").version == "2"
+    assert runtime.manager.get_plugin("hot").generation == "2"
     assert runtime.reload_plugin_result.await_count == 2
     await runtime.stop_all()
 
@@ -92,10 +94,10 @@ async def test_removed_entry_retains_old_generation_until_restored(tmp_path: Pat
     entry.unlink()
     source.write_text("VALUE = '2'\n")
     await watcher.poll_once(now=1)
-    assert runtime.manager.get_plugin("hot").version == "1"
+    assert runtime.manager.get_plugin("hot").generation == "1"
     entry.write_text(content)
     await watcher.poll_once(now=2)
-    assert runtime.manager.get_plugin("hot").version == "2"
+    assert runtime.manager.get_plugin("hot").generation == "2"
     await runtime.stop_all()
 
 
@@ -118,7 +120,7 @@ async def test_static_resources_and_ignored_directories_do_not_restart_backend(t
     assert runtime.manager.get_plugin("hot") is previous
     source.write_text("VALUE = '2'\n")
     await watcher.poll_once(now=2)
-    assert runtime.manager.get_plugin("hot").version == "2"
+    assert runtime.manager.get_plugin("hot").generation == "2"
     assert runtime.manager.get_state("hot") is (PluginState.RUNNING if running else PluginState.LOADED)
     await runtime.stop_all()
 
@@ -131,14 +133,14 @@ async def test_explicit_stop_or_hot_reload_opt_out_prevents_automatic_start(tmp_
     await runtime.stop_plugin("hot")
     source.write_text("VALUE = '2'\n")
     await watcher.poll_once(now=1)
-    assert runtime.manager.get_plugin("hot").version == "1"
+    assert runtime.manager.get_plugin("hot").generation == "1"
     assert runtime.manager.get_state("hot") is PluginState.STOPPED
     other, other_source = await _runtime(tmp_path / "opt-out", hot_reload=False)
     other_watcher = PluginHotReloader(other, debounce=0)
     await other_watcher.poll_once(now=0)
     other_source.write_text("VALUE = '2'\n")
     await other_watcher.poll_once(now=1)
-    assert other.manager.get_plugin("hot").version == "1"
+    assert other.manager.get_plugin("hot").generation == "1"
     await runtime.stop_all()
     await other.stop_all()
 
@@ -185,7 +187,7 @@ async def test_stop_waits_for_inflight_reload_even_when_stop_caller_is_cancelled
         release.set()
         with pytest.raises(asyncio.CancelledError):
             await stopping
-        assert runtime.manager.get_plugin("hot").version == "2"
+        assert runtime.manager.get_plugin("hot").generation == "2"
     finally:
         release.set()
         await watcher.stop()
@@ -207,10 +209,10 @@ async def test_save_during_reload_is_not_swallowed_by_new_generation_baseline(tm
     runtime.reload_plugin_result = edit_after_candidate_load
     source.write_text("VALUE = '2'\n")
     await watcher.poll_once(now=1)
-    assert runtime.manager.get_plugin("hot").version == "2"
+    assert runtime.manager.get_plugin("hot").generation == "2"
     runtime.reload_plugin_result = reload_plugin
     await watcher.poll_once(now=2)
-    assert runtime.manager.get_plugin("hot").version == "3"
+    assert runtime.manager.get_plugin("hot").generation == "3"
     await runtime.stop_all()
 
 
@@ -220,7 +222,7 @@ async def test_runtime_starts_and_stops_source_monitor_with_plugin_lifecycle(tmp
     try:
         source.write_text("VALUE = '2'\n")
         async with asyncio.timeout(2):
-            while runtime.manager.get_plugin("hot").version != "2":
+            while runtime.manager.get_plugin("hot").generation != "2":
                 await asyncio.sleep(0.01)
         assert runtime.manager.get_state("hot") is PluginState.RUNNING
     finally:
@@ -228,7 +230,7 @@ async def test_runtime_starts_and_stops_source_monitor_with_plugin_lifecycle(tmp
     assert runtime._hot_reloader._task is None
     source.write_text("VALUE = '3'\n")
     await asyncio.sleep(0.03)
-    assert runtime.manager.get_plugin("hot").version == "2"
+    assert runtime.manager.get_plugin("hot").generation == "2"
     assert runtime.manager.get_state("hot") is PluginState.STOPPED
 
 
@@ -238,7 +240,7 @@ async def test_one_scan_error_does_not_block_other_plugins_or_later_recovery(tmp
 
     runtime, source = await _runtime(tmp_path)
     other_source = source.parents[2] / "other.py"
-    other_source.write_text("from neobot_modloader import Plugin\nplugin = Plugin('other', version='1')\n")
+    other_source.write_text("from neobot_modloader import Plugin\nplugin = Plugin('other')\nplugin.generation = '1'\n")
     assert (await runtime.load_plugin_path(other_source)).ok
     watcher = PluginHotReloader(runtime, debounce=0)
     await watcher.poll_once(now=0)
@@ -251,13 +253,13 @@ async def test_one_scan_error_does_not_block_other_plugins_or_later_recovery(tmp
 
     monkeypatch.setattr(hot_reload, "_fingerprint", unreadable)
     source.write_text("VALUE = '2'\n")
-    other_source.write_text("from neobot_modloader import Plugin\nplugin = Plugin('other', version='2')\n")
+    other_source.write_text("from neobot_modloader import Plugin\nplugin = Plugin('other')\nplugin.generation = '2'\n")
     await watcher.poll_once(now=1)
-    assert runtime.manager.get_plugin("hot").version == "1"
-    assert runtime.manager.get_plugin("other").version == "2"
+    assert runtime.manager.get_plugin("hot").generation == "1"
+    assert runtime.manager.get_plugin("other").generation == "2"
     monkeypatch.setattr(hot_reload, "_fingerprint", fingerprint)
     await watcher.poll_once(now=2)
-    assert runtime.manager.get_plugin("hot").version == "2"
+    assert runtime.manager.get_plugin("hot").generation == "2"
     await runtime.stop_all()
 
 
@@ -290,7 +292,7 @@ async def test_manual_stop_during_cascade_wins_over_pending_automatic_reload(tmp
         await polling
         if operation == "stop":
             assert runtime.manager.get_state("hot") is PluginState.STOPPED
-            assert runtime.manager.get_plugin("hot").version == "1"
+            assert runtime.manager.get_plugin("hot").generation == "1"
         else:
             assert runtime.manager.get_record("hot") is None
             assert not runtime._resolve_enabled_state("hot", True)
@@ -305,7 +307,7 @@ async def test_save_during_dependency_cascade_is_not_swallowed_by_restored_gener
     runtime, source = await _runtime(tmp_path)
     addon_source = source.parents[2] / "addon.py"
     addon_source.write_text(
-        "from neobot_modloader import Plugin\nplugin = Plugin('addon', version='1', dependencies=('hot',))\n"
+        "from neobot_modloader import Plugin\nplugin = Plugin('addon', dependencies=('hot',))\nplugin.generation = '1'\n"
     )
     assert (await runtime.load_plugin_path(addon_source)).ok
     watcher = PluginHotReloader(runtime, debounce=0)
@@ -317,17 +319,17 @@ async def test_save_during_dependency_cascade_is_not_swallowed_by_restored_gener
         outcome = await reload_plugin(name, **kwargs)
         if name == "hot":
             addon_source.write_text(
-                "from neobot_modloader import Plugin\nplugin = Plugin('addon', version='2', dependencies=('hot',))\n"
+                "from neobot_modloader import Plugin\nplugin = Plugin('addon', dependencies=('hot',))\nplugin.generation = '2'\n"
             )
         return outcome
 
     runtime.reload_plugin_result = save_after_cascade
     source.write_text("VALUE = '2'\n")
     await watcher.poll_once(now=1)
-    assert runtime.manager.get_plugin("hot").version == "2"
+    assert runtime.manager.get_plugin("hot").generation == "2"
     assert runtime.manager.get_plugin("addon") is not original_addon
-    assert runtime.manager.get_plugin("addon").version == "1"
+    assert runtime.manager.get_plugin("addon").generation == "1"
     runtime.reload_plugin_result = reload_plugin
     await watcher.poll_once(now=2)
-    assert runtime.manager.get_plugin("addon").version == "2"
+    assert runtime.manager.get_plugin("addon").generation == "2"
     await runtime.stop_all()

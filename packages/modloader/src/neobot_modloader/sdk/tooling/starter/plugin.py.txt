@@ -8,7 +8,7 @@ class Config(BaseModel):
     greeting: str = Field(default="pong", title="回复内容", description="/ping 的回复文字")
 
 
-plugin = Plugin("__PLUGIN_NAME__", version="0.1.0", config=Config)
+plugin = Plugin("__PLUGIN_NAME__", config=Config)
 
 
 @plugin.command("ping", permission=0, description="发送配置中的回复内容")

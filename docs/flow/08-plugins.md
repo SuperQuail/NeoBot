@@ -144,7 +144,7 @@ flowchart TD
 ```
 
 类型校验点（任一不合法该插件变成 `PluginLoadError`，不影响其它插件）：`enabled` 必须 bool、`priority` 必须 int、`dependencies` 必须是 string list、`python_dependencies` 不能含空串、`tags` 最多 16 项且单项不超过 32 字符、`[config]` 必须是 table。`min_neobot_version` 只在 `runtime.py:260 _host_version_error` 里比较，且**只在插件 enabled 时检查**；无法比较（源码运行、版本号非数字开头）时跳过检查并打 warning。
-单文件插件（`plugins/foo.py`）没有 manifest 可读：版本恒为 `0.1.0`，依赖/优先级/热重载能力全部取 `Plugin(...)` 上的属性。
+单文件插件（`plugins/foo.py`）没有 manifest 可读：版本缺省为 `0.1.0`（可用实例属性 `plugin.version` 显式声明），依赖/优先级/热重载能力全部取 `Plugin(...)` 上的属性；包插件的版本则只认 `plugin.toml`。
 </details>
 
 <details>
@@ -489,5 +489,5 @@ flowchart TD
 * **两处「重复注册」语义相反**：`HotReloadRegistry.register` 同名忽略（先注册者胜），`PluginRuntime.register_plugin_config_consumer` 是字典赋值（后登记覆盖）。
 * **联动停用发生在 runtime 的 `stop/unload/reload` 入口**：显式与自动重载共用这一入口；候选失败但旧代恢复就绪时仍恢复依赖方。手工 `manager.stop_plugin` 绕过 runtime 不会触发联动。
 * **操作锁只增不减是刻意的**（manager 侧），runtime 侧的操作锁却要主动剪枝 —— 改这两个字典时别把策略搞反。
-* **`plugin.toml` 与 `Plugin(...)` 的 name/version 必须一致**：不一致在 `validate_manifest_conflicts` 直接报错（`manifest.py:98`），而 `dependencies`/`priority`/`min_neobot_version` 是「manifest 优先，缺失才回落到代码」。
+* **版本只认 `plugin.toml`，`name` 两边必须一致**：`validate_manifest_conflicts`（`manifest.py:98`）只比 name，不一致直接报错；`version` 由加载器从清单注入插件实例（`loader.py`），`Plugin(version=...)` 仅为兼容保留、不生效；`dependencies`/`priority`/`min_neobot_version` 仍是「manifest 优先，缺失才回落到代码」。
 * **依赖级联换代不能吞保存**：监测保留同一路径的指纹，而不因 record / 模块代变化重新建立基线；联动恢复期间的代码保存仍会在后续扫描触发一次重载。
