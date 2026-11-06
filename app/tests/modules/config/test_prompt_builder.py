@@ -577,8 +577,8 @@ AVOID_REPEAT_TEXT = (
     "已经开始做但没有做完的,在没有人询问的情况下不需要再次告知已经开始工作."
 )
 SILENT_NUDGE_TEXT = (
-    "[系统提示] 请检查是否有必要使用回复工具告知其他人你的工作进度."
-    "不使用send_reply的情况下他们不知道你做了什么."
+    "[系统提示] 请立即调用 send_reply 告知其他人你的工作进度."
+    "只有 send_reply 能让对方看到你的话,直接输出的正文不会发送."
 )
 #: 基础 <回复要求> 里新增的「适时回话」原则
 TIMELY_REPLY_PRINCIPLE = "需要时间的事情要适时回话"
@@ -717,7 +717,7 @@ def test_human_feel_and_stale_topic_are_enabled_by_default_and_documented(tmp_pa
     stale_topic = store.template("stale_topic")
     assert store.enabled("stale_topic") is True
     assert "对于一段时间之前的消息，你不应该继续回复" in stale_topic
-    assert "先道歉刚刚没有注意到" in stale_topic
+    assert "先调用 send_reply 道歉刚刚没有注意到" in stale_topic
     assert template_placeholders(stale_topic) == set()
 
 
