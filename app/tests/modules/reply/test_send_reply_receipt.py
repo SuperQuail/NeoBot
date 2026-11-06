@@ -204,3 +204,101 @@ async def test_intercept_receipt_is_not_a_success_payload():
 
     assert result.startswith("回复被拦截：")
     assert not adapter.sent
+
+
+# ── 多条语句 + 逐条 raw ──────────────────────────────────────────────────────
+
+FORMULA = "勾股定理：$a^2+b^2=c^2$"
+
+
+async def test_segments_object_raw_keeps_formula_whole_and_splits_the_rest():
+    """对象 raw=true 只对那一条负责：公式整段直发，其余语句交给系统切分。"""
+    sender, event, adapter = _sender()
+    receipt = json.loads(
+        await _executor(sender, event).execute(
+            "send_reply",
+            {
+                "segments": [
+                    {"text": FORMULA, "raw": True},
+                    {"text": "第一句。第二句。第三句。"},
+                ]
+            },
+        )
+    )
+
+    wire = _wire_texts(adapter)
+    assert wire[0] == FORMULA  # 公式没有被拆开
+    assert len(wire) > 2  # 其余语句被自动切成多条
+    assert receipt["sent_count"] == len(wire)
+    assert receipt["parts"][0] == {
+        "index": 1, "type": "text", "text": FORMULA, "raw": True,
+    }
+    assert [part["text"] for part in receipt["parts"]] == wire
+    assert not any(part.get("raw") for part in receipt["parts"][1:])
+
+
+async def test_segments_object_without_raw_is_auto_split():
+    sender, event, adapter = _sender()
+    receipt = json.loads(
+        await _executor(sender, event).execute(
+            "send_reply", {"segments": [{"text": MULTI_SENTENCE}]}
+        )
+    )
+
+    wire = _wire_texts(adapter)
+    assert len(wire) > 1
+    assert [part["text"] for part in receipt["parts"]] == wire
+
+
+async def test_plain_string_segments_stay_final_messages():
+    """旧语义保留：字符串元素是已确认分条，不再二次切分。"""
+    sender, event, adapter = _sender()
+    receipt = json.loads(
+        await _executor(sender, event).execute(
+            "send_reply", {"segments": ["第一句。第二句。"], "text": "第一句。第二句。"}
+        )
+    )
+
+    assert _wire_texts(adapter) == ["第一句。第二句。"]
+    assert receipt["sent_count"] == 1
+
+
+async def test_segments_only_without_text_is_allowed():
+    sender, event, adapter = _sender()
+    receipt = json.loads(
+        await _executor(sender, event).execute(
+            "send_reply", {"segments": [{"text": "只有这一条。"}]}
+        )
+    )
+
+    assert _wire_texts(adapter)[0].startswith("只有这一条")
+    assert receipt["ok"] is True
+
+
+async def test_auto_segment_over_limit_reports_which_statement():
+    sender, event, adapter = _sender()
+    executor = _executor(
+        sender, event, long_reply_max_sentence_count=4
+    )
+    result = await executor.execute(
+        "send_reply",
+        {"segments": [{"text": "。".join(f"第{i}句" for i in range(1, 16)) + "。"}]},
+    )
+
+    assert result.startswith("错误：第 1 条语句无法自动切分")
+    assert "raw=true" in result
+    assert not adapter.sent
+
+
+def test_send_reply_schema_documents_per_statement_raw():
+    definitions = {
+        item["function"]["name"]: item["function"]
+        for item in ReplyToolExecutor().definitions()
+    }
+    send_reply = definitions["send_reply"]
+    segments = send_reply["parameters"]["properties"]["segments"]
+    assert segments["items"]["oneOf"][0] == {"type": "string"}
+    assert segments["items"]["oneOf"][1]["type"] == "object"
+    assert "raw" in segments["items"]["oneOf"][1]["properties"]
+    assert "该条" in segments["description"] and "自动切分" in segments["description"]
+    assert send_reply["parameters"]["required"] == []

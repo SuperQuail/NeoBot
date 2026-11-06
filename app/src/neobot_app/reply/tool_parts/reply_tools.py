@@ -48,32 +48,38 @@ class _ReplyToolsMixin:
         if self._send_reply is None:
             return "错误：send_reply 处理器未配置"
         raw_text = str(args.get("text") or "")
-        if not raw_text.strip():
-            return "错误：回复内容不能为空"
+        statements = self._normalize_statements(args.get("segments"))
+        if not raw_text.strip() and not statements and not args.get("images"):
+            return "错误：回复内容不能为空（text、segments、images 至少给一个）"
         # 发送前清洗（根因在 role_messages：历史 assistant 消息曾被渲染成
         # 「编号: 名字: 正文」，模型照抄了这个格式）。工具层先清一遍，模型方能
         # 看到自己真正发出去的是什么；sender 侧还有同一套兜底，防止清洗后为空。
         sender_names = self._sender_names()
         text = clean_text(raw_text, known_sender_names=sender_names)
-        raw_segments = self._normalize_segments(args.get("segments"))
         ai_check_approved = bool(args.get("ai_check_approved") is True)
-        # Provenance is independent of approval: require this executor's exact
-        # exposed source AND complete split. An approval flag or model-supplied
-        # split_preview can never establish provenance by itself.
-        matched_preview = any(
-            preview.matches(text, raw_segments) for preview in self._split_previews
+        # segments 的三种形态：字符串=已确认的最终分条；对象 raw=true=该条整段直发；
+        # 对象不带 raw=该条交给系统自动切分。逐条清洗以保住每条自己的 raw 归属。
+        plain_segments = bool(statements) and all(kind == "final" for _, kind in statements)
+        statement_texts = tuple(text for text, _ in statements) if statements else ()
+        # Provenance 只对「纯字符串 segments」成立；对象语句是新的显式编排，不走预览溯源。
+        matched_preview = plain_segments and any(
+            preview.matches(text, statement_texts) for preview in self._split_previews
         )
-        segments = clean_segments(
-            raw_segments, known_sender_names=sender_names,
+        cleaned_all = clean_segments(
+            statement_texts or (), known_sender_names=sender_names,
             suppress_control_tokens=not matched_preview,
         )
-        split_preview = ReplySplitPreview(text, tuple(segments)) if matched_preview else None
+        # 清洗可能丢条目（control-token-only / 标注残渣）；能一一对应才保留逐条 raw 归属。
+        statement_kinds = [kind for _, kind in statements] if statements else []
+        kinds = statement_kinds if len(cleaned_all) == len(statement_kinds) else ["final"] * len(cleaned_all)
+        segments = cleaned_all or None
+        split_preview = ReplySplitPreview(text, tuple(segments)) if matched_preview and segments else None
         send_original = bool(args.get("send_original") is True)
         # raw 是 send_original 的「本来就不该切」入口：两者共用同一条整段直发路径
         # （跳过自动切分、AI 检查与超限拦截），差别只在语义与回执的 raw 标记。
         raw = bool(args.get("raw") is True)
         send_original = send_original or raw
-        if raw_segments and not segments and not send_original:
+        if statements and not segments and not send_original:
             # text is only a placeholder when explicit segments were selected.
             text = ""
         if not text.strip() and not segments and not args.get("images"):
@@ -147,11 +153,33 @@ class _ReplyToolsMixin:
                     )
                 )
 
+        # 「多条语句」模式：raw 只对声明它的那条负责，未声明的交给系统自动切分。
+        send_segments = segments
+        expanded_bodies: list[str] | None = None
+        expanded_raw: list[bool] = []
+        if segments and not send_original and any(kind == "auto" for kind in kinds):
+            expanded_bodies = []
+            for position, (body, kind) in enumerate(zip(segments, kinds), start=1):
+                if kind != "auto":
+                    expanded_bodies.append(body)
+                    expanded_raw.append(kind == "raw")
+                    continue
+                result = self._preview_split(body)
+                if result.fallback_used:
+                    return (
+                        f"错误：第 {position} 条语句无法自动切分（{result.reason}）。"
+                        "请把这条拆成更小的语句、对它设置 raw=true 整段发送，或改用 send_long_reply。"
+                    )
+                for piece in result.messages:
+                    expanded_bodies.append(piece)
+                    expanded_raw.append(False)
+            send_segments = expanded_bodies
+
         delivered = await self._send_reply(
             text=text,
             reply_to=reply_to,
             mention=mention,
-            segments=segments,
+            segments=send_segments,
             send_original=send_original,
             images=images,
             **({"split_preview": split_preview} if split_preview is not None else {}),
@@ -172,17 +200,27 @@ class _ReplyToolsMixin:
         if send_original:
             # sender 在 text 清洗后为空时退回 segments，回执跟它保持一致。
             bodies = [text.strip()] if text.strip() else list(segments or [])
+            # 整段 raw 由回执顶层的 raw 字段表达，逐条不再重复标记。
+            body_raw = [False] * len(bodies)
+        elif expanded_bodies is not None:
+            bodies = expanded_bodies
+            body_raw = expanded_raw
         elif segments:
             bodies = list(segments)
+            body_raw = [kind == "raw" for kind in kinds]
         else:
             preview = self._preview_split(text)
             bodies = list(preview.messages)
+            body_raw = [False] * len(bodies)
         parts: list[dict] = [
             {"index": index, "type": "image", "image": number}
             for index, number in enumerate(images or [], start=1)
         ]
-        for body in bodies:
-            parts.append({"index": len(parts) + 1, "type": "text", "text": body})
+        for body, is_raw in zip(bodies, body_raw):
+            part: dict = {"index": len(parts) + 1, "type": "text", "text": body}
+            if is_raw:
+                part["raw"] = True
+            parts.append(part)
         if images:
             summary = f"已发送（{len(images)} 张图片 + {len(bodies)} 条文字）"
         elif send_original:
@@ -216,6 +254,24 @@ class _ReplyToolsMixin:
             max_length=self._long_reply_max_length,
             max_sentence_count=self._long_reply_max_sentence_count,
         )
+
+    @staticmethod
+    def _normalize_statements(value: Any) -> list[tuple[str, str]] | None:
+        """segments 兼容三种形态：字符串=最终分条；{text,raw:true}=整段直发；
+        {text}（或 raw:false）=交给系统自动切分。返回 (文本, final|raw|auto)。"""
+        if not isinstance(value, list):
+            return None
+        statements: list[tuple[str, str]] = []
+        for entry in value:
+            if isinstance(entry, dict):
+                text = str(entry.get("text") or "").strip()
+                if text:
+                    statements.append((text, "raw" if entry.get("raw") is True else "auto"))
+                continue
+            text = str(entry or "").strip()
+            if text:
+                statements.append((text, "final"))
+        return statements or None
 
     @staticmethod
     def _normalize_segments(value: Any) -> list[str] | None:
@@ -350,7 +406,9 @@ class _ReplyToolsMixin:
                 "所以一段话通常会变成几条消息，回执会列出实际发成的每条内容；"
                 "超过长度或条数上限时会被拦截，回执会提示改用 send_long_reply 或分批发送。"
                 "需要原样整段发送（代码、排版或必须保持完整的一段话）时设 raw=true："
-                "不切分、整段作为一条消息发出，也不触发 AI 回复检查或超限拦截。"
+                "不切分、整段作为一条消息发出，也不触发 AI 回复检查或超限拦截；"
+                "需要多条语句时用 segments 分开，每条对象可单独设 raw："
+                "例如数学公式那条设 raw=true 保持完整，其余语句交给系统自动切分。"
                 "本工具只发送消息，不结束本轮；发送后仍可继续调用其他工具。"
                 "只有 cancel 会结束一轮回复；允许在同一轮内多次发送，用于长任务的开工与进度。"
                 "text/segments 只放你要说的那句话本身：不要带消息编号、发送者名字、"
@@ -363,7 +421,8 @@ class _ReplyToolsMixin:
                         "text": {
                             "type": "string",
                             "description": "回复内容，只填你要说的那句话本身，尽量自然简洁。"
-                            "不要带编号/名字/[msg_id=...] 等系统标注，也不要写思考过程。",
+                            "不要带编号/名字/[msg_id=...] 等系统标注，也不要写思考过程。"
+                            "用 segments 提供多条语句时可以省略；text、segments、images 至少给一个。",
                         },
                         "reply_to": {
                             "type": "integer",
@@ -376,13 +435,27 @@ class _ReplyToolsMixin:
                         },
                         "segments": {
                             "type": "array",
-                            "items": {"type": "string"},
-                            "description": "可选，已经确认过的分条回复内容；每个元素会作为一条消息发送。"
-                            "给了 segments 时以分条为正文，不要把正文只写进 text。"
-                            "回传 split_reply 或 AI 检查的预览时，text 必须保留原文，segments 必须是完整预览；"
-                            "未匹配预览则按独立分条执行安全清洗，ai_check_approved 不会跳过清洗。"
-                            "每条同样只放正文，不要带编号/发送者名字/"
-                            "[msg_id=...] 等系统标注，也不要写思考过程；只剩标注或只剩思考的条目会被丢弃。",
+                            "items": {
+                                "oneOf": [
+                                    {"type": "string"},
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "text": {"type": "string"},
+                                            "raw": {"type": "boolean"},
+                                        },
+                                        "required": ["text"],
+                                    },
+                                ],
+                            },
+                            "description": "可选，按顺序提供多条语句，每条作为一条消息发送。"
+                            "字符串元素=已确认的最终分条，系统不再切分（回传 split_reply/AI 检查预览时用这种，"
+                            "text 必须保留原文且 segments 必须是完整预览）；"
+                            "对象 {text, raw}：raw=true 该条整段直发（不切分、跳过该条的 AI 检查与超限拦截，"
+                            "公式/代码/排版用），不加 raw 或 raw=false 则该条交给系统自动切分。"
+                            "支持混合，例如 [{\"text\":\"公式 $a^2+b^2=c^2$\",\"raw\":true},{\"text\":\"其余照常说。\"}]。"
+                            "每条的正文只放自己的话，不要带编号/发送者名字/[msg_id=...] 等系统标注，也不要写思考过程；"
+                            "只剩标注或只剩思考的条目会被丢弃。",
                         },
                         "images": {
                             "type": "array",
@@ -395,14 +468,14 @@ class _ReplyToolsMixin:
                         },
                         "send_original": {
                             "type": "boolean",
-                            "description": "AI回复检查开启且切分结果有问题但仍要发送时设为 true；会发送原文，不再切分，但不会跳过输出安全清洗。对于 @ 和引用消息也适用。与 raw 走同一条整段直发路径，只是语义不同：send_original 是「检查后仍要发原文」，raw 是「本来就不需要切分」。",
+                            "description": "AI回复检查开启且切分结果有问题但仍要发送时设为 true；会发送整段原文，不再切分，但不会跳过输出安全清洗。对于 @ 和引用消息也适用。与 raw 走同一条整段直发路径，只是语义不同：send_original 是「检查后仍要发原文」，raw 是「本来就不需要切分」。对整段 text 生效，且优先于 segments 的逐条 raw。",
                         },
                         "raw": {
                             "type": "boolean",
-                            "description": "需要原样整段发送时设为 true：不切分，把清洗后的整段文本作为一条消息发出，也不触发 AI 回复检查与超限拦截。适合代码、排版或必须保持完整的一段话；默认 false（自动按句子切分）。与 send_original 等价于同一条直发路径，只是意图不同。",
+                            "description": "需要原样整段发送时设为 true：不切分，把清洗后的整段文本作为一条消息发出，也不触发 AI 回复检查与超限拦截。适合代码、排版或必须保持完整的一段话；默认 false（自动按句子切分）。只对 text 整段生效；想只让 segments 里某一条语句不切分，请在该条对象里设 raw=true。与 send_original 等价于同一条直发路径，只是意图不同。",
                         },
                     },
-                    "required": ["text"],
+                    "required": [],
                 },
             ),
         )
