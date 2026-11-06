@@ -154,7 +154,7 @@ async def test_future_annotations_plugin_message_handler_works(tmp_path: Path) -
         "from typing import Any\n"
         "from neobot_modloader import Plugin\n"
         "\n"
-        "plugin = Plugin('dashboard_like', version='1.0.0')\n"
+        "plugin = Plugin('dashboard_like')\n"
         "seen: list[Any] = []\n"
         "\n"
         "@plugin.message(priority=-100)\n"

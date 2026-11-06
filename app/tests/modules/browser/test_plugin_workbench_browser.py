@@ -32,7 +32,7 @@ class Value(BaseModel):
     value: int = Field(ge=1, title="数值")
 
 
-plugin = Plugin("workbench_demo", version="1.0.0", config=Config)
+plugin = Plugin("workbench_demo", config=Config)
 plugin.current = 0
 plugin.action_calls = []
 

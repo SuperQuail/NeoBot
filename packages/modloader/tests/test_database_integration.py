@@ -44,7 +44,7 @@ async def add_user_index(connection: AsyncConnection) -> None:
     )
 
 
-plugin = Plugin("example", version="1.0.0", description="demo")
+plugin = Plugin("example", description="demo")
 
 database = plugin.sqlite_database(
     "main",
@@ -102,7 +102,7 @@ async def bad_migration(connection: AsyncConnection) -> None:
     raise RuntimeError("boom-migration")
 
 
-plugin = Plugin("baddb", version="1.0.0")
+plugin = Plugin("baddb")
 
 database = plugin.sqlite_database(
     "main",

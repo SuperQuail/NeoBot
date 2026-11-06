@@ -37,6 +37,9 @@ from neobot_modloader.plugins.registration import validate_plugin_name
 
 EnabledResolver = Callable[[str, bool], bool]
 
+#: 插件版本唯一的兜底值：包插件缺 version、单文件插件（无清单）都用它
+DEFAULT_PLUGIN_VERSION = "0.1.0"
+
 
 class FilesystemPluginLoader:
     """从单个目录扫描并导入插件。
@@ -143,7 +146,7 @@ class FilesystemPluginLoader:
             self._validate_plugin_name(name)
             return DiscoveredPlugin(
                 name=name,
-                version="0.1.0",
+                version=DEFAULT_PLUGIN_VERSION,
                 plugin_dir=path.parent,
                 source_path=path,
                 source=self.source,
@@ -161,7 +164,7 @@ class FilesystemPluginLoader:
                 raise TypeError("plugin.toml 的 enabled 必须是 bool")
             name = str(metadata.get("name") or path.name)
             self._validate_plugin_name(name)
-            version = str(metadata.get("version") or "0.1.0")
+            version = str(metadata.get("version") or DEFAULT_PLUGIN_VERSION)
             description = str(metadata.get("description") or "")
             author = str(metadata.get("author") or "")
             min_neobot_version_raw = metadata.get("min_neobot_version")
@@ -209,7 +212,9 @@ class FilesystemPluginLoader:
             plugin = self._create_plugin(module)
             plugin_name = str(getattr(plugin, "name", name) or name)
             self._validate_plugin_name(plugin_name)
-            version = str(getattr(plugin, "version", "0.1.0") or "0.1.0")
+            # 单文件插件没有清单：版本固定 0.1.0，代码里的声明不再生效
+            version = DEFAULT_PLUGIN_VERSION
+            plugin.version = version
             python_dependencies = _validated_python_dependencies(
                 tuple(getattr(plugin, "python_dependencies", ()) or ())
             )
@@ -249,7 +254,9 @@ class FilesystemPluginLoader:
             if not self.resolve_enabled(name, enabled):
                 self._logger.info(f"插件已禁用，跳过加载: {path}")
                 return None
-            version = str(metadata.get("version") or "0.1.0")
+            version = str(metadata.get("version") or DEFAULT_PLUGIN_VERSION)
+            if "version" not in metadata:
+                self._logger.warning(f"plugin.toml 未声明 version，按 {DEFAULT_PLUGIN_VERSION} 处理: {path.name}")
             description = str(metadata.get("description") or "")
             author = str(metadata.get("author") or "")
             min_neobot_version_raw = metadata.get("min_neobot_version")
@@ -269,7 +276,8 @@ class FilesystemPluginLoader:
             validate_manifest_conflicts(metadata, plugin)
             plugin_name = str(getattr(plugin, "name", name) or name)
             self._validate_plugin_name(plugin_name)
-            plugin_version = str(getattr(plugin, "version", version) or version)
+            # 版本只认 plugin.toml：Plugin(version=...) 保留但不参与加载
+            plugin.version = version
             if "dependencies" not in metadata:
                 dependencies = tuple(getattr(plugin, "dependencies", ()) or ())
             # 清单优先级在加载时确定，运行期的反向依赖与停用联动复用同一份结果。
@@ -289,7 +297,7 @@ class FilesystemPluginLoader:
                 config_hot_reload = bool(getattr(plugin, "config_hot_reload", True))
             return LoadedPlugin(
                 name=plugin_name,
-                version=plugin_version,
+                version=version,
                 plugin=plugin,
                 plugin_dir=path,
                 config=dict(config),

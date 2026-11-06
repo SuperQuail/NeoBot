@@ -90,7 +90,7 @@ async def test_action_result_uses_the_serialized_names_advertised_in_its_schema(
 
 
 async def test_one_business_handler_supports_a_resource_and_a_guide():
-    plugin = Plugin("subscriptions", version="1.2.0", config=Settings)
+    plugin = Plugin("subscriptions", config=Settings)
     rows = []
 
     @plugin.action("list", output_model=Rows, permission="read", title="订阅列表")

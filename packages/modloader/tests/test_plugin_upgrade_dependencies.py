@@ -24,7 +24,7 @@ def _dependency(root, name="foundation", *, dependencies=(), enabled=True, marke
     (source / "plugin.toml").write_text(
         f'name = "{name}"\nversion = "1.0"\nenabled = {str(enabled).lower()}\n', encoding="utf-8"
     )
-    body = f'from neobot_modloader import Plugin\nplugin = Plugin("{name}", version="1.0", dependencies={dependencies!r})\n'
+    body = f'from neobot_modloader import Plugin\nplugin = Plugin("{name}", dependencies={dependencies!r})\n'
     if marker is not None:
         body += f'from pathlib import Path\n@plugin.on_startup\nasync def start(ctx):\n    with Path({str(marker)!r}).open("a", encoding="utf-8") as stream:\n        stream.write("{name}\\n")\n'
     (source / "__init__.py").write_text(body, encoding="utf-8")

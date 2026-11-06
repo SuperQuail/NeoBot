@@ -42,7 +42,7 @@ async def starship_runtime(tmp_path: Path):
     (dashboard_dir / "plugin.toml").write_text('name = "dashboard"\nversion = "1.0.0"\n', encoding="utf-8")
     (dashboard_dir / "__init__.py").write_text(
         "from neobot_modloader import Plugin\n"
-        "plugin = Plugin('dashboard', version='1.0.0')\n"
+        "plugin = Plugin('dashboard')\n"
         "server = None\n"
         "@plugin.on_load\n"
         "async def load(ctx):\n"

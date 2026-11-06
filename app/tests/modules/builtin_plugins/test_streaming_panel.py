@@ -29,7 +29,7 @@ def caller(permission="manage"):
 def surface(state):
     from neobot_app.builtin_plugins.streaming_parser.panel import register_surface
 
-    plugin = Plugin("streaming_parser", version="0.3.1")
+    plugin = Plugin("streaming_parser")
     register_surface(plugin, state)
     return plugin
 
