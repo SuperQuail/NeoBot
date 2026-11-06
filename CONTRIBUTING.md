@@ -66,7 +66,7 @@ PR 创建后还要过 **CI 硬门禁**（[.github/workflows/pr-gates.yml](.githu
   推送新提交后旧评论失效，需要重新评审。AI 自评必须由独立子代理完成、不带开发上下文；
 - 发现 bug 或 CI 因 bug 变红：**先发 issue**，修复 PR 描述里用 `Closes #NN` 关联；
   标题以 `fix` 开头的 PR 没关联 issue 会直接红；
-- PR 流向必须是 `功能分支 → main`；发布由 QuailEgg 在 `main` 上创建 `release` 发布 PR 并自动完成。
+- PR 目标只能是 `main`（或普通分支 `dev`）；发布由 QuailEgg 在 `main` 上创建 `release` 发布 PR 并自动完成。
 
 ## 开发规范
 

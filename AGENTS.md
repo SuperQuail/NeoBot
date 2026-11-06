@@ -140,7 +140,7 @@ python scripts/check_pr_title.py --title "<PR 标题>" --strict
    禁止把开发上下文带进评审；评审意见要具体到可执行项。
 3. **bug 先发 issue**：发现 bug / CI 因 bug 变红时，先创建 issue，再让修复 PR 在描述里用 `Closes #NN` 关联。
    CI 对标题以 `fix` 开头的 PR 强制检查关联 issue，没有就红。
-4. **分支流向**：功能分支 → `main`（默认分支）；`release` 由 QuailEgg 生成和维护，不接受人工 PR。`dev` 为普通分支。
+4. **分支流向**：PR 目标只能是 `main`（默认分支）或普通分支 `dev`；`release` 由 QuailEgg 生成和维护，不接受人工 PR，也不能作为源分支。
 
 本地可先自检：
 

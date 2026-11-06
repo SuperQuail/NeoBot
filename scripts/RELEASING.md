@@ -18,8 +18,16 @@ qegg init --dry-run --force --no-input --no-hook --no-add-packages --qegg-versio
 qegg init --force --no-input --no-hook --no-add-packages --qegg-version v0.12.0
 ```
 
-当前配置里的两段 `yaml` 前置步骤：固定 `UV_PYTHON=3.14`（onnxruntime 没有 cp315 wheel），以及把 uv workspace 的
-`uv build` 输出固定到各包目录（qegg 随后在该目录 `uv publish`）。改完生成文件后要提交 diff，不要保留手改。
+当前配置的 `[release.workflow].yaml` 里有两条前置 step：固定 `UV_PYTHON=3.14`（onnxruntime 没有 cp315 wheel），
+以及把 uv workspace 的 `uv build` 输出固定到各包目录（qegg 随后在该目录 `uv publish`）。qegg 也支持
+`[release.workflow].steps` 写纯命令，本仓库没有使用。改完配置后要提交生成文件的 diff，不要手改生成文件。
+
+已知限制（由生成模板决定，不在仓库内手改）：
+
+- 生成工作流使用 qegg 模板内置的 action 版本（`checkout@v4`、`setup-uv@v5`），落后于仓库手写工作流；
+  升级需要改 QuailEgg 模板并发版。
+- `qegg-pr` 的 Preview 步骤对 fork PR 会因只读 token 失败（非阻断检查）。
+- `qegg-pr` 的 job 没有中文名，非阻断性质只在分支保护里体现。
 
 ### 日常改动
 

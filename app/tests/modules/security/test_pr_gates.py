@@ -131,6 +131,7 @@ def test_flow_rejects_managed_release_and_bad_targets() -> None:
     assert FLOW.evaluate("release", "main")[0] is False
     assert FLOW.evaluate("dev", "release")[0] is False
     assert FLOW.evaluate("feat/base", "feat/x")[0] is False
-    assert FLOW.evaluate("main", "main")[0] is False
+    # fork PR 的 head 只是分支名：名字叫 main 的 fork 分支必须放行。
+    assert FLOW.evaluate("main", "main")[0] is True
     assert FLOW.evaluate("", "feat/x")[0] is False
     assert FLOW.evaluate("main", "")[0] is False

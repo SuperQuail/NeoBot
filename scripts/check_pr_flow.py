@@ -2,9 +2,12 @@
 """PR 分支流向：main 是默认分支；release 由 QuailEgg 生成和维护。
 
 分支模型（2026-11-07 起）：
-- 日常功能/修复 PR → main（仓库默认分支）；
+- 日常功能/修复 PR → main（仓库默认分支）；dev 保留为普通分支，可继续接收 PR；
 - release 每次发布由 QuailEgg 从 main 重建并强制推送，发布 PR 为 release → main；
-- dev 保留为普通分支，不再默认、不再参与发布。
+- release 不接受人工 PR，也不能作为其它分支的源分支。
+
+注意：本脚本只拿到 base/head 的分支名。fork PR 的 head 只会是分支名（例如 main），
+与同仓库同名分支无法区分，因此不判断 base == head；同仓库自提 PR 由 GitHub 平台拦截。
 
 GitHub 分支保护不能限制「源分支」，所以用本脚本在 PR 上做强制检查。
 """
@@ -33,8 +36,6 @@ def evaluate(base: str, head: str) -> tuple[bool, str]:
         )
     if base not in (MAIN, DEV):
         return False, f"PR 目标分支只能是 {MAIN}（或普通分支 {DEV}），当前是 {base}。"
-    if base == MAIN and head == MAIN:
-        return False, "不能从 main 向 main 提 PR。"
     if head == RELEASE and base != MAIN:
         return False, "release 只能作为 QuailEgg 发布 PR 的来源进入 main。"
     return True, f"分支流向允许：{head} → {base}。"
