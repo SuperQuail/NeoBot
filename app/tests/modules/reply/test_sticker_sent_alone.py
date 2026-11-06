@@ -57,7 +57,10 @@ async def test_send_reply_with_images_and_text_sends_separate_messages(tmp_path)
             images=args["images"],
         )
 
-    executor = ReplyToolExecutor(send_reply_handler=handler)
+    executor = ReplyToolExecutor(
+        send_reply_handler=handler,
+        emoji_service=getattr(sender, "_emoji_service", None),
+    )
     result = await executor.execute("send_reply", {"text": "哈哈", "images": [1]})
 
     assert "已发送" in result

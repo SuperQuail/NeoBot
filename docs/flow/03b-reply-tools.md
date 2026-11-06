@@ -6,7 +6,7 @@ covers:
   - app/src/neobot_app/reply/output_guard.py
   - app/src/neobot_app/reply/vision_context.py
 verified_against: 2d7925b
-verified_hash: 87db696a763f
+verified_hash: ee7803f2f9da
 ---
 
 # 03b 回复管线的工具面：模型看到什么工具 · 谁执行 · 结果怎么回灌
