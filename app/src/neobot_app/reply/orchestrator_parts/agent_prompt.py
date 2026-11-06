@@ -125,6 +125,12 @@ class AgentPromptMixin:
         messages: list[dict] = [{"role": "system", "content": prompt}]
         messages.extend(context_messages)
         messages.extend(role_messages)
+        if self._take_unsent_marker(event):
+            self._append_block(
+                messages,
+                "prev_no_tool_call_reminder",
+                dynamic={"prev_no_tool_call_reminder": True},
+            )
         if context_messages:
             self._record_debug(
                 "chat_context_injected",

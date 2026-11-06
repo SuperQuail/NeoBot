@@ -369,6 +369,10 @@ template = '''<@>这是@你的消息,你应该优先用 send_reply 回复<@>'''
 [no_tool_call_reminder]
 template = '''系统提醒：你刚才写的正文没有发出去——agent 模式下只有调用 send_reply（长文用 send_long_reply）才能把话送到对方，不想回复就调用 cancel。现在二选一，不要再写一遍正文，也不要重复分析。'''
 
+# 上一次激活“只输出正文、未发送”时的跨轮纠正提醒（由编排器按实例状态注入一次）。
+[prev_no_tool_call_reminder]
+template = '''系统提醒：你上一次只输出了正文，那段正文没有发送给用户。这一轮要说话就调用 send_reply（长文用 send_long_reply），不回复就调用 cancel；不要直接输出正文，也不要重复上次的正文。'''
+
 # agent 模式的 Skill 操作说明（占位符由编排器填充）。可用 enabled = false 关闭。
 [skill_index]
 template = '''<Skill 操作说明>

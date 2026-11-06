@@ -191,8 +191,8 @@ def test_orders_are_unique_within_stage_and_scope(stage: Stage):
         ),
         (Stage.RUNTIME_DATA, Scope.PRIVATE, ("background_notification", "vision_fallback_notice")),
         # 提醒类
-        (Stage.REMINDER, Scope.GROUP, ("avoid_repeat", "silent_nudge", "no_tool_call_reminder")),
-        (Stage.REMINDER, Scope.PRIVATE, ("avoid_repeat", "silent_nudge", "no_tool_call_reminder")),
+        (Stage.REMINDER, Scope.GROUP, ("avoid_repeat", "silent_nudge", "prev_no_tool_call_reminder", "no_tool_call_reminder")),
+        (Stage.REMINDER, Scope.PRIVATE, ("avoid_repeat", "silent_nudge", "prev_no_tool_call_reminder", "no_tool_call_reminder")),
         # 时间块（terminal）
         (Stage.TIME, Scope.GROUP, ("current_time", "current_time_short")),
         (Stage.TIME, Scope.PRIVATE, ("current_time", "current_time_short")),

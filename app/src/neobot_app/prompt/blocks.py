@@ -484,6 +484,14 @@ BLOCKS: tuple[Block, ...] = (
         note="长任务沉默提醒（轮次/秒数阈值由循环判定）",
     ),
     Block(
+        "prev_no_tool_call_reminder",
+        Stage.REMINDER,
+        CHAT_SCOPES,
+        order=25,
+        requires=(dynamic_present("prev_no_tool_call_reminder"),),
+        note="上一次激活无工具正文的跨轮纠正提醒",
+    ),
+    Block(
         "no_tool_call_reminder",
         Stage.REMINDER,
         CHAT_SCOPES,

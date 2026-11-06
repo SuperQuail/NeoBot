@@ -3174,6 +3174,60 @@ async def test_no_tool_call_reminder_then_cancel(monkeypatch):
     await orch.shutdown()
 
 
+async def test_prev_no_tool_reminder_injected_after_cancelled_activation(monkeypatch):
+    """上一次激活只输出正文被取消后，下一次激活要带一条跨轮纠正提醒。"""
+    provider = _ScriptedProvider([
+        {"content": "草稿一", "tool_calls": []},
+        {"content": "草稿二", "tool_calls": []},
+        _send_reply_response("收到"),
+        {"content": "", "tool_calls": []},
+        _send_reply_response("再来"),
+        {"content": "", "tool_calls": []},
+    ])
+    orch = _make_orchestrator(provider=provider)
+    queue = MessageQueue()
+
+    async def _no_suspend(source, snapshot, queue_key):
+        return [], None
+
+    monkeypatch.setattr(orch, "_suspend_private_chat", _no_suspend)
+
+    async def _run(message):
+        event = orch.start_reply(
+            message=message, queue=queue, queue_key="123456", decision=_make_decision()
+        )
+        for _ in range(300):
+            if not orch._active_pipelines:
+                break
+            await asyncio.sleep(0.01)
+        return event
+
+    first = await _run(_make_private_message(message_id=1, text="第一条"))
+    assert first.state.name == "CANCELLED"
+
+    second = await _run(_make_private_message(message_id=2, text="第二条"))
+    assert second.state.name == "COMPLETED"
+    # event1 用了 2 次调用；event2 的首个请求必须包含跨轮提醒
+    assert len(provider.calls) >= 3
+    second_messages = provider.calls[2][0]
+    assert any(
+        "上一次只输出了正文" in str(m.get("content") or "")
+        for m in second_messages
+        if isinstance(m, dict)
+    )
+
+    third = await _run(_make_private_message(message_id=3, text="第三条"))
+    assert third.state.name == "COMPLETED"
+    assert len(provider.calls) >= 5
+    third_messages = provider.calls[4][0]
+    assert all(
+        "上一次只输出了正文" not in str(m.get("content") or "")
+        for m in third_messages
+        if isinstance(m, dict)
+    )
+    await orch.shutdown()
+
+
 # ── 表情包/语音发出即视为已回复（回归：不得判 CANCELLED 或多拉模型）──
 
 
