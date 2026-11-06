@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from neobot_app.prompt.blocks import BLOCKS, Block, Stage, block_by_id
+from neobot_app.prompt.blocks import BLOCKS, Block, block_by_id
 from neobot_app.prompt.render import render_template
 from neobot_app.prompt.store import fallback_template, packaged_template
 
