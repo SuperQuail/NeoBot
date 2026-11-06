@@ -1,13 +1,14 @@
-"""从消息队列与已保存的用户资料信息组装提示词。
+"""从消息队列与已保存的用户资料信息收集提示词取值。
+
+取值（群友信息、印象、档案、时间…）在本模块；**块的顺序与启停**在注册表
+``prompt/blocks.py``，拼装由 ``prompt/composer.py`` 完成。新增提示词块不需要
+改本模块，除非块需要新的占位符取值。
 
 架构(贴近 agent 的消息形态):
 - system 提示词只承载稳定内容:人设 + 回复规则 + 群/好友元信息 + 编号格式;
 - 聊天记录按发送者拆分为真实的 user/assistant 消息(bot 自己的发言是 assistant);
 - 每轮会变的上下文(群友信息、对方档案、印象)渲染成独立的 user 块追加在 system 之后;
 - 调用模型前再追加一个独立的 <当前时间> user 块。
-
-所有文本都来自 prompts.toml 分区模板,占位符与转义规则见
-templates/prompts.toml 顶部说明与 store.py 模块文档。
 """
 
 from __future__ import annotations
@@ -18,8 +19,10 @@ from typing import TYPE_CHECKING, Any
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.config.schemas.bot import BotConfig as BotConfigSchema
+from neobot_app.prompt.composer import PromptComposer, make_context
+from neobot_app.prompt.context import Scope
 from neobot_app.prompt.keyword_reaction import KeywordReactionBuilder
-from neobot_app.prompt.render import render_template, template_placeholders
+from neobot_app.prompt.render import render_template
 from neobot_app.prompt.role_messages import build_role_messages
 from neobot_app.prompt.store import PromptStore, get_template_value
 from neobot_app.time_context import get_current_time_values
@@ -27,25 +30,6 @@ from neobot_app.user_profiles import UserProfileService
 
 if TYPE_CHECKING:
     from neobot_app.message.numbering import MessageNumbering
-
-# 已在 system 模板中渲染过的内容,不再重复出现在上下文 user 块中
-_DEDUP_KEYS_GROUP = (
-    "member_list",
-    "key_word_reaction_list",
-    "memory_list",
-    "group_info",
-    "group_admin",
-    "bot_group_admin_status",
-)
-_DEDUP_KEYS_FRIEND = (
-    "profile",
-    "friend_info",
-    "key_word_reaction_list",
-    "memory_list",
-)
-
-#: 人设块结束标记:温和语言风格提示插在它之后
-_PERSONA_END = "</你是谁>"
 
 
 class PromptBuilder:
@@ -67,6 +51,7 @@ class PromptBuilder:
         self._archive_memory_service = archive_memory_service
         self._uow_factory = uow_factory
         self._store = prompt_store
+        self._composer = PromptComposer(prompt_store, logger=self._logger)
         self._keyword_reaction_builder = KeywordReactionBuilder(
             config.chat.key_word or [],
             logger=self._logger,
@@ -80,12 +65,6 @@ class PromptBuilder:
     def _template(self, key: str, sub: str = "template") -> str:
         """读取分区模板:文件(自定义覆盖默认) -> 内置兜底。"""
         return get_template_value(self._store, key, sub)
-
-    def _section_enabled(self, key: str, default: bool = True) -> bool:
-        """分区是否启用(分区内 enabled = false 可关闭该区块)。"""
-        if self._store is None:
-            return default
-        return self._store.enabled(key, default=default)
 
     def _show_boundary_markers(self) -> bool:
         return bool(
@@ -113,21 +92,35 @@ class PromptBuilder:
     def _time_values(self) -> dict[str, str]:
         return dict(get_current_time_values())
 
-    # ── 当前时间块(调用模型前追加的独立 user 块) ──
+    # ── 构建上下文 ──
+
+    def _make_ctx(
+        self,
+        *,
+        scope: Scope,
+        values: dict[str, Any] | None = None,
+        dynamic: dict[str, Any] | None = None,
+    ):
+        """构造一次构建的 PromptContext（统一读取 config/store/logger）。"""
+        return make_context(
+            config=self._config,
+            store=self._store,
+            scope=scope,
+            values=values if values is not None else self._time_values(),
+            dynamic=dynamic,
+            logger=self._logger,
+        )
+
+    # ── 运行时 user 块（时间 / 提醒 / 等待指引） ──
 
     def build_current_time_message(self) -> dict[str, str] | None:
-        """渲染 <当前时间> user 块;分区关闭或内容为空时返回 None。
+        """渲染完整 <当前时间> user 块;分区关闭或内容为空时返回 None。
 
         调用方在每次调用模型前追加一次,并保留历史时间块(不做清理),
         模型因此能看到时间推进。
         """
-        if not self._section_enabled("current_time"):
-            return None
-        template = self._template("current_time")
-        text = render_template(template, self._time_values())
-        if not text:
-            return None
-        return {"role": "user", "content": text}
+        ctx = self._make_ctx(scope=Scope.GROUP, dynamic={"time_variant": "full"})
+        return self._composer.build_user_block("current_time", ctx)
 
     def build_short_time_message(self) -> dict[str, str] | None:
         """渲染短时间戳 user 块(仅 YYYY-MM-DD HH:MM:SS);分区关闭或为空时返回 None。
@@ -135,13 +128,18 @@ class PromptBuilder:
         同一轮管线激活里的第一次模型调用用完整 [current_time],之后的调用由调用方
         改用本方法,避免长管线反复渲染整段时间描述。
         """
-        if not self._section_enabled("current_time_short"):
-            return None
-        template = self._template("current_time_short")
-        text = render_template(template, self._time_values())
-        if not text:
-            return None
-        return {"role": "user", "content": text}
+        ctx = self._make_ctx(scope=Scope.GROUP, dynamic={"time_variant": "short"})
+        return self._composer.build_user_block("current_time_short", ctx)
+
+    def build_avoid_repeat_message(self) -> dict[str, str] | None:
+        """渲染防重复提醒 user 块（每次管线激活追加一次）。"""
+        ctx = self._make_ctx(scope=Scope.GROUP)
+        return self._composer.build_user_block("avoid_repeat", ctx)
+
+    def build_at_mention_wait_message(self) -> dict[str, str] | None:
+        """渲染「被 @ 但没说清要做什么」的等待指引 user 块（仅群聊）。"""
+        ctx = self._make_ctx(scope=Scope.GROUP, dynamic={"at_mention_wait": True})
+        return self._composer.build_user_block("at_mention_wait", ctx)
 
     # ── 群聊 ──
 
@@ -167,7 +165,7 @@ class PromptBuilder:
             include_archives=inject_member_archives,
         )
         if member_list and not inject_member_archives:
-            member_list = f"{member_list}\n{_MEMBER_ARCHIVE_HINT}"
+            member_list = f"{member_list}\n{self.member_archive_hint()}"
         bot_group_admin_status = await self._profile_service.render_bot_group_admin_status(
             group_id,
             self._config.bot.account,
@@ -221,6 +219,8 @@ class PromptBuilder:
 
         context_blocks 非 None 时,把本轮上下文(群友信息/印象等)渲染成 user 块
         追加进该列表,由调用方插到 system 之后、聊天记录之前。
+        每轮变化的 system 块（@ 提示 / agent 技能说明 / 原生视觉）由编排器另行
+        append；本方法只构建稳定 system。
         """
         values = await self._group_context_values(
             group_id,
@@ -231,86 +231,15 @@ class PromptBuilder:
         values.update(self._time_values())
         values["numbering_guide"] = _build_numbering_guide(numbering)
 
-        template = self._template("group_chat")
-        prompt = render_template(template, values)
-
-        # 编号格式是给模型的固定约定,不属于用户上下文;模板漏写时补回 system
-        if (
-            numbering is not None
-            and "numbering_guide" not in template_placeholders(template)
-            and values["numbering_guide"]
-        ):
-            prompt = _merge_prompt_fragments(
-                prompt,
-                f"<消息编号说明>\n{values['numbering_guide']}\n</消息编号说明>",
-            )
-
-        prompt = self._insert_gentle_language(prompt, values)
-
-        if context_blocks is not None and self._section_enabled("group_context"):
-            block = render_template(
-                self._template("group_context"),
-                self._context_values(template, values, _DEDUP_KEYS_GROUP),
-            )
-            if block:
-                context_blocks.append({"role": "user", "content": block})
-
-        # 长任务过程可见性:追加型分区,追加逻辑在代码里而不在模板里,
-        # 即使部署方把整个 [group_chat] 复制进 custom/prompts.toml 也仍生效。
-        if self._section_enabled("long_task_progress"):
-            long_task_progress = render_template(
-                self._template("long_task_progress"), values
-            )
-            if long_task_progress:
-                prompt = _merge_prompt_fragments(prompt, long_task_progress)
-
-        prompt = self._append_style_sections(prompt, values)
-        return self._append_adaptive(prompt)
-
-
-    def _append_style_sections(self, prompt: str, values: dict) -> str:
-        """合并活人感/旧消息等追加型提示分区（默认开启，可用 enabled=false 关闭）。"""
-        for key in ("human_feel", "stale_topic"):
-            if not self._section_enabled(key):
-                continue
-            block = render_template(self._template(key), values)
-            if block:
-                prompt = _merge_prompt_fragments(prompt, block)
-        return prompt
-
-    def _insert_gentle_language(self, prompt: str, values: dict) -> str:
-        """把 [gentle_language] 渲染后插在 <你是谁> 人设块之后。
-
-        config.toml 的 chat.gentle_language_enabled 与分区 enabled 任一关闭即不插入;
-        自定义模板里没有 `</你是谁>` 时退回追加到 system 末尾。
-        """
-        if not bool(getattr(getattr(self._config, "chat", None), "gentle_language_enabled", True)):
-            return prompt
-        if not self._section_enabled("gentle_language"):
-            return prompt
-        block = render_template(self._template("gentle_language"), values)
-        if not block or block in prompt:
-            return prompt
-        # 取最后一个 </你是谁>：人设正文若出现该字面量，最后一个是真实闭合标签
-        end = prompt.rfind(_PERSONA_END)
-        if end == -1:
-            return _merge_prompt_fragments(prompt, block)
-        end += len(_PERSONA_END)
-        return f"{prompt[:end]}\n{block}\n{prompt[end:].lstrip('\r\n')}"
-
-    def _context_values(
-        self,
-        system_template: str,
-        values: dict[str, Any],
-        dedup_keys: tuple[str, ...],
-    ) -> dict[str, Any]:
-        """生成上下文块取值:system 模板已消费的内容置空,避免重复。"""
-        consumed = template_placeholders(system_template)
-        context_values = dict(values)
-        for key in dedup_keys:
-            if key in consumed:
-                context_values[key] = ""
-        return context_values
+        ctx = self._make_ctx(
+            scope=Scope.GROUP,
+            values=values,
+            dynamic={"adaptive_text": self._adaptive_block()},
+        )
+        system = self._composer.build_system(ctx)
+        if context_blocks is not None:
+            context_blocks.extend(self._composer.build_context_messages(ctx, system))
+        return system.text
 
     # ── 私聊 ──
 
@@ -373,46 +302,15 @@ class PromptBuilder:
         values.update(self._time_values())
         values["numbering_guide"] = _build_numbering_guide(numbering)
 
-        template = self._template("friend_chat")
-        prompt = render_template(template, values)
-
-        if (
-            numbering is not None
-            and "numbering_guide" not in template_placeholders(template)
-            and values["numbering_guide"]
-        ):
-            prompt = _merge_prompt_fragments(
-                prompt,
-                f"<消息编号说明>\n{values['numbering_guide']}\n</消息编号说明>",
-            )
-
-        prompt = self._insert_gentle_language(prompt, values)
-
-        if context_blocks is not None and self._section_enabled("friend_context"):
-            block = render_template(
-                self._template("friend_context"),
-                self._context_values(template, values, _DEDUP_KEYS_FRIEND),
-            )
-            if block:
-                context_blocks.append({"role": "user", "content": block})
-
-        # 私聊专属提示:独立分区,可用 enabled = false 关闭
-        if self._section_enabled("friend_chat_hint"):
-            hint = render_template(self._template("friend_chat_hint"), values)
-            if hint:
-                prompt = _merge_prompt_fragments(prompt, hint)
-
-        # 长任务过程可见性:追加型分区,追加逻辑在代码里而不在模板里,
-        # 即使部署方把整个 [friend_chat] 复制进 custom/prompts.toml 也仍生效。
-        if self._section_enabled("long_task_progress"):
-            long_task_progress = render_template(
-                self._template("long_task_progress"), values
-            )
-            if long_task_progress:
-                prompt = _merge_prompt_fragments(prompt, long_task_progress)
-
-        prompt = self._append_style_sections(prompt, values)
-        return self._append_adaptive(prompt)
+        ctx = self._make_ctx(
+            scope=Scope.PRIVATE,
+            values=values,
+            dynamic={"adaptive_text": self._adaptive_block()},
+        )
+        system = self._composer.build_system(ctx)
+        if context_blocks is not None:
+            context_blocks.extend(self._composer.build_context_messages(ctx, system))
+        return system.text
 
     # ── 聊天记录 ──
 
@@ -479,7 +377,7 @@ class PromptBuilder:
 
     def member_archive_hint(self) -> str:
         """群员档案未注入时给模型的按需读取提示（增量新成员块复用）。"""
-        return _MEMBER_ARCHIVE_HINT
+        return self._template("member_archive_hint") or _MEMBER_ARCHIVE_HINT
 
     def build_group_chat_resume_text(
         self,
@@ -496,11 +394,12 @@ class PromptBuilder:
 
     # ── 自适应提示词 ──
 
-    def _append_adaptive(self, prompt: str) -> str:
+    def _adaptive_block(self) -> str:
+        """自适应提示词块内容（``data/自适应提示词.txt``）；无内容时块自动跳过。"""
         adaptive = self._get_adaptive_prompt()
-        if adaptive:
-            prompt += f"\n<自适应提示词>\n{adaptive}\n</自适应提示词>"
-        return prompt
+        if not adaptive:
+            return ""
+        return f"<自适应提示词>\n{adaptive}\n</自适应提示词>"
 
     # ── 群聊记忆 ──
 

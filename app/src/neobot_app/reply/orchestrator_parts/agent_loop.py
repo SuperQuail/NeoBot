@@ -6,9 +6,9 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from neobot_app.reply.event import ReplyEvent, ReplyState
+from neobot_app.prompt.composer import RuntimeState
 from ._runtime import monotonic_seconds
 from .agent_state import AgentLoopState
-from .prompt_blocks import _NO_TOOL_CALL_REMINDER
 
 if TYPE_CHECKING:
     from neobot_app.message.queue import MessageQueue
@@ -95,8 +95,8 @@ class AgentLoopMixin:
             state.cancelled = False
             no_tool_reminders = 0
             # 时间块分级不随挂起恢复重置：整条长期会话首次完整、之后始终短块。
-            # 防重复提醒:每次管线激活只追加一次
-            avoid_repeat_sent = False
+            # 本次激活的注入状态（防重复块只发一次、terminal 块顺序由组合器保证）
+            injection_state = RuntimeState()
             # 沉默提醒记录器:轮次归零、阶梯阈值取首次值、时间基准从本轮开始
             (
                 _nudge_enabled,
@@ -161,8 +161,29 @@ class AgentLoopMixin:
                     emitted=nudge_emitted,
                     deadline=nudge_deadline,
                 )
-                if nudge_reason is not None:
-                    messages.append({"role": "user", "content": self._nudge_text()})
+                if native_vision_active:
+                    await self._agent_refresh_default_images(
+                        vision_context=vision_context,
+                        queue_copy=queue_copy,
+                        queue_key=queue_key,
+                        numbering=numbering,
+                        default_image_loader=default_image_loader,
+                        pipeline_key=pipeline_key,
+                        silent_remaining=silent_remaining,
+                    )
+                # 回复前注入：RUNTIME_DATA → REMINDER（防重复 / 沉默提醒）→ TIME。
+                # TIME 是 terminal 块，组合器保证它位于消息列表最后一条。
+                rendered = self._inject_runtime_blocks(
+                    messages,
+                    dynamic={
+                        "silent_nudge": bool(nudge_reason),
+                        "time_variant": self._time_variant(state.time_block_full_sent),
+                    },
+                    state=injection_state,
+                )
+                if "current_time" in rendered:
+                    state.time_block_full_sent = True
+                if "silent_nudge" in rendered:
                     nudge_rounds = 0
                     nudge_deadline = monotonic_seconds() + nudge_seconds
                     nudge_next_at = nudge_repeat_rounds
@@ -183,25 +204,6 @@ class AgentLoopMixin:
                         emitted=nudge_emitted,
                         reason=nudge_reason,
                     )
-
-                if native_vision_active:
-                    await self._agent_refresh_default_images(
-                        vision_context=vision_context,
-                        queue_copy=queue_copy,
-                        queue_key=queue_key,
-                        numbering=numbering,
-                        default_image_loader=default_image_loader,
-                        pipeline_key=pipeline_key,
-                        silent_remaining=silent_remaining,
-                    )
-                # 回复前:追加独立的 <当前时间> user 块(始终是最后一条消息)
-                self._append_current_time_block(state, messages)
-                # 防重复提醒:每次管线激活只追加一次,节奏独立于时间块
-                if not avoid_repeat_sent:
-                    avoid_repeat_sent = True
-                    avoid_repeat_message = self._build_avoid_repeat_message()
-                    if avoid_repeat_message is not None:
-                        messages.append(avoid_repeat_message)
                 request_messages = (
                     vision_context.request_messages(messages) if native_vision_active else list(messages)
                 )
@@ -245,13 +247,21 @@ class AgentLoopMixin:
                     vision_fallback_bonus = True
                     # Retry once with the restored parser tools rather than sending
                     # an answer produced without either images or a parser.
-                    messages.append({"role": "user", "content": "[原生视觉回退] 图片无法发送，非视觉模型及图片解析工具已恢复。请按需调用 image_parse__parse_image，不能声称已经看到图片。"})
+                    self._append_block(
+                        messages,
+                        "vision_fallback_notice",
+                        dynamic={"vision_fallback": True},
+                    )
                     continue
                 if not tool_calls:
                     if not state.reply_sent:
                         if no_tool_reminders < 1:
                             no_tool_reminders += 1
-                            messages.append({"role": "user", "content": _NO_TOOL_CALL_REMINDER})
+                            self._append_block(
+                                messages,
+                                "no_tool_call_reminder",
+                                dynamic={"no_tool_call_reminder": True},
+                            )
                             self._record_debug(
                                 "no_tool_call_reminder",
                                 event,

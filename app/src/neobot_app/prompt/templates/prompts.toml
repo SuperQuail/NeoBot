@@ -7,6 +7,8 @@
 # - 未在自定义文件中出现的分区自动使用本文件的默认值
 # - 程序升级后新增的分区(如新的子Agent提示词)会自动继承本文件的默认值
 # - 每个分区内的键也按"自定义优先、缺省继承默认"的方式合并
+# 分区的顺序、作用域与启停条件由 prompt/blocks.py 的块注册表决定（本文件只管文本）；
+# 新增分区需要在注册表登记对应块，否则不会被拼进提示词。
 #
 # ── 占位符与转义 ──────────────────────────────────────────────────────────────
 # 1. 占位符统一写作 {名字},渲染时替换为运行时的真实内容;未提供值的占位符
@@ -314,6 +316,54 @@ template = '''[已压缩] 工具 {tool_name} 调用成功。结果摘要:
 
 [long_reply_fallback]
 template = '''{bot_name}懒得和你说道理，你不配听'''
+
+# ── 编排器运行时注入的稳定块 ────────────────────────────────────────────────
+# 以下分区由编排器按注册表顺序渲染，注入时机在代码里（见 prompt/blocks.py：
+# SYSTEM_APPEND / RUNTIME_DATA / REMINDER / STATUS 阶段）。分区 id 即块 id。
+# 无占位符的分区可用 enabled = false 关闭。
+
+# 被 @ 触发那一轮的优先级提示（群聊、仅该轮注入一次）。无占位符。
+[at_mention_priority]
+template = '''<@>这是@你的消息,你应该优先回复<@>'''
+
+# 模型没有调用任何工具时的确认提醒（循环内最多注入一次）。无占位符。
+[no_tool_call_reminder]
+template = '''系统提醒：你刚才没有调用任何工具。如果你确认不需要回复或执行任何操作，请调用 cancel 工具结束；如果需要回复用户，请调用 send_reply 工具发送回复。不要只输出正文草稿，也不要重复分析。'''
+
+# agent 模式的 Skill 操作说明（占位符由编排器填充）。可用 enabled = false 关闭。
+[skill_index]
+template = '''<Skill 操作说明>
+{skill_instructions}
+需要某个技能的具体操作说明、参数细节或注意事项时,调用 skills__view_instructions 查看完整内容。
+未直接列出调用工具的技能,其工具定义尚未加载以节省每次调用的开销;
+需要使用时先调用 skills__load_tools 加载(一次可加载多个),
+加载后本轮即可直接调用。
+</Skill 操作说明>'''
+
+# 可加载工具包清单（占位符 {tool_package_index}）。可用 enabled = false 关闭。
+[tool_packages]
+template = '''<可加载工具包>
+{tool_package_index}
+清单已直接给出；需要某个包时直接调用 skills__load_tools 加载，无需先查询。
+</可加载工具包>'''
+
+# 本轮命中的 Markdown 技能（占位符 {available_skills}）。可用 enabled = false 关闭。
+[available_skills]
+template = '''<可用技能>
+{available_skills}
+</可用技能>'''
+
+# 技能 allowed-tools 限制说明（占位符 {allowed_tools}，为空表示不限制）。可用 enabled = false 关闭。
+[tool_restriction]
+template = '''注意：当前激活技能限制了可用工具，仅允许：{allowed_tools}（以及始终可用的基础回复工具与技能读取工具）。'''
+
+# 原生视觉回退说明（图片无法发送、切回解析工具时注入一次）。无占位符。
+[vision_fallback_notice]
+template = '''[原生视觉回退] 图片无法发送，非视觉模型及图片解析工具已恢复。请按需调用 image_parse__parse_image，不能声称已经看到图片。'''
+
+# 群友记忆未注入时的按需读取提示（拼在群友信息之后）。无占位符。
+[member_archive_hint]
+template = '''<群友记忆>群友的长期记忆未在此注入。需要某位群友的记忆时，用 archive_crud__read_archive 按需读取：table_name 优先 user_summary、缺失时用 user_profile，key 为该群友的 QQ 号；先 mode='outline' 看大纲，再用 offset 分页读正文，offset 为负数时从尾部向前翻页（越靠后的内容越新）。</群友记忆>'''
 
 # ── 子Agent:复杂问题解题 ──────────────────────────────────────────────────────
 # description 是暴露给主Agent的简介(中文,供主Agent判断何时委托);

@@ -27,6 +27,8 @@ import tomlkit
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
+from neobot_app.prompt.blocks import known_sections as _known_sections
+
 # 内置默认提示词模板位置(随程序包分发)
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 DEFAULT_TEMPLATE_FILE = TEMPLATES_DIR / "prompts.toml"
@@ -38,36 +40,8 @@ CUSTOM_DIR_NAME = "custom"
 PROMPTS_FILE_NAME = "prompts.toml"
 README_FILE_NAME = "README.md"
 
-# 提示词分区清单:生成自定义骨架与说明文档时使用,避免手写清单遗漏新分区
-KNOWN_SECTIONS = (
-    "group_chat",
-    "group_context",
-    "friend_chat",
-    "friend_context",
-    "current_time",
-    "current_time_short",
-    "avoid_repeat",
-    "silent_nudge",
-    "long_task_progress",
-    "gentle_language",
-    "human_feel",
-    "stale_topic",
-    "friend_chat_hint",
-    "group_chat_resume",
-    "new_member_profiles",
-    "native_vision",
-    "tool_result_compressed",
-    "tool_result_compressed_detail",
-    "long_reply_fallback",
-    "problem_solver",
-    "self_heal",
-    "maintenance",
-    "wake_up",
-    "at_mention_wait",
-    "live_chat",
-    "sleep_cmd",
-    "awake_cmd",
-)
+# 提示词分区清单由注册表派生（prompt/blocks.py 是唯一真相），避免手工清单漂移。
+KNOWN_SECTIONS: tuple[str, ...] = _known_sections()
 
 # TOML 多行字符串定界符(在 Python 字符串里直接写会被误解析,单独拼出来)
 _TOML_QUOTE = "'" * 3
@@ -174,6 +148,15 @@ _FALLBACK_SECTIONS: dict[str, dict[str, str]] = {
     },
 }
 
+def _skeleton_section_lines() -> str:
+    """把 KNOWN_SECTIONS 按每行 3 个排版成骨架注释（新增分区自动出现）。"""
+    rows = [
+        " / ".join(KNOWN_SECTIONS[index : index + 3])
+        for index in range(0, len(KNOWN_SECTIONS), 3)
+    ]
+    return "\n".join(f"#   {row}" for row in rows)
+
+
 _CUSTOM_SKELETON = (
     "# NeoBot 自定义提示词文件\n"
     "#\n"
@@ -182,11 +165,7 @@ _CUSTOM_SKELETON = (
     "# 未出现在本文件中的分区自动使用默认提示词。\n"
     "#\n"
     "# 可用分区(详见 default/prompts.toml 中的说明与占位符列表):\n"
-    "#   group_chat / group_context / friend_chat / friend_context\n"
-    "#   current_time / group_chat_resume / new_member_profiles\n"
-    "#   tool_result_compressed / tool_result_compressed_detail\n"
-    "#   long_reply_fallback / problem_solver / self_heal / maintenance / wake_up\n"
-    "#   sleep_cmd / awake_cmd\n"
+    f"{_skeleton_section_lines()}\n"
     "#\n"
     "# 占位符写作花括号包住的名字,渲染时替换;需要输出字面量花括号时写成双层花括号。\n"
     "# 只含空白的区块(如群友信息标签之间只有换行)会在渲染后被自动删除。\n"
@@ -394,6 +373,10 @@ class PromptStore:
         """返回全部有效分区(默认与自定义合并后)。"""
         return {key: dict(value) for key, value in self._load_merged().items()}
 
+    def default_sections(self) -> dict[str, dict[str, Any]]:
+        """返回默认分区(忽略自定义覆盖),面板/文档等外部读者用。"""
+        return {key: dict(value) for key, value in self._load_default_sections().items()}
+
     def get_section(self, key: str) -> dict[str, Any] | None:
         """返回单个分区(合并后);不存在时返回 None。"""
         section = self._load_merged().get(key)
@@ -478,6 +461,36 @@ def fallback_template(key: str, sub: str = "template", default: str = "") -> str
     if value is None:
         return default
     return str(value).strip() if isinstance(value, str) else str(value)
+
+
+#: 内置模板文件的解析缓存：(mtime_ns, size) -> {分区: {键: 值}}
+_PACKAGED_CACHE: tuple[tuple[int, int] | None, dict[str, dict[str, Any]]] = (None, {})
+
+
+def packaged_template(key: str, sub: str = "template", default: str = "") -> str:
+    """读取随包分发的内置模板分区（无 store 时的兜底，如面板/测试替身）。
+
+    读取顺序：内置 templates/prompts.toml -> ``_FALLBACK_SECTIONS`` -> default。
+    结果按文件 mtime/size 缓存，避免每次渲染都解析 TOML。
+    """
+    global _PACKAGED_CACHE
+    signature = None
+    try:
+        stat = DEFAULT_TEMPLATE_FILE.stat()
+        signature = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        pass
+    cached_signature, cached_sections = _PACKAGED_CACHE
+    if signature is not None and cached_signature != signature:
+        cached_sections = {
+            section: dict(value)
+            for section, value in _parse_sections(DEFAULT_TEMPLATE_FILE).items()
+        }
+        _PACKAGED_CACHE = (signature, cached_sections)
+    value = cached_sections.get(key, {}).get(sub)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return fallback_template(key, sub, default)
 
 
 def sync_default_prompts(data_dir: Path, logger: Logger | None = None) -> None:

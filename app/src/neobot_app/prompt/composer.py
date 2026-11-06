@@ -1,0 +1,291 @@
+"""提示词组合器：按注册表把块拼成 system 文本 / 上下文消息 / 运行时注入块。
+
+组合器是**唯一**知道「块该放哪、按什么顺序、为什么跳过」的地方；builder 只负责
+收集占位符取值，orchestrator 只负责驱动时机。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, replace
+from typing import Any
+
+from neobot_contracts.ports.logging import Logger, NullLogger
+
+from neobot_app.prompt.blocks import (
+    Block,
+    Stage,
+    block_by_id,
+    blocks_for,
+)
+from neobot_app.prompt.context import PromptContext, Scope
+from neobot_app.prompt.render import render_template, template_placeholders
+
+
+@dataclass(frozen=True)
+class SystemPrompt:
+    """一次 system 提示词构建的结果（含构建元信息，便于调试/面板）。"""
+
+    text: str
+    consumed: frozenset[str] = frozenset()
+    rendered: tuple[str, ...] = ()
+    skipped: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class ContextBuild:
+    """一次上下文 user 块构建的结果。"""
+
+    messages: tuple[dict[str, str], ...] = ()
+    rendered: tuple[str, ...] = ()
+    skipped: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass
+class RuntimeState:
+    """注入管道的运行态：记录「每次激活只发一次」与最近一次注入结果。"""
+
+    activation_emitted: set[str] = field(default_factory=set)
+    last_rendered: tuple[str, ...] = ()
+
+
+def _merge(*parts: str) -> str:
+    cleaned = [part.strip() for part in parts if part and part.strip()]
+    return "\n".join(cleaned)
+
+
+def _insert_after_marker(text: str, marker: str | None, block_text: str) -> str | None:
+    """把块插到最后一个标记之后；没有标记时返回 None（由调用方决定兜底）。"""
+    if not marker:
+        return None
+    index = text.rfind(marker)
+    if index == -1:
+        return None
+    end = index + len(marker)
+    return f"{text[:end]}\n{block_text}\n{text[end:].lstrip(chr(13) + chr(10))}"
+
+
+class PromptComposer:
+    """按注册表组合提示词。"""
+
+    def __init__(self, store: Any = None, logger: Logger | None = None) -> None:
+        self._store = store
+        self._logger = logger or NullLogger()
+
+    # ── 底层：单块渲染 ──
+
+    def block_skip_reason(self, block: Block, ctx: PromptContext) -> str | None:
+        """块是否可以跳过：先查分区开关（主模板除外），再按声明顺序求值条件。"""
+        section = block.template_section
+        if section is not None and block.stage is not Stage.SYSTEM_MAIN and not ctx.enabled(section):
+            return f"分区 [{section}] 已关闭"
+        for check in block.requires:
+            reason = check(ctx)
+            if reason:
+                return reason
+        return None
+
+    def render_block(self, block: Block, ctx: PromptContext) -> str:
+        """渲染单块文本；动态文本块走 ``text`` 提供者，模板块走 TOML 分区。"""
+        if block.text is not None:
+            return str(block.text(ctx) or "").strip()
+        section = block.template_section
+        if section is None:
+            return ""
+        return ctx.render(section, block.key)
+
+    @staticmethod
+    def _consumed_placeholders(block: Block, ctx: PromptContext) -> set[str]:
+        section = block.template_section
+        if section is None:
+            return set()
+        return template_placeholders(ctx.raw_template(section, block.key))
+
+    # ── system ──
+
+    def build_system(self, ctx: PromptContext) -> SystemPrompt:
+        """拼 system：主模板 → 定点插入 → 末尾追加。"""
+        rendered: list[str] = []
+        skipped: list[tuple[str, str]] = []
+        consumed: set[str] = set()
+
+        main_parts: list[str] = []
+        for block in blocks_for(Stage.SYSTEM_MAIN, ctx.scope):
+            part = self.render_block(block, ctx)
+            if not part:
+                skipped.append((block.id, "模板为空"))
+                continue
+            main_parts.append(part)
+            consumed |= self._consumed_placeholders(block, ctx)
+            rendered.append(block.id)
+        text = _merge(*main_parts)
+
+        # 编号格式是给模型的固定约定：模板漏写时补回 system（与模板无关的兜底）
+        guide = str(ctx.values.get("numbering_guide") or "").strip()
+        if guide and "numbering_guide" not in consumed:
+            text = _merge(text, f"<消息编号说明>\n{guide}\n</消息编号说明>")
+
+        for block in blocks_for(Stage.SYSTEM_INSERT, ctx.scope):
+            reason = self.block_skip_reason(block, ctx)
+            if reason:
+                skipped.append((block.id, reason))
+                continue
+            part = self.render_block(block, ctx)
+            if not part:
+                skipped.append((block.id, "渲染为空"))
+                continue
+            consumed |= self._consumed_placeholders(block, ctx)
+            inserted = _insert_after_marker(text, block.insert_marker, part)
+            if inserted is None:
+                if block.insert_fallback == "skip":
+                    skipped.append((block.id, f"模板缺少锚点 {block.insert_marker}"))
+                    continue
+                text = _merge(text, part)
+            else:
+                text = inserted
+            rendered.append(block.id)
+
+        for block in blocks_for(Stage.SYSTEM_APPEND, ctx.scope):
+            reason = self.block_skip_reason(block, ctx)
+            if reason:
+                skipped.append((block.id, reason))
+                continue
+            part = self.render_block(block, ctx)
+            if not part:
+                skipped.append((block.id, "渲染为空"))
+                continue
+            consumed |= self._consumed_placeholders(block, ctx)
+            text = _merge(text, part)
+            rendered.append(block.id)
+
+        return SystemPrompt(
+            text=text,
+            consumed=frozenset(consumed),
+            rendered=tuple(rendered),
+            skipped=tuple(skipped),
+        )
+
+    # ── 上下文 user 块 ──
+
+    def build_context(self, ctx: PromptContext, system: SystemPrompt | None = None) -> ContextBuild:
+        """渲染 CONTEXT 阶段块；system 已消费的占位符自动去重。"""
+        if system is not None and system.consumed:
+            values = dict(ctx.values)
+            for key in system.consumed:
+                values[key] = ""
+            ctx = replace(ctx, values=values)
+        messages: list[dict[str, str]] = []
+        rendered: list[str] = []
+        skipped: list[tuple[str, str]] = []
+        for block in blocks_for(Stage.CONTEXT, ctx.scope):
+            reason = self.block_skip_reason(block, ctx)
+            if reason:
+                skipped.append((block.id, reason))
+                continue
+            part = self.render_block(block, ctx)
+            if not part:
+                skipped.append((block.id, "渲染为空"))
+                continue
+            messages.append({"role": "user", "content": part})
+            rendered.append(block.id)
+        return ContextBuild(
+            messages=tuple(messages),
+            rendered=tuple(rendered),
+            skipped=tuple(skipped),
+        )
+
+    def build_context_messages(self, ctx: PromptContext, system: SystemPrompt | None = None) -> list[dict[str, str]]:
+        """``build_context`` 的便捷形式，只要消息列表。"""
+        return list(self.build_context(ctx, system).messages)
+
+    # ── 运行时注入（RUNTIME_DATA / REMINDER / TIME） ──
+
+    def inject(
+        self,
+        messages: list[dict],
+        ctx: PromptContext,
+        state: RuntimeState | None = None,
+    ) -> list[dict]:
+        """按阶段顺序追加运行时块；TIME 阶段块保证位于消息末尾。
+
+        ``state.activation_emitted`` 用于 ``once_per_activation`` 块：已发过的块
+        本次激活内不再发。
+        """
+        state = state or RuntimeState()
+        rendered: list[str] = []
+        terminals: list[dict] = []
+        for stage in (Stage.RUNTIME_DATA, Stage.REMINDER, Stage.TIME):
+            for block in blocks_for(stage, ctx.scope):
+                if block.once_per_activation and block.id in state.activation_emitted:
+                    continue
+                reason = self.block_skip_reason(block, ctx)
+                if reason:
+                    continue
+                part = self.render_block(block, ctx)
+                if not part:
+                    continue
+                message = {"role": "user", "content": part}
+                messages.append(message)
+                rendered.append(block.id)
+                if block.once_per_activation:
+                    state.activation_emitted.add(block.id)
+                if block.terminal:
+                    terminals.append(message)
+        # terminal 块必须是请求的最后一条；即使未来有块追加在它之后也在这里纠正
+        for message in terminals:
+            if messages and messages[-1] is message:
+                continue
+            messages.remove(message)
+            messages.append(message)
+        state.last_rendered = tuple(rendered)
+        return messages
+
+    def append_block(self, messages: list[dict], block_id: str, ctx: PromptContext) -> bool:
+        """按 id 追加单个块（不参与阶段排序）；用于循环中途的单条提醒。"""
+        block = block_by_id(block_id)
+        if self.block_skip_reason(block, ctx):
+            return False
+        part = self.render_block(block, ctx)
+        if not part:
+            return False
+        messages.append({"role": "user", "content": part})
+        return True
+
+    # ── 状态 / 子 Agent 文案 ──
+
+    def render_status_text(self, block_id: str, ctx: PromptContext) -> str:
+        """按块 id 渲染状态文案（sleep / wake / 兜底等）；条件不满足返回空串。"""
+        block = block_by_id(block_id)
+        if self.block_skip_reason(block, ctx):
+            return ""
+        return self.render_block(block, ctx)
+
+    def render_section(self, section: str, ctx: PromptContext, key: str = "template") -> str:
+        """直接渲染任意 TOML 分区（子 Agent、直播等不走管道的场景）。"""
+        return render_template(ctx.raw_template(section, key), ctx.render_values())
+
+    def build_user_block(self, block_id: str, ctx: PromptContext) -> dict[str, str] | None:
+        """渲染一个 user 消息块；条件不满足或为空时返回 None。"""
+        text = self.render_status_text(block_id, ctx)
+        return {"role": "user", "content": text} if text else None
+
+
+def make_context(
+    *,
+    config: Any = None,
+    store: Any = None,
+    scope: Scope = Scope.GROUP,
+    values: dict[str, Any] | None = None,
+    features: dict[str, bool] | None = None,
+    dynamic: dict[str, Any] | None = None,
+    logger: Logger | None = None,
+) -> PromptContext:
+    """构造 PromptContext 的便捷函数（调用方少写样板）。"""
+    return PromptContext(
+        config=config,
+        store=store,
+        scope=scope,
+        values=dict(values or {}),
+        features=dict(features or {}),
+        dynamic=dict(dynamic or {}),
+        logger=logger or NullLogger(),
+    )
