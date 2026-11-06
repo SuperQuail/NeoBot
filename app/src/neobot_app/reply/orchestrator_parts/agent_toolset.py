@@ -59,14 +59,6 @@ class AgentToolsetMixin:
             queue_key,
             numbering,
         )
-        send_emoji_handler = partial(
-            self._agent_send_emoji_handler,
-            state,
-            event,
-            queue,
-            queue_copy,
-            queue_key,
-        )
         wait_handler = partial(
             self._agent_wait_handler,
             state,
@@ -106,7 +98,6 @@ class AgentToolsetMixin:
             send_reply_handler=send_reply_handler,
             willing_service=self._willing_service,
             numbering=numbering,
-            send_emoji_handler=send_emoji_handler,
             emoji_service=self._emoji_service,
             wait_handler=wait_handler,
             react_emoji_handler=react_emoji_handler,
@@ -188,9 +179,7 @@ class AgentToolsetMixin:
             if cross_chat_loaded
             else reply_toolset.definitions()
         )
-        vision_context = ReplyVisionContext(
-            prompt_store=getattr(self, "_prompt_store", None)
-        )
+        vision_context = ReplyVisionContext()
         from neobot_app.skills.image_context_skill import ImageContextSkill
 
         default_image_loader = ImageContextSkill(
@@ -287,8 +276,8 @@ class AgentToolsetMixin:
                 "role": "user",
                 "content": (
                     "[表情包选择] 你觉得现在发一张表情包比较合适。"
-                    "下面是候选表情包的编号和图片；可以用 send_emoji 工具单独发送一张"
-                    "（表情包单独发，不要附带文字，也不要和要说的话一起发），"
+                    "下面是候选表情包的编号和图片；可以用 send_reply 的 emoji_numbers 参数发送（"
+                    "每张图单独一条消息，文字另外发），也可以只发图不配文字，"
                     "如果觉得没有合适的，就不要发表情包，继续正常回复。"
                     "候选编号：" + "、".join(str(n) for n in numbers) + "。"
                 ),

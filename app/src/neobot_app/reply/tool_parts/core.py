@@ -19,7 +19,6 @@ class _CoreMixin:
         send_reply_handler: Any = None,
         willing_service: Any = None,
         numbering: Any = None,
-        send_emoji_handler: Any = None,
         emoji_service: Any = None,
         wait_handler: Any = None,
         react_emoji_handler: Any = None,
@@ -67,7 +66,6 @@ class _CoreMixin:
         self._send_reply = send_reply_handler
         self._willing = willing_service
         self._numbering = numbering
-        self._send_emoji = send_emoji_handler
         self._emoji = emoji_service
         self._wait = wait_handler
         self._react_emoji = react_emoji_handler

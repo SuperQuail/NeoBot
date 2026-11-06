@@ -43,7 +43,6 @@ class AgentPipelineMixin:
                 numbering=numbering,
                 bot_account=self._get_bot_account(),
                 include_boundary_markers=self._show_boundary_markers(),
-                prompt_store=getattr(self, "_prompt_store", None),
             )
             member_block = ""
             if is_group:
@@ -105,7 +104,7 @@ class AgentPipelineMixin:
         if state.reply_sent:
             nudge_rounds = 0
             nudge_deadline = monotonic_seconds() + nudge_seconds
-        # 设计契约：外发工具（send_reply / send_emoji / speak / send_long_reply）
+        # 设计契约：外发工具（send_reply / speak / send_long_reply）
         # 只是普通工具，发出消息不等于结束本轮；只有 cancel 可以主动终止。
         return tools, nudge_rounds, nudge_deadline, state.cancelled
 
@@ -312,7 +311,6 @@ class AgentPipelineMixin:
                 numbering=numbering,
                 bot_account=self._get_bot_account(),
                 include_boundary_markers=self._show_boundary_markers(),
-                prompt_store=getattr(self, "_prompt_store", None),
             )
             if new_role_messages:
                 messages.extend(new_role_messages)

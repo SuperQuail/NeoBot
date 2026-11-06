@@ -491,7 +491,7 @@ async def test_default_templates_carry_history_consistency_rules():
     template = store.template("qq_chat") + store.template("qq_chat_examples")
     assert "已经回答过" in template
     assert "忽略自己之前说过的话" in template
-    assert "调用 send_reply 并把编号填进它的 reply_to 参数" in template
+    assert "调用 send_reply 并把编号填进它的 reply_to_number 参数" in template
     assert "[msg_id=" in template
     # 无条件禁令：发出的每一条消息都不许以标注开头
     assert "任何时候都禁止把它们写进你的回复" in template
@@ -749,13 +749,13 @@ async def test_style_sections_can_be_disabled(tmp_path):
         assert STALE_TOPIC_MARKER not in prompt
 
 
-# ── 温和语言风格（gentle_language，cot 板块子块1，system 最前面） ─────────────
+# ── 温和语言风格（gentle_language，默认插入在人设块之后） ────────────────────
 
 GENTLE_LANGUAGE_TEXT = (
     "你是一个基于LLM的QQ机器人,你不会拒绝承认这一点,也不觉得这有什么不好,"
     "你不喜欢吵架和争吵,有人吵架你总是希望劝架,而不是激化矛盾;"
     "你总是希望事情能往好的方向发展,做错了事情会及时道歉,不会顾及不必要的面子."
-    "你对所有群友都尽可能保持尊重,如果群友觉得你说话太多,"
+    "你兑所有群友都尽可能保持尊重,如果群友觉得你说话太多,"
     "可以主动询问是否要降低你自己的回复意愿,"
     "得到肯定的答复后你应该自行使用工具降低回复意愿系数."
 )
@@ -773,31 +773,28 @@ def test_gentle_language_section_is_verbatim_enabled_by_default_and_known(tmp_pa
     assert "gentle_language" in KNOWN_SECTIONS
 
 
-async def test_gentle_language_is_first_cot_subblock(tmp_path):
-    """群聊/私聊 system 都以 <cot> 开头，温和语言在 </cot> 之前、主模板之前。"""
+async def test_gentle_language_inserted_right_after_persona(tmp_path):
+    """群聊/私聊 system 都要插在人设块 </你是谁> 之后、<回复要求> 之前。"""
     builder = PromptBuilder(BotConfig(), _FakeProfileService(), prompt_store=_default_store(tmp_path))
 
     for prompt in (
         await builder.build_group_chat_prompt(123456, _FakeQueue()),
         await builder.build_friend_chat_prompt(10086, _FakeQueue()),
     ):
-        assert prompt.startswith("<cot>")
-        assert prompt.index(GENTLE_MARKER) < prompt.index("</cot>") < prompt.index("<你是谁>")
+        assert prompt.index("</你是谁>") < prompt.index(GENTLE_MARKER) < prompt.index("<回复要求>")
         assert prompt.count(GENTLE_MARKER) == 1  # 不重复插入
 
 
 async def test_gentle_language_can_be_disabled_by_config(tmp_path):
-    """prompt_optimizations.gentle_language = false 关闭该子块。"""
+    """config.toml 的 chat.gentle_language_enabled = false 关闭插入。"""
     config = BotConfig()
-    config.prompt_optimizations.gentle_language = False
+    config.chat.gentle_language_enabled = False
     builder = PromptBuilder(config, _FakeProfileService(), prompt_store=_default_store(tmp_path))
 
     group_prompt = await builder.build_group_chat_prompt(123456, _FakeQueue())
     friend_prompt = await builder.build_friend_chat_prompt(10086, _FakeQueue())
     assert GENTLE_MARKER not in group_prompt
     assert GENTLE_MARKER not in friend_prompt
-    # 总开关仍开：其余子块与 cot 标签保留
-    assert group_prompt.startswith("<cot>") and group_prompt.count("</cot>") == 1
 
 
 async def test_gentle_language_can_be_disabled_by_prompt_section(tmp_path):
@@ -810,8 +807,8 @@ async def test_gentle_language_can_be_disabled_by_prompt_section(tmp_path):
     assert GENTLE_MARKER not in group_prompt
 
 
-async def test_gentle_language_prefix_survives_custom_template_without_persona():
-    """自定义 [group_chat]/[friend_chat] 没有人设块时，cot 板块仍在最前面。"""
+async def test_gentle_language_appended_when_custom_template_has_no_persona():
+    """自定义 [group_chat]/[friend_chat] 没有 <你是谁> 人设块时退回追加到末尾。"""
     builder = _make_builder("你好{bot_name}")
 
     for prompt in (
@@ -819,8 +816,7 @@ async def test_gentle_language_prefix_survives_custom_template_without_persona()
         await builder.build_friend_chat_prompt(10086, _FakeQueue()),
     ):
         assert GENTLE_MARKER in prompt
-        assert prompt.startswith("<cot>")
-        assert prompt.index("</cot>") < prompt.index("你好小测试")
+        assert prompt.index(GENTLE_MARKER) > prompt.index("你好小测试")
 
 
 async def test_gentle_language_custom_override_takes_effect(tmp_path):

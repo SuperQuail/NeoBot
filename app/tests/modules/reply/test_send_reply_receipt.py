@@ -1,4 +1,4 @@
-"""send_reply 回执：告诉模型「实际怎么切分」，并支持 raw=true 整段直发。"""
+"""send_reply 回执：告诉模型「实际怎么切分」，并支持逐条 raw 整段直发。"""
 
 from __future__ import annotations
 
@@ -55,18 +55,12 @@ def _executor(sender, event, **kwargs):
     async def handler(**args):
         return await sender.send_reply(
             event,
-            args["text"],
-            segments=args["segments"],
-            send_original=args["send_original"],
-            images=args["images"],
-            **({"split_preview": args["split_preview"]} if args.get("split_preview") else {}),
+            args.get("text", ""),
+            segments=args.get("segments"),
+            images=args.get("images"),
         )
 
-    return ReplyToolExecutor(
-        send_reply_handler=handler,
-        emoji_service=getattr(sender, "_emoji_service", None),
-        **kwargs,
-    )
+    return ReplyToolExecutor(send_reply_handler=handler, **kwargs)
 
 
 def _wire_texts(adapter):
@@ -88,29 +82,33 @@ async def test_receipt_reports_the_parts_actually_sent():
     wire = _wire_texts(adapter)
     assert len(wire) > 1  # 前提：这段文本确实被切成了多条
     assert receipt["ok"] is True
-    assert receipt["raw"] is False
+    assert "raw" not in receipt
     assert receipt["sent_count"] == len(wire)
     assert [part["text"] for part in receipt["parts"]] == wire
     assert [part["index"] for part in receipt["parts"]] == list(range(1, len(wire) + 1))
     assert {part["type"] for part in receipt["parts"]} == {"text"}
 
 
-async def test_raw_true_sends_one_unmodified_message_and_bypasses_review():
-    """raw=true：不切分、整段一条，且不触发 AI 回复检查。"""
+async def test_statement_raw_sends_one_unmodified_message_and_bypasses_review():
+    """逐条 raw：该条不切分、整段一条；提供 segments 时不再触发 AI 回复检查。"""
     sender, event, adapter = _sender()
     executor = _executor(sender, event, ai_reply_check=True)
     receipt = json.loads(
-        await executor.execute("send_reply", {"text": MULTI_SENTENCE, "raw": True})
+        await executor.execute(
+            "send_reply", {"segments": [{"text": MULTI_SENTENCE, "raw": True}]}
+        )
     )
 
     assert _wire_texts(adapter) == [MULTI_SENTENCE]
-    assert receipt["raw"] is True
+    assert "raw" not in receipt
     assert receipt["sent_count"] == 1
-    assert receipt["parts"] == [{"index": 1, "type": "text", "text": MULTI_SENTENCE}]
+    assert receipt["parts"] == [
+        {"index": 1, "type": "text", "text": MULTI_SENTENCE, "raw": True}
+    ]
 
 
-async def test_raw_bypasses_over_limit_intercept():
-    """raw=true：超限也不拦截（与被拦截路径形成对照）。"""
+async def test_statement_raw_bypasses_over_limit_intercept():
+    """逐条 raw：超限也不拦截（与被拦截路径形成对照）。"""
     sender, event, adapter = _sender()
     executor = _executor(
         sender,
@@ -121,11 +119,13 @@ async def test_raw_bypasses_over_limit_intercept():
     )
     text = "".join(f"第{i}句。" for i in range(1, 16))
     receipt = json.loads(
-        await executor.execute("send_reply", {"text": text, "raw": True})
+        await executor.execute(
+            "send_reply", {"segments": [{"text": text, "raw": True}]}
+        )
     )
 
     assert _wire_texts(adapter) == [text]
-    assert receipt["parts"] == [{"index": 1, "type": "text", "text": text}]
+    assert receipt["parts"] == [{"index": 1, "type": "text", "text": text, "raw": True}]
 
 
 async def test_images_are_reported_as_separate_parts(tmp_path):
@@ -135,7 +135,7 @@ async def test_images_are_reported_as_separate_parts(tmp_path):
     sender, event, adapter = _sender(image)
     receipt = json.loads(
         await _executor(sender, event).execute(
-            "send_reply", {"text": "哈哈", "images": [1]}
+            "send_reply", {"text": "哈哈", "emoji_numbers": [1]}
         )
     )
 
@@ -145,21 +145,20 @@ async def test_images_are_reported_as_separate_parts(tmp_path):
     assert receipt["sent_count"] == len(adapter.sent) == 2
 
 
-def test_send_reply_schema_documents_raw_and_splitting():
+def test_send_reply_schema_has_no_removed_switches():
     definitions = {
         item["function"]["name"]: item["function"]
         for item in ReplyToolExecutor().definitions()
     }
     send_reply = definitions["send_reply"]
 
-    raw = send_reply["parameters"]["properties"]["raw"]
-    assert raw["type"] == "boolean"
-    assert "不切分" in raw["description"]
+    properties = send_reply["parameters"]["properties"]
+    assert not {"raw", "send_original", "ai_check_approved"} & set(properties)
+    assert "segments" in properties and "emoji_numbers" in properties
+    assert send_reply["parameters"]["required"] == []
 
     description = send_reply["description"]
-    assert "raw=true" in description
     assert "切分" in description and "超过" in description  # 切分规则与超限处理
-    assert "原样整段发送" in description
     assert "send_long_reply" in description
 
 
@@ -307,15 +306,3 @@ def test_send_reply_schema_documents_per_statement_raw():
     assert "raw" in segments["items"]["oneOf"][1]["properties"]
     assert "该条" in segments["description"] and "自动切分" in segments["description"]
     assert send_reply["parameters"]["required"] == []
-
-async def test_auto_statement_keeps_control_word_parts():
-    """系统自动切出的分条必须按可信切分发送，不能把正文里的 cancel 吞掉。"""
-    sender, event, adapter = _sender()
-    receipt = json.loads(
-        await _executor(sender, event).execute(
-            "send_reply", {"segments": [{"text": "cancel，是什么意思"}]}
-        )
-    )
-    wire = _wire_texts(adapter)
-    assert wire == ["cancel", "是什么意思"]
-    assert [part["text"] for part in receipt["parts"]] == wire

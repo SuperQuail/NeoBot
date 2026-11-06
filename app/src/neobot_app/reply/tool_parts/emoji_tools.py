@@ -8,30 +8,6 @@ from neobot_app.reply.tool_parts.common import _MAX_EMOJI_PAGE_SIZE, _tool_def
 
 
 class _EmojiToolsMixin:
-    async def _execute_send_emoji(self, args: dict) -> str:
-        handler = self._send_emoji
-        if handler is None:
-            return "错误：send_emoji 处理器未配置"
-        try:
-            number = int(args.get("number", -1))
-        except (ValueError, TypeError):
-            return "错误：number 必须为整数"
-        if str(args.get("text") or "").strip():
-            return (
-                "错误：send_emoji 不接受附带文字，表情包必须单独发送；"
-                "想说的话请用 send_reply 单独发送，再调用 send_emoji 发表情包。"
-            )
-        emoji_entry = None
-        if self._emoji is not None:
-            emoji_entry = self._emoji.get_entry(number)
-            if emoji_entry is None:
-                total = self._emoji.emoji_count
-                return f"错误：表情包编号 {number} 不存在，当前共 {total} 个表情包"
-        # 表情包必须单独发送：不接受随表情包附带的文字（想说话用 send_reply）
-        await handler(number=number)
-        entry_name = emoji_entry.file_name if emoji_entry else f"#{number}"
-        return f"已发送表情包 {entry_name}"
-
     def _execute_list_emojis(self, args: dict) -> str:
         """分页列出自定义表情包（文本形式，编号可直接用于发送工具）。"""
         if self._emoji is None:
@@ -80,13 +56,13 @@ class _EmojiToolsMixin:
         except (ValueError, TypeError):
             return "错误：message_number 必须为整数"
         try:
-            emoji_id = int(args.get("emoji_id", -1))
+            emoji_id = int(args.get("qq_emoji_id", args.get("emoji_id", -1)))
         except (ValueError, TypeError):
-            return "错误：emoji_id 必须为整数"
+            return "错误：qq_emoji_id 必须为整数"
         if message_number <= 0:
             return f"错误：message_number 无效，收到 {message_number}"
         if emoji_id < 0:
-            return f"错误：emoji_id 无效，收到 {emoji_id}"
+            return f"错误：qq_emoji_id 无效，收到 {emoji_id}"
         return await self._react_emoji(message_number=message_number, emoji_id=emoji_id)
 
     def _execute_search_qq_emoji(self, args: dict) -> str:
@@ -98,31 +74,12 @@ class _EmojiToolsMixin:
         return self._search_emoji(keyword=keyword)
 
     def _define_emoji_tools(self, tools: list[ToolDefinition]) -> None:
-        if self._send_emoji is not None or self._emoji is not None:
-            tools.append(
-                _tool_def(
-                    "send_emoji",
-                    "单独发送一个表情包图片。表情包必须单独发送："
-                    "不要与你要说的话一起发，也不要在表情包里附带文字；"
-                    "想说话请另外调用 send_reply。"
-                    "编号用 list_emojis 或 search_custom_emoji 查看（按使用次数从少到多排列，优先用不常用的）。",
-                    {
-                        "properties": {
-                            "number": {
-                                "type": "integer",
-                                "description": "表情包编号，用 list_emojis / search_custom_emoji 获取。",
-                            },
-                        },
-                        "required": ["number"],
-                    },
-                )
-            )
         if self._emoji is not None:
             tools.append(
                 _tool_def(
                     "list_emojis",
-                    "分页查看自定义表情包库（非QQ表情）。返回的编号可直接用于 send_emoji 的 number "
-                    "或 send_reply 的 images。列表按使用次数从少到多排列（使用次数均衡器），"
+                    "分页查看自定义表情包库（非QQ表情）。返回的编号可直接用于 send_reply 的 emoji_numbers 参数。"
+                    "列表按使用次数从少到多排列（使用次数均衡器），"
                     "因此优先选前面的编号。不确定用哪个表情包时先调用本工具；"
                     "已经有关键词时用 search_custom_emoji 更省 token。",
                     {
@@ -169,12 +126,12 @@ class _EmojiToolsMixin:
                                 "type": "integer",
                                 "description": "要回应的消息编号。",
                             },
-                            "emoji_id": {
+                            "qq_emoji_id": {
                                 "type": "integer",
-                                "description": "QQ表情的数字ID。常用表情如：76(赞)、66(爱心)、46(猪头)、182(笑哭)、128(猪)。",
+                                "description": "QQ 表情的数字 ID，来自 search_qq_emoji。常用表情如：76(赞)、66(爱心)、46(猪头)、182(笑哭)、128(猪)。",
                             },
                         },
-                        "required": ["message_number", "emoji_id"],
+                        "required": ["message_number", "qq_emoji_id"],
                     },
                 ),
             )

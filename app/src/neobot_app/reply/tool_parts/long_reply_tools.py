@@ -33,23 +33,29 @@ class _LongReplyToolsMixin:
                 ensure_ascii=False,
             )
 
-        reply_to = args.get("reply_to")
+        reply_to = args.get("reply_to_number", args.get("reply_to"))
         if reply_to is not None:
             try:
                 reply_to = int(reply_to)
             except (ValueError, TypeError):
                 return json.dumps(
-                    {"ok": False, "error": f"reply_to 必须为整数，收到 {reply_to}"},
+                    {"ok": False, "error": f"reply_to_number 必须为整数，收到 {reply_to}"},
                     ensure_ascii=False,
                 )
-        raw_mention = args.get("mention")
+            mapping = getattr(self._numbering, "mapping", None) if self._numbering is not None else None
+            if isinstance(mapping, dict) and mapping and self._numbering.get_message_id(reply_to) is None:
+                return json.dumps(
+                    {"ok": False, "error": f"消息编号 {reply_to} 不存在于当前上下文中"},
+                    ensure_ascii=False,
+                )
+        raw_mention = args.get("mention_qqs", args.get("mention"))
         mention: list[int] | None = None
         if raw_mention:
             try:
                 mention = [int(qq) for qq in raw_mention]
             except (ValueError, TypeError):
                 return json.dumps(
-                    {"ok": False, "error": "mention 必须为整数列表"}, ensure_ascii=False
+                    {"ok": False, "error": "mention_qqs 必须为整数列表"}, ensure_ascii=False
                 )
         caption = clean_text(
             str(args.get("caption") or "").strip(), known_sender_names=sender_names
@@ -111,22 +117,26 @@ class _LongReplyToolsMixin:
                             },
                             "image_path": {
                                 "type": "string",
-                                "description": "可选，预渲染的图片文件路径。提供后直接发送该图片，不再重新渲染。解题任务完成通知中会包含此路径。",
+                                "description": "可选，预渲染的图片文件路径。提供后直接发送该图片，不再重新渲染。只填系统通知或工具返回的路径，不要自行编造路径。",
                             },
-                            "reply_to": {
+                            "reply_to_number": {
                                 "type": "integer",
-                                "description": "可选，要引用回复的消息编号。",
+                                "description": "可选，要引用回复的消息编号（消息行首编号）。不是 [msg_id=...]，也不是 QQ 号。",
                             },
-                            "mention": {
+                            "mention_qqs": {
                                 "type": "array",
                                 "items": {"type": "integer"},
-                                "description": "可选，要 @ 的 QQ 号列表。仅在群聊生效。正文里需要表达 @ 时，没有特殊情况应在 @ 后留一个空格；特殊需要可自行不加。",
+                                "description": "可选，要 @ 的 QQ 号列表。QQ 号见群友列表里的「QQ号:...」。仅在群聊生效。正文里需要表达 @ 时，没有特殊情况应在 @ 后留一个空格；特殊需要可自行不加。",
                             },
                             "caption": {
                                 "type": "string",
-                                "description": "可选，随图片一起发送的简短说明文字。",
+                                "description": "可选，发送图片前单独发送的说明文字（不是图片说明；reply_to_number/mention_qqs 只作用于这段文字，未提供时二者不生效）。",
                             },
                         },
+                        "anyOf": [
+                            {"required": ["markdown"]},
+                            {"required": ["image_path"]},
+                        ],
                         "required": [],
                     },
                 ),

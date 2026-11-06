@@ -343,7 +343,7 @@ async def test_private_pipeline_event_reaches_completed_state(monkeypatch):
 @pytest.mark.parametrize(
     "name,args,expected",
     [
-        ("poke_user", {"user_id": 1}, "poke_user|{\"user_id\": 1}"),
+        ("poke_user", {"target_qq": 1}, "poke_user|{\"target_qq\": 1}"),
         ("t", {"b": 1, "a": 2}, "t|{\"a\": 2, \"b\": 1}"),
     ],
 )
@@ -401,7 +401,7 @@ def _poke_call(call_id: str) -> dict:
     return {
         "id": call_id,
         "type": "function",
-        "function": {"name": "poke_user", "arguments": json.dumps({"user_id": 10002})},
+        "function": {"name": "poke_user", "arguments": json.dumps({"target_qq": 10002})},
     }
 
 
@@ -1288,7 +1288,7 @@ async def test_disallowed_tool_is_rejected_before_consuming_before_hook(monkeypa
                         "type": "function",
                         "function": {
                             "name": "poke_user",
-                            "arguments": '{"user_id": 1}',
+                            "arguments": '{"target_qq": 1}',
                         },
                     }
                 ],
@@ -2473,11 +2473,11 @@ class _DisabledPromptStore:
     def get(self, key: str, sub: str = "template", default: str = "") -> str:
         return self._inner.get(key, sub, default=default)
 
-    def get_section(self, key: str):
-        return self._inner.get_section(key)
-
     def template(self, key: str, default: str = "") -> str:
         return self._inner.template(key, default)
+
+    def get_section(self, key: str):
+        return self._inner.get_section(key)
 
 
 def _builtin_prompts(*disabled: str):
@@ -3222,8 +3222,8 @@ async def _run_media_only_pipeline(monkeypatch, provider, **orch_extra):
     return event
 
 
-async def test_send_emoji_only_round_counts_as_replied(monkeypatch, tmp_path):
-    """只发一张表情包也算已回复；send_emoji 是普通工具，不结束本轮，
+async def test_send_reply_images_only_round_counts_as_replied(monkeypatch, tmp_path):
+    """只发一张表情包（send_reply.emoji_numbers）也算已回复；send_reply 是普通工具，不结束本轮，
     发完仍会再拉一次模型收束，事件进 COMPLETED。"""
     emoji_file = tmp_path / "emoji.png"
     emoji_file.write_bytes(_PNG_1X1)
@@ -3238,7 +3238,7 @@ async def test_send_emoji_only_round_counts_as_replied(monkeypatch, tmp_path):
         {
             "content": "",
             "tool_calls": [
-                _media_tool_call("call-emoji", "send_emoji", json.dumps({"number": 3}))
+                _media_tool_call("call-emoji", "send_reply", json.dumps({"emoji_numbers": [3]}))
             ],
         }
     ])
@@ -3284,7 +3284,7 @@ async def test_speak_only_round_counts_as_replied(monkeypatch):
 
 
 
-async def test_send_emoji_then_cancel_keeps_completed(monkeypatch, tmp_path):
+async def test_send_reply_images_then_cancel_keeps_completed(monkeypatch, tmp_path):
     """emoji 已真实发出后 cancel 不能把事件改回 CANCELLED。"""
     emoji_file = tmp_path / "emoji.png"
     emoji_file.write_bytes(_PNG_1X1)
@@ -3309,7 +3309,7 @@ async def test_send_emoji_then_cancel_keeps_completed(monkeypatch, tmp_path):
         {
             "content": "",
             "tool_calls": [
-                _media_tool_call("call-emoji", "send_emoji", json.dumps({"number": 3}))
+                _media_tool_call("call-emoji", "send_reply", json.dumps({"emoji_numbers": [3]}))
             ],
         },
         cancel,

@@ -31,7 +31,6 @@ def media():
         numbering=MessageNumbering(bot_account=10001, queue=queue),
         markdown_image_converter=converter, send_long_reply_handler=handler,
         tts_service=SimpleNamespace(enabled=True), speak_handler=handler,
-        send_emoji_handler=handler,
     )
     return executor, converter, handler
 
@@ -42,7 +41,7 @@ async def test_long_reply_cleans_render_caption_and_history(media, pre_rendered)
     args = {
         "markdown": "<think>草稿</think>215: 贝拉: # 正文",
         "caption": "[msg_id=9] AAA大肥鱼: 说明",
-        "reply_to": 1, "mention": [20001],
+        "reply_to_number": 1, "mention_qqs": [20001],
     }
     if pre_rendered:
         args["image_path"] = "pre/rendered.png"
@@ -81,15 +80,9 @@ async def test_optional_text_may_be_empty_without_dropping_media(media, dirty):
     assert handler.await_args.kwargs["markdown"] == ""
     assert handler.await_args.kwargs["caption"] == ""
     converter.convert.assert_not_awaited()
-    handler.reset_mock()
-    # 表情包单独发送：带 text 的调用必须被显式拒绝，不能静默丢弃文字
-    result = await executor.execute("send_emoji", {"number": 3, "text": dirty})
-    if str(dirty).strip():
-        assert result.startswith("错误：") and "单独发送" in result
-        handler.assert_not_awaited()
-    else:
-        assert "已发送表情包" in result
-        handler.assert_awaited_once_with(number=3)
+    # 独立 send_emoji 工具已并入 send_reply.emoji_numbers，不再存在
+    names = {item["function"]["name"] for item in executor.definitions()}
+    assert "send_emoji" not in names
 
 
 async def test_empty_caption_still_renders_valid_markdown(media):
@@ -114,19 +107,16 @@ async def test_speech_uses_shared_known_names(media, dirty, expected):
     assert handler.await_args.kwargs["text"] == expected
 
 
-def test_emoji_tools_require_sending_alone(media):
-    """表情包必须单独发送：send_emoji 没有附带文字，send_reply 没有合并开关。"""
+def test_emoji_merged_into_send_reply(media):
+    """表情包统一走 send_reply.emoji_numbers；独立 send_emoji 工具已删除。"""
     executor, _, _ = media
     definitions = {item["function"]["name"]: item["function"] for item in executor.definitions()}
 
-    send_emoji = definitions["send_emoji"]
-    assert set(send_emoji["parameters"]["properties"]) == {"number"}
-    assert "单独发送" in send_emoji["description"]
-
+    assert "send_emoji" not in definitions
     send_reply = definitions["send_reply"]
     assert "merge_text_with_image" not in send_reply["parameters"]["properties"]
     assert "单独" in send_reply["description"]
-    assert "单独" in send_reply["parameters"]["properties"]["images"]["description"]
+    assert "单独" in send_reply["parameters"]["properties"]["emoji_numbers"]["description"]
 
 
 @pytest.mark.parametrize("fence", ["```", "~~~"])

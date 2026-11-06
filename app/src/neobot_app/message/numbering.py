@@ -261,7 +261,7 @@ class MessageNumbering:
             "消息格式说明：别人的消息以“[msg_id=真实message_id] 编号: 用户名: 消息内容”的格式呈现。\n"
             "- 行首方括号中的 msg_id= 即真实 OneBot message_id：工具参数需要 message_id 时"
             "（如 message_id、chat: 前缀等），直接使用它，不要再查映射。\n"
-            "- 编号（msg_id 之后的数字）用于 reply_to / msg_number 参数指定回复目标消息。\n"
+            "- 编号（msg_id 之后的数字）用于 reply_to_number / msg_number 参数指定回复目标消息。\n"
             "例如：[msg_id=1425980020] 1: 小明: 你好\n"
             "- 这套标注只是系统给你阅读用的，**不是你的输出格式**：你自己发言时只发正文，"
             "不要带 [msg_id=...]、编号或发送者名字。\n"
