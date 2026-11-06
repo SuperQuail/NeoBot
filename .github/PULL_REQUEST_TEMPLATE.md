@@ -15,7 +15,7 @@ CI 会校验 PR 标题（scripts/check_pr_title.py）：标题概括，不要把
   重档 bug 修复/并发与生命周期/破坏性变更/发版 → 现象、根因、修复、验证（+ 迁移）
 -->
 
-> 改动 `app/` 或 `packages/*` 时，用 `qegg commit` 写一条 `.changes/` 变更记录（见 scripts/RELEASING.md）。
+> 改动 `app/` 或 `packages/*` 时，建议用 `qegg commit` 写一条 `.changes/` 变更记录（PR CI 会检查；当前非阻断，见 scripts/RELEASING.md）。
 
 ## 变更
 

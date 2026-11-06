@@ -11,6 +11,8 @@ remote = "origin"
 
 [release]
 mode = "pr"
+# 避免与现有 release 分支冲突；external 模式下暂不运行 qegg release
+branch = "qegg-release"
 github_release = true
 commit_message = "chore(release): v{{version}}"
 version_scope = "shared"

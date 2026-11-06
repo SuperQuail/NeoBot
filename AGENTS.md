@@ -166,7 +166,7 @@ python scripts/check_pr_issue_link.py --pr <PR号>
 
 ### 6. 别忘了同步
 
-- 改动 `app/` 或 `packages/*` 时，用 `qegg commit` 写一条 `.changes/` 变更记录（见 [scripts/RELEASING.md](scripts/RELEASING.md)）。
+- 改动 `app/` 或 `packages/*` 时，建议用 `qegg commit` 写一条 `.changes/` 变更记录（PR CI 会检查；当前尚未加入分支保护，属非阻断检查；见 [scripts/RELEASING.md](scripts/RELEASING.md)）。
 - 新增/变更功能 → 更新 `docs/04-功能文档/` 对应文件
 - 新增配置项 → 更新 `docs/05-配置参考.md`
 - 改前端源码 → 重建并提交 `web/`（CI 会比对产物，不一致直接失败）
