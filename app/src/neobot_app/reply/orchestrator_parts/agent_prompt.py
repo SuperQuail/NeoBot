@@ -126,11 +126,24 @@ class AgentPromptMixin:
         messages.extend(context_messages)
         messages.extend(role_messages)
         if self._take_unsent_marker(event):
-            self._append_block(
+            appended = self._append_block(
                 messages,
                 "prev_no_tool_call_reminder",
                 dynamic={"prev_no_tool_call_reminder": True},
             )
+            if appended:
+                self._record_debug(
+                    "prev_no_tool_call_reminder",
+                    event,
+                    queue_key=queue_key,
+                    injected=True,
+                )
+            else:
+                self._logger.warning(
+                    "prev_no_tool_call_reminder 未注入（分区关闭或渲染为空），保留跨轮标记",
+                    event_id=event.event_id,
+                    queue_key=queue_key,
+                )
         if context_messages:
             self._record_debug(
                 "chat_context_injected",
@@ -214,6 +227,8 @@ class AgentPromptMixin:
                 pre_hook_text,
                 self_sent=self._self_sent_sink(queue, queue_copy, queue_key),
             )
+            if delivered is not False:
+                self._clear_unsent_marker(event)
             if delivered is not False:
                 self._record_reply_delivered(
                     event, queue, queue_key, before_message_id=before_message_id

@@ -308,6 +308,7 @@ class AgentHandlersMixin:
             caption_delivered = await self._send_with_timeout(conv_ref, caption_segs)
             if conv_ref is not None and caption_delivered is not False:
                 state.reply_sent = True
+                self._clear_unsent_marker(event)
                 event.send_response = caption_delivered
                 self._record_reply_delivered(event, queue, queue_key, before_message_id=before_message_id)
                 self._sender.record_self_sent_text(long_reply_sink, conv_ref, caption.strip())
@@ -321,6 +322,7 @@ class AgentHandlersMixin:
         )
         if image_delivered is not False:
             state.reply_sent = True
+            self._clear_unsent_marker(event)
             event.send_response = image_delivered
             event.send_incomplete = False
             self._record_reply_delivered(event, queue, queue_key, before_message_id=before_message_id)
