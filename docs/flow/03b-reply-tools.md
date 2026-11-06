@@ -2,10 +2,11 @@
 flow: 03b-reply-tools
 covers:
   - app/src/neobot_app/reply/tools.py
+  - app/src/neobot_app/reply/tool_parts/reply_tools.py
   - app/src/neobot_app/reply/output_guard.py
   - app/src/neobot_app/reply/vision_context.py
 verified_against: 2d7925b
-verified_hash: 5c90378f651b
+verified_hash: e8d2b2a48e25
 ---
 
 # 03b 回复管线的工具面：模型看到什么工具 · 谁执行 · 结果怎么回灌
@@ -14,8 +15,10 @@ verified_hash: 5c90378f651b
 
 本图覆盖主回复管线（agent 循环）给模型看的**那一张工具表**及其执行侧：
 
-* `reply/tools.py`（2688 行）：`ReplyToolExecutor.definitions`（装配 + 过滤）、`execute`（分派）、
-  内建执行器（send_reply / wait / 会话工具 / 技能路由）、`build_reply_toolset`；
+* `reply/tools.py`（139 行装配器）：`ReplyToolExecutor` 由 `tool_parts/` 下多个 mixin 组合；
+  `definitions`（装配 + 过滤）、`execute`（分派）、内建执行器（send_reply / wait / 会话工具 / 技能路由）、
+  `build_reply_toolset`；`send_reply` 的 JSON 回执与逐条 raw 在
+  `reply/tool_parts/reply_tools.py`；
 * `reply/output_guard.py`：发送前的标注 / 思维链 / 控制词兜底清洗（工具层与发送层共用）；
 * `reply/vision_context.py`：原生视觉的**每次请求临时图片附录**（`ReplyVisionContext`）。
 
@@ -127,7 +130,7 @@ flowchart TD
     G -- 否 --> H{"_wait 注入?"}
     H -- 是 --> H1["wait"]
     H -- 否 --> I["_willing → adjust_reply_willingness / get_willingness_config / manage_willing_config"]
-    I --> J["_send_emoji 或 _emoji → send_emoji；_emoji → list_emojis / search_custom_emoji"]
+    I --> J["_emoji → list_emojis / search_custom_emoji（发送并入 send_reply.emoji_numbers）"]
     J --> K["_react_emoji → react_emoji；_search_emoji → search_qq_emoji"]
     K --> L["_tts_service.enabled → speak；_poke_user → poke_user"]
     L --> M{"skill_manager 或 drawing 或 scheduled 或 notification_hub?"}
@@ -150,8 +153,7 @@ flowchart TD
 | `send_long_reply` | `markdown_image_converter` | `_execute_send_long_reply` |
 | `wait` | `wait_handler` | `_execute_wait`（冷却默认 60s） |
 | `adjust_reply_willingness` / `get_willingness_config` / `manage_willing_config` | `willing_service` | 三个 willing 执行器 |
-| `send_emoji` | `send_emoji_handler` 或 `emoji_service` | `_execute_send_emoji` |
-| `list_emojis` / `search_custom_emoji` | `emoji_service` | 分页上限 200 |
+| `list_emojis` / `search_custom_emoji` | `emoji_service` | 分页上限 200；编号用于 `send_reply.emoji_numbers` |
 | `react_emoji` / `search_qq_emoji` | 对应 handler | `_execute_react_emoji` / `_execute_search_qq_emoji` |
 | `speak` | `tts_service.enabled` 且 `speak_handler` | `_execute_speak`（清洗后为空即拒发） |
 | `poke_user` | `poke_user_handler` | `_execute_poke_user` |
@@ -311,7 +313,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["入口一 工具层 / tools.py:1606"] --> A1["send_reply：clean_text(text) 再 clean_segments(raw_segments)"]
-    A1 --> A2["split_reply / speak / send_long_reply 各自 clean_text；send_emoji 只发图片、带 text 直接拒绝"]
+    A1 --> A2["split_reply / speak / send_long_reply 各自 clean_text；表情包统一走 send_reply.emoji_numbers"]
     A2 --> A3["remember_split_preview 只记「真正暴露给模型」的预览（deque 8 条）"]
     A3 --> B["入口二 发送层 / sender.py:439"]
     B --> B1["reply.postprocess.after 钩子改写后再清洗一遍（幂等）"]
@@ -327,8 +329,8 @@ flowchart TD
 
 三个入口的分工：
 
-1. **工具层**让模型看见「自己真正发出去的是什么」；`send_reply` 返回的正文就是清洗后的文本。
-   清洗后为空时**直接不发**并回一段可操作的中文提示（tools.py:1627-1633）。
+1. **工具层**让模型看见「自己真正发出去的是什么」；`send_reply` 回执的 `parts[].text`
+   就是清洗后的逐条正文。清洗后为空时**直接不发**并回一段可操作的中文提示。
 2. **发送层**是最后一道：插件钩子可以改逐条内容，所以清洗必须再来一遍；
    全部清空时返回 `False`，`send_reply` 把它翻译成「没有可发送的正文或图片，未发送」，
    避免模型以为已经回复而结束整轮。
@@ -337,6 +339,45 @@ flowchart TD
 
 已知取舍写在模块 docstring 里：无法标注的脏草稿（例如「192: 我是一条鱼」而 192 后不是
 已知名字）会被保留 —— 精度优先于召回。
+</details>
+
+<details>
+### send_reply 成功回执：JSON parts 与逐条 raw
+
+```mermaid
+flowchart TD
+    A["_execute_send_reply(args)｜tool_parts/reply_tools.py:47"] --> B["clean_text / clean_segments 清洗<br/>segments 支持字符串或 {text, raw} 对象"]
+    B --> C{"显式给了 segments?"}
+    C -- 否 --> G["_preview_split 按句子自动切分"]
+    C -- 是 --> E1{"含对象语句?"}
+    E1 -- 否 --> F["逐条直发（已确认分条，不再切分）"]
+    E1 -- 是 --> E2["raw 条目直发；未标 raw 条目逐条 _preview_split 自动切分"]
+    F --> H["_send_reply(...)"]
+    E2 --> H
+    G --> H
+    H --> I{"delivered is False?"}
+    I -- 是 --> I1["返回「没有可发送的正文或图片，未发送」"]
+    I -- 否 --> J["按实际发送口径组装 parts<br/>先 images（type=image）后 text（type=text）"]
+    J --> K["payload: ok / sent_count / parts / summary"]
+    K --> K1["自动切分且 fallback_used 时附加 fallback_used + reason"]
+    K1 --> L["json.dumps(ensure_ascii=False) 作为 tool 结果回灌"]
+```
+
+* **逐条 raw**：`segments` 的元素可以是字符串（已确认的最终分条）或对象 `{text, raw}`：
+  对象 `raw=true` 该条整段直发（保持公式/代码完整，跳过该条的切分、AI 检查与超限拦截），
+  对象不带 `raw` 则该条交给 `_preview_split` 自动切分；回执 `parts[].raw` 只标记逐条 raw 的条目。
+  `text/segments/emoji_numbers` 至少给一个，`text` 可省略。
+* **不再提供顶层 raw / send_original / ai_check_approved**：整段直发只能通过
+  `segments: [{"text": "...", "raw": true}]` 逐条表达；`text/segments/emoji_numbers` 至少给一个。
+* **`parts` 是「实际发出去的样子」**：图片先列（`index` 从 1 起，`image` 是图片序号），
+  文字按条追加；`sent_count = len(parts)`。显式 `segments` 逐条（对象 raw 条目带 `raw: true`）；
+  其余是自动切分结果 —— 与 `sender._build_reply_messages` 同一套口径。
+* **`summary` 三种措辞**：带图「已发送（N 张图片 + M 条文字）」、整段「已发送原文：1 条消息」、
+  其余「已发送 N 条消息」。
+* **`fallback_used` 只出现在自动切分分支**：`_preview_split` 因超长/超句数换成默认回复时，
+  回执带 `fallback_used: true` 与 `reason`，模型能看出「发的不是自己的话」。
+* 回执里的 text 是**工具层**清洗后的正文；发送层还会再清洗一遍（见「输出兜底三入口」），
+  最终投递内容以发送层为准。
 </details>
 
 <details>
@@ -511,3 +552,7 @@ flowchart LR
   列表里的条目是死条目，不是「计划模式下仍可用」的承诺。
 * **`timeout_seconds=0` 不是「不超时」**：会话工具的 0/None/布尔/NaN 一律回落 300 秒，
   真正的上限是 1800 秒，且外层还要再加 10 秒收尾窗口。
+* **`raw` 只跳过切分与检查，不跳过清洗**：`clean_text` / `clean_segments` 与发送层的二次清洗照旧，
+  所以逐条 `raw=true` 仍可能因「清洗后为空」被判未发送；它不是绕过输出兜底的开关。
+* **回执是 JSON 不是自然语言**：排查「模型以为发了其实没发」看 `ok` / `sent_count` / `summary`
+  与 `parts`；退回中文回执会丢掉实际切分信息，模型无法复核自己到底发了几条。

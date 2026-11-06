@@ -5,7 +5,7 @@ covers:
   - app/src/neobot_app/panel_auth.py
   - app/src/neobot_app/panel_web.py
 verified_against: 21bfdff0
-verified_hash: 4c11689dd29c
+verified_hash: ed8be202c0d2
 ---
 
 # 09 网页面板：HTTP 路由 · 鉴权 · 静态产物 · 前端数据流
@@ -21,6 +21,11 @@ verified_hash: 4c11689dd29c
 `_auth_middleware` 的「公开路径 / 会话 / CSRF」判定、`_catch_all` 的「扩展优先 → SPA 回退」、
 `web/` 静态产物的来源与提供方式，以及前端从 `main.tsx` 到 `/api/*` 的取数链路
 （X-Token / X-CSRF-Token / 401 跳登录 / `queryCore` 去重与轮询）。行号以当前提交为准。
+
+提示词模板页按**块注册表的 stage 分组折叠**：`/api/prompts` 的每个分区带
+`stage / scope / order / note` 元数据（来自 `prompt/blocks.py`，见 `09b-dashboard-api.md`），
+前端按固定 stage 顺序分组，默认只展开主模板组，搜索时全部展开；未登记的自定义分区
+归入最后的「其它分区」。分组与折叠只在前端完成，服务端仍按分区平铺返回。
 
 **不画**（避免与相邻图重复）：
 
