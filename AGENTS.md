@@ -13,15 +13,15 @@
 >
 > 合并对话框里会预填最终落地的那条 squash 信息，合并前看一眼——那是最后一次人工把关。
 
-### 0. 分支模型（QuailEgg 发布，2026-11-06 起）
+### 0. 分支模型（QuailEgg 发布，2026-11-07 起）
 
-- **`dev`**：唯一发布入口，日常功能/修复 PR 都提到这里；
-- 合并到 `dev` 后 Q Egg 根据 `.changes/` 记录创建发布 PR（分支 `qegg-release`），合并发布 PR 后自动发布 PyPI 并创建 tag/Release；
-- `main`/`release` 仅为历史保留，不再参与发布；`pr-gates` 里针对它们的分支流向检查暂时保留，后续清理；
-- 功能分支从 `dev` 切出；禁止直推 `dev`。
+- **`main`**：默认分支，日常功能/修复 PR 都提到这里；
+- 合并到 `main` 后 Q Egg 根据 `.changes/` 记录创建发布 PR（分支 `release`），合并发布 PR 后自动发布 PyPI 并创建 tag/Release；
+- `dev` 保留为普通分支（长期开发时可继续使用），不再默认、不再参与发布；
+- 功能分支从 `main` 切出；禁止直推 `main` / `release`。
 
-PR 门禁会检查 base/head 流向（`scripts/check_pr_flow.py`）与 release PR 的版本号
-（`scripts/check_release_bump.py`）。
+PR 门禁会检查 base/head 流向（`scripts/check_pr_flow.py`）；`release` 由 QuailEgg
+生成和维护，发布 PR 的必需检查受 GitHub 平台限制不会正常启动，由仓库管理员合并。
 
 ### 速查
 
@@ -140,12 +140,12 @@ python scripts/check_pr_title.py --title "<PR 标题>" --strict
    禁止把开发上下文带进评审；评审意见要具体到可执行项。
 3. **bug 先发 issue**：发现 bug / CI 因 bug 变红时，先创建 issue，再让修复 PR 在描述里用 `Closes #NN` 关联。
    CI 对标题以 `fix` 开头的 PR 强制检查关联 issue，没有就红。
-4. **分支流向**：`dev` 是默认分支与唯一发布入口；发布由 QuailEgg 在 `dev` 上创建发布 PR 并自动完成。`main`/`release` 仅历史保留，相关门禁暂时保留但不再用于发布。
+4. **分支流向**：PR 目标只能是 `main`（默认分支）或普通分支 `dev`；`release` 由 QuailEgg 生成和维护，不接受人工 PR，也不能作为源分支。
 
 本地可先自检：
 
 ```bash
-python scripts/check_pr_size.py --base dev --head HEAD
+python scripts/check_pr_size.py --base main --head HEAD
 python scripts/check_pr_issue_link.py --pr <PR号>
 ```
 
@@ -153,7 +153,7 @@ python scripts/check_pr_issue_link.py --pr <PR号>
 
 下面每一条都是**禁止项**，不是建议：
 
-- **禁止**直推 `dev` / `main` / `release`，**禁止** force push 他人分支，**禁止** amend 或 rebase 别人的提交
+- **禁止**直推 `main` / `release`，**禁止** force push 他人分支，**禁止** amend 或 rebase 别人的提交
 - **禁止**为了让检查通过而改 CI 门禁、放宽断言、删除或跳过失败用例、用 `xfail` 掩盖失败
 - **禁止**夹带与本 PR 无关的重构或格式化
 - **禁止**提交 `.env`、密钥、token、真实用户数据（占位符要登记到 `.secretsignore`）
@@ -215,7 +215,7 @@ gh api graphql -f query='{ repository(owner:"OWNER",name:"REPO") {
 - **PR 描述与 issue 不是一对一**：一个 PR 修多个 issue 就写多个 `Closes`；
   一个 issue 被多个 PR 分步修完，只有**最后一个**写 `Closes`，前面的写 `Refs`。
 - 关**别的仓库**的 issue 要写全限定名：`Closes owner/repo#123`。
-- 关闭关键字只在**目标分支 = 仓库默认分支**（本仓库是 `dev`）时生效；
+- 关闭关键字只在**目标分支 = 仓库默认分支**（本仓库是 `main`）时生效；
   指向其它分支时关键字被直接忽略——既不建立关联，合并也不会关 issue。
 - 没有对应 issue 的改动（文档、依赖、纯内部重构）不必硬凑一个——**别为此新建 issue**。
 

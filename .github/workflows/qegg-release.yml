@@ -1,7 +1,7 @@
 name: QuailEgg Release
 on:
   push:
-    branches: ["dev"]
+    branches: ["main"]
     paths:
       - ".changes/**"
       - ".quailegg.toml"
@@ -34,22 +34,20 @@ jobs:
     environment: pypi
     if: github.actor != 'github-actions[bot]'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
       - uses: actions/setup-go@v5
-        with: { go-version: '1.26', cache: false }
-      - uses: astral-sh/setup-uv@v10.0.1
-        with:
-          python-version: "3.14"
+        with: { go-version: '1.26', cache: true }
+      - uses: astral-sh/setup-uv@v5
       - name: Install qegg
         run: go install github.com/SuperQuail/QuailEgg/cmd/qegg@v0.12.0
+      - name: Pin Python for uv
+        run: echo "UV_PYTHON=3.14" >> "$GITHUB_ENV"
       - name: Workaround uv workspace build output
-        # qegg 的 Python Publisher 在成员目录执行 `uv build`，uv workspace 会把产物写到
-        # 仓库根 dist/；垫一个 uv shim，让 build 输出到当前包目录的 dist/ 供 uv publish 查找。
         run: |
           real_uv="$(command -v uv)"
           mkdir -p "$RUNNER_TEMP/uv-shim"

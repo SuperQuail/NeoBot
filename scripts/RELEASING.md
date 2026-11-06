@@ -2,20 +2,49 @@
 
 ## QuailEgg 发布流程
 
-仓库发布由 [QuailEgg](https://github.com/SuperQuail/QuailEgg) 驱动，配置在 `.quailegg.toml`，采用 `dev` 上的 PR 发布模式。
+仓库发布由 [QuailEgg](https://github.com/SuperQuail/QuailEgg) 驱动，配置在 `.quailegg.toml`，采用 `main` 上的 PR 发布模式：
+
+- `main`：默认分支与发布基线，日常功能/修复 PR 提到这里；
+- `release`：发布分支，由 QuailEgg 每次从 `main` 重建并强制推送，**不要手工提交**；
+- `dev`：普通分支，长期开发时可用，不再默认、不再参与发布。
+
+### 生成文件（不要手改）
+
+`.github/workflows/qegg-release.yml`、`qegg-pr.yml`、`qegg-status.yml` 都由 `qegg init` 生成。
+需要定制 release job 时改 `.quailegg.toml` 的 `[release.workflow]`（`steps` 或 `yaml`），再重新生成：
+
+```bash
+qegg init --dry-run --force --no-input --no-hook --no-add-packages --qegg-version v0.12.0
+qegg init --force --no-input --no-hook --no-add-packages --qegg-version v0.12.0
+```
+
+当前配置的 `[release.workflow].yaml` 里有两条前置 step：固定 `UV_PYTHON=3.14`（onnxruntime 没有 cp315 wheel），
+以及把 uv workspace 的 `uv build` 输出固定到各包目录（qegg 随后在该目录 `uv publish`）。qegg 也支持
+`[release.workflow].steps` 写纯命令，本仓库没有使用。改完配置后要提交生成文件的 diff，不要手改生成文件。
+
+已知限制（由生成模板决定，不在仓库内手改）：
+
+- 生成工作流使用 qegg 模板内置的 action 版本（`checkout@v4`、`setup-uv@v5`），落后于仓库手写工作流；
+  升级需要改 QuailEgg 模板并发版。
+- `qegg-pr` 的 Preview 步骤对 fork PR 会因只读 token 失败（非阻断检查）。
+- `qegg-pr` 的 job 没有中文名，非阻断性质只在分支保护里体现。
 
 ### 日常改动
 
-- 功能/修复 PR 提到 `dev`；修改 `app/` 或 `packages/*` 时用 `qegg commit` 写一条 `.changes/<slug>.md`（或手写合法记录，字段见 `.changes/README.md`）。
+- 功能/修复 PR 提到 `main`；修改 `app/` 或 `packages/*` 时用 `qegg commit` 写一条 `.changes/<slug>.md`（或手写合法记录，字段见 `.changes/README.md`）。
 - `.changes/` 记录决定下一版本与 CHANGELOG；没有记录的代码改动不会进入版本说明（发布前请检查 `qegg plan`）。
-- PR 上 `QuailEgg PR` 工作流会运行 `qegg check --ci` 并张贴发版计划；它当前是**非阻断**检查，分支保护尚未把它设为必需。
+- PR 上 `QuailEgg PR` 工作流会运行 `qegg check --ci` 并评论发版计划；它当前是**非阻断**检查。
 
 ### 发布流程（自动）
 
-1. 合并到 `dev` 后 [`.github/workflows/qegg-release.yml`](../.github/workflows/qegg-release.yml) 运行 `qegg release --yes`。
-2. 有变更记录时：按记录计算下一版本，同步 8 个 `pyproject.toml` 与 `uv.lock`，生成 `CHANGELOG.md`，创建/刷新发布 PR（分支 `qegg-release` → `dev`）。
-3. 发布 PR 由 `github-actions[bot]` 创建，**不会触发常规 CI 检查**；合并需要管理员绕过分支保护（仓库管理员操作），或后续改用 PAT/GitHub App。
-4. 合并发布 PR 后，同一工作流再次运行：`[verify].commands` 通过后构建并发布 7 个 Python 包到 PyPI，创建 Git tag 与 GitHub Release。
+1. 合并到 `main` 后 [`.github/workflows/qegg-release.yml`](../.github/workflows/qegg-release.yml) 运行 `qegg release --yes`。
+2. 有变更记录时：按记录计算下一版本，同步 8 个 `pyproject.toml`、`app` 的内部 pin 与 `uv.lock`，生成 `CHANGELOG.md`，创建/刷新发布 PR（`release` → `main`）。
+3. 发布 PR 由 `github-actions[bot]` 创建，平台不会为它正常启动检查；合并时由仓库管理员强制合并：
+   ```bash
+   gh pr merge <发布PR号> --squash --admin
+   ```
+   **不要**为了让它变绿而手改生成的工作流，也**不要把** `QuailEgg PR` 设为必需检查。
+4. 合并发布 PR 后，同一工作流再次运行：`[verify].commands` 通过后构建并发布 7 个 Python 包到 PyPI，创建 Git tag 与 GitHub Release，并把 `release` 分支拉平到 `main`。
 
 ### 预发布
 
@@ -32,15 +61,15 @@
 
 ### 凭据与环境
 
-- 发布 job 使用受保护的 `pypi` environment（已允许 `dev` 部署）；`UV_PUBLISH_TOKEN` 来自仓库/environment secret。
-- 不要在仓库里提交 token；不要手工创建 tag/Release 或手改版本号。
+- 发布 job 使用受保护的 `pypi` environment（部署分支允许 `main`）；`UV_PUBLISH_TOKEN` 来自仓库/environment secret。
+- 不要在仓库里提交 token；不要手工创建 tag/Release，也不要手改版本号或 `uv.lock`。
 
 ### 中断恢复
 
-- 优先从失败运行对应的 `dev` 合并提交重跑 `qegg-release`；`qegg resume` 只读本地 `.quailegg/state/`（CI 上不保留），不能在 CI 续跑。
-- 上传部分失败时，Q Egg 会按 PyPI 已存在版本跳过；缺个别 wheel/sdist 可本地 `scripts/publish.ps1` 补齐同一版本，不要覆盖已发布版本。
+- 优先从失败运行对应的 `main` 合并提交重跑 `qegg-release`；`qegg resume` 只读本地 `.quailegg/state/`（CI 上不保留），不能在 CI 续跑。
+- 上传部分失败时，Q Egg 会按 PyPI 已存在版本跳过，重跑同一流程即可补齐；不要覆盖已发布版本。
+- 本地排查：`qegg status`、`qegg plan`、`qegg release --dry-run`。
 
-### 旧流程（仅历史/本地兜底）
+### 历史
 
-- `publish.yml`（main→release）已删除；`scripts/versions.py`、`scripts/prepare_release.py`、`scripts/publish.ps1` 不再参与自动发布。
-- `main`/`release` 分支仅历史保留，发布不再经过它们。
+- 旧的 `publish.yml`（`main` → `release` 触发 PyPI）与 `scripts/versions.py`、`prepare_release.py`、`publish.ps1`、`check_release_bump.py` 已删除，可从 git 历史查看。

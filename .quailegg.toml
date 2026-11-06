@@ -2,7 +2,7 @@
 schema_version = 1
 
 [project]
-default_branch = "dev"
+default_branch = "main"
 repo = "github.com/SuperQuail/NeoBot"
 
 [git]
@@ -11,13 +11,39 @@ remote = "origin"
 
 [release]
 mode = "pr"
-# 发布 PR 使用独立分支，避免与历史 release 分支冲突
-branch = "qegg-release"
+# 发布分支由 QuailEgg 从主分支重建并强制推送，不要手工提交到它
+branch = "release"
 github_release = true
 commit_message = "chore(release): v{{version}}"
 version_scope = "shared"
 # 发布 job 使用受保护的 pypi environment
 environment = "pypi"
+
+[release.workflow]
+# NeoBot 的两处运行时适配写在这里，生成的 qegg-release.yml 不再手改。
+# 1) uv workspace 里 `uv build` 会把产物写到仓库根 dist/，而 qegg 随后在成员目录
+#    `uv publish`；用 shim 把 build 输出固定到当前包目录。
+# 2) onnxruntime 没有 cp315 wheel，固定 uv 使用 Python 3.14（与 CI 一致）。
+# 注意：yaml 用 TOML 字面量 3 个单引号包裹，shim 里的 \$1/\$PWD/\${@:2} 依赖
+# 「TOML 不处理转义 + heredoc 未加引号」两层配合；不要改成三引号双引号，也不要
+# 把 <<EOF 改成 <<'EOF'，否则 shim 会静默失效。
+yaml = '''
+- name: Pin Python for uv
+  run: echo "UV_PYTHON=3.14" >> "$GITHUB_ENV"
+- name: Workaround uv workspace build output
+  run: |
+    real_uv="$(command -v uv)"
+    mkdir -p "$RUNNER_TEMP/uv-shim"
+    cat > "$RUNNER_TEMP/uv-shim/uv" <<EOF
+    #!/usr/bin/env bash
+    if [ "\$1" = "build" ]; then
+      exec "$real_uv" build --out-dir "\$PWD/dist" "\${@:2}"
+    fi
+    exec "$real_uv" "\$@"
+    EOF
+    chmod +x "$RUNNER_TEMP/uv-shim/uv"
+    echo "$RUNNER_TEMP/uv-shim" >> "$GITHUB_PATH"
+'''
 
 [changes]
 dir = ".changes"
