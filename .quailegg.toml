@@ -11,7 +11,7 @@ remote = "origin"
 
 [release]
 mode = "pr"
-# 避免与现有 release 分支冲突；external 模式下暂不运行 qegg release
+# 发布 PR 使用独立分支，避免与历史 release 分支冲突
 branch = "qegg-release"
 github_release = true
 commit_message = "chore(release): v{{version}}"
@@ -25,10 +25,11 @@ scope = ["app", "packages/adapter", "packages/chat", "packages/contracts", "pack
 
 [verify]
 commands = [
+  "uv sync --all-packages --locked",
   "uv run ruff check .",
-  "uv run pytest -m \"not browser and not network and not slow and not llm\"",
+  "uv run pytest --strict-markers -m \"not browser and not network and not slow and not llm\"",
 ]
-timeout = "30m"
+timeout = "45m"
 fail_fast = true
 
 [publish]

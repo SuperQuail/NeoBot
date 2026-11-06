@@ -140,8 +140,7 @@ python scripts/check_pr_title.py --title "<PR 标题>" --strict
    禁止把开发上下文带进评审；评审意见要具体到可执行项。
 3. **bug 先发 issue**：发现 bug / CI 因 bug 变红时，先创建 issue，再让修复 PR 在描述里用 `Closes #NN` 关联。
    CI 对标题以 `fix` 开头的 PR 强制检查关联 issue，没有就红。
-4. **分支流向**：`dev` 是默认分支；`main` 只接收 `dev`；`release` 只接收 `main`。
-   `main → release` 的 PR 版本号必须高于 release 基线（在 dev 上提升后随 dev→main 带入），否则红。
+4. **分支流向**：`dev` 是默认分支与唯一发布入口；发布由 QuailEgg 在 `dev` 上创建发布 PR 并自动完成。`main`/`release` 仅历史保留，相关门禁暂时保留但不再用于发布。
 
 本地可先自检：
 
@@ -168,7 +167,7 @@ python scripts/check_pr_issue_link.py --pr <PR号>
 - 新增/变更功能 → 更新 `docs/04-功能文档/` 对应文件
 - 新增配置项 → 更新 `docs/05-配置参考.md`
 - 改前端源码 → 重建并提交 `web/`（CI 会比对产物，不一致直接失败）
-- 涉及版本 → 同一个 PR 内更新 8 个 `pyproject.toml` 与 `uv.lock`
+- 涉及版本 → 不要手改版本：由 QuailEgg 根据 `.changes/` 记录自动提升；详见 [scripts/RELEASING.md](scripts/RELEASING.md)
 
 ### 7. 关联 issue
 
