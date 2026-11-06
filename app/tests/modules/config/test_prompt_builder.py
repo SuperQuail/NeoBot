@@ -834,3 +834,4 @@ async def test_gentle_language_custom_override_takes_effect(tmp_path):
     prompt = await builder.build_group_chat_prompt(123456, _FakeQueue())
     assert "自定义温和风格" in prompt
     assert GENTLE_MARKER not in prompt
+    assert "<温和发言>" not in prompt  # custom 覆盖不会自动补标签
