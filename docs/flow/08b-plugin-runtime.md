@@ -30,7 +30,7 @@ covers:
   - scripts/plugin_ecosystem.py
   - scripts/plugin_demo.py
   - scripts/plugin_demo/
-verified_against: ce2b0d5
+verified_against: 1fdd138
 verified_hash: d98099170d12
 ---
 

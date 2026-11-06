@@ -353,10 +353,13 @@ async def test_manifest_version_change_reloads_and_refreshes_snapshot(tmp_path: 
     watcher = PluginHotReloader(runtime, debounce=0)
     await watcher.poll_once(now=0)
     try:
-        assert runtime.manager.get_plugin("versioned").version == "1.0.0"
+        previous = runtime.manager.get_plugin("versioned")
+        assert previous.version == "1.0.0"
         # 版本只认清单：只改 plugin.toml 也要重载，并同步到面板快照
         (package / "plugin.toml").write_text('name = "versioned"\nversion = "2.0.0"\n')
         await watcher.poll_once(now=1)
+        # 必须换到新一代实例，否则只是快照刷新、证明不了重载
+        assert runtime.manager.get_plugin("versioned") is not previous
         assert runtime.manager.get_plugin("versioned").version == "2.0.0"
         snapshots = {item.name: item.version for item in runtime.snapshot_plugins()}
         assert snapshots["versioned"] == "2.0.0"

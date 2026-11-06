@@ -24,7 +24,7 @@ class FilesystemPluginLoaderTest(unittest.TestCase):
             self.assertIsInstance(result, LoadedPlugin)
             assert isinstance(result, LoadedPlugin)
             self.assertEqual(result.name, "ping")
-            # 单文件插件没有清单：Plugin(version=...) 不再生效，版本保持默认值
+            # 单文件插件没有清单：版本固定 0.1.0
             self.assertEqual(result.version, "0.1.0")
             self.assertIsInstance(result.plugin, Plugin)
 
@@ -234,10 +234,12 @@ class FilesystemPluginLoaderTest(unittest.TestCase):
             package.mkdir()
             (package / "plugin.toml").write_text('name = "versioned"\nversion = "2.0.0"\n', encoding="utf-8")
             (package / "__init__.py").write_text(
-                PLUGIN_SOURCE.format(name="versioned", version="1.0.0"), encoding="utf-8"
+                "from neobot_modloader import Plugin\nplugin = Plugin('versioned', version='1.0.0')\n",
+                encoding="utf-8",
             )
 
-            result = FilesystemPluginLoader().load_all(root)[0]
+            with self.assertWarns(DeprecationWarning):
+                result = FilesystemPluginLoader().load_all(root)[0]
 
             self.assertIsInstance(result, LoadedPlugin)
             assert isinstance(result, LoadedPlugin)
@@ -252,17 +254,20 @@ class FilesystemPluginLoaderTest(unittest.TestCase):
             package.mkdir()
             (package / "plugin.toml").write_text('name = "unversioned"\n', encoding="utf-8")
             (package / "__init__.py").write_text(
-                PLUGIN_SOURCE.format(name="unversioned", version="1.0.0"), encoding="utf-8"
+                "from neobot_modloader import Plugin\nplugin = Plugin('unversioned', version='1.0.0')\n",
+                encoding="utf-8",
             )
 
-            result = FilesystemPluginLoader().load_all(root)[0]
+            with self.assertWarns(DeprecationWarning):
+                result = FilesystemPluginLoader().load_all(root)[0]
 
             self.assertIsInstance(result, LoadedPlugin)
             assert isinstance(result, LoadedPlugin)
             self.assertEqual(result.version, "0.1.0")
 
-    def test_constructor_version_is_kept_but_ignored(self) -> None:
-        plugin = Plugin("kept_version", version="9.9.9")
+    def test_constructor_version_is_accepted_but_ignored(self) -> None:
+        with self.assertWarns(DeprecationWarning):
+            plugin = Plugin("kept_version", version="9.9.9")
 
         self.assertEqual(plugin.version, "0.1.0")
 
