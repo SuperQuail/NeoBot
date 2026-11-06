@@ -3174,6 +3174,22 @@ async def test_no_tool_call_reminder_then_cancel(monkeypatch):
     await orch.shutdown()
 
 
+def test_unsent_marker_is_peeked_until_success_clears_it():
+    """跨轮标记只在成功 send/cancel 后清除；激活 prepare 只 peek、不消费。"""
+    orch = _make_orchestrator()
+    event = SimpleNamespace(
+        conversation_ref=SimpleNamespace(kind="private", id="123456")
+    )
+
+    orch._mark_unsent_marker(event)
+    assert orch._take_unsent_marker(event) is True
+    # 再次 prepare 仍能看到，说明 peek 没有消费
+    assert orch._take_unsent_marker(event) is True
+
+    orch._clear_unsent_marker(event)
+    assert orch._take_unsent_marker(event) is False
+
+
 async def test_prev_no_tool_reminder_injected_after_cancelled_activation(monkeypatch):
     """上一次激活只输出正文被取消后，下一次激活要带一条跨轮纠正提醒。"""
     provider = _ScriptedProvider([

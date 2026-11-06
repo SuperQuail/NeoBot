@@ -88,11 +88,12 @@ class EmptyTurnMixin:
         self._prune_unsent_markers(now)
 
     def _take_unsent_marker(self, event: ReplyEvent) -> bool:
+        """查看（不消费）跨轮标记；真正的清除只发生在成功 send/cancel 后。"""
         key = self._unsent_marker_key(event)
         if not key:
             return False
         markers = self._unsent_markers()
-        ts = markers.pop(key, None)
+        ts = markers.get(key)
         self._prune_unsent_markers(time.monotonic())
         return ts is not None and time.monotonic() - ts <= self._UNSENT_MARKER_TTL
 
@@ -149,7 +150,8 @@ class EmptyTurnMixin:
             stage = "unsent_prose_detected"
         # 不把“没调工具”写成事件错误：它已经通过 reminder 发回给模型，
         # 再记 FAILED 只会污染观测，对下一次语言修复没有任何信息价值。
-        self._mark_unsent_marker(event)
+        if text.strip():
+            self._mark_unsent_marker(event)
         if not event.is_terminal:
             try:
                 event.transition(ReplyState.CANCELLED)
