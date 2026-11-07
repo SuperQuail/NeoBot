@@ -296,6 +296,17 @@ BLOCKS: tuple[Block, ...] = (
         note="cot 子块：不复述别人的话再评论，不主动描述图片",
     ),
     Block(
+        "cot_cross_chat",
+        Stage.SYSTEM_PREFIX,
+        CHAT_SCOPES,
+        order=75,
+        requires=(
+            config_flag("prompt_optimizations.cot_enabled"),
+            config_flag("prompt_optimizations.cross_chat"),
+        ),
+        note="cot 子块：有事情需要对某个人私聊或在别的群聊说时用 cross_chat 工具",
+    ),
+    Block(
         "cot_outro",
         Stage.SYSTEM_PREFIX,
         CHAT_SCOPES,

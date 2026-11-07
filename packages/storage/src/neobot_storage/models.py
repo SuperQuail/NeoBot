@@ -305,6 +305,33 @@ class CompletedScheduledTaskData(Base):
     )
 
 
+class CrossChatSessionData(Base):
+    __tablename__ = "cross_chat_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    origin_kind: Mapped[str] = mapped_column(String, nullable=False)
+    origin_id: Mapped[str] = mapped_column(String, nullable=False)
+    target_kind: Mapped[str] = mapped_column(String, nullable=False)
+    target_id: Mapped[str] = mapped_column(String, nullable=False)
+    task_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    mode: Mapped[str] = mapped_column(String, nullable=False, default="fire_and_forget")
+    notification_mode: Mapped[str] = mapped_column(String, nullable=False, default="no_response")
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    reply: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    boot_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "origin_kind", "origin_id", "target_kind", "target_id",
+            name="uq_cross_chat_sessions_pair",
+        ),
+        Index("ix_cross_chat_sessions_origin", "origin_kind", "origin_id"),
+        Index("ix_cross_chat_sessions_boot_id", "boot_id"),
+    )
+
+
 class ModelUsageRecord(Base):
     __tablename__ = "model_usage_records"
 

@@ -3,6 +3,7 @@
 from neobot_app.core.constants import (
     APP_NAME,
     APP_VERSION,
+    BOOT_ID,
     AVATAR_DIR,
     CONFIG_BACKUP_DIR,
     CONFIG_FILE,
@@ -26,6 +27,7 @@ __all__ = [
     "SRC_DATA_DIR",
     "APP_NAME",
     "APP_VERSION",
+    "BOOT_ID",
     "CONFIG_VERSION",
     "MAX_CONFIG_BACKUPS",
 ]

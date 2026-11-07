@@ -15,9 +15,11 @@ from neobot_contracts.models.scheduled_task import (
     ScheduledTaskRecurrence,
     ScheduledTaskState,
 )
+from neobot_contracts.models.cross_chat_session import CrossChatSessionRecord
 from neobot_contracts.models.trigger import KeywordConfig, TriggerResult
 
 __all__ = [
+    "CrossChatSessionRecord",
     "ConversationRef",
     "IncomingMessage",
     "MemoryRecord",

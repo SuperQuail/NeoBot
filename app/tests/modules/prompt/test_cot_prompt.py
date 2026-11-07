@@ -26,6 +26,7 @@ COT_AVOID_BOT_CHAT = "<减少Bot聊天>如果你能确定当前聊天中的其�
 COT_NO_BLUFFING = "<禁止不懂装懂>在回复之前,你应该思考:你说的内容是否你明确确信是对的,而不是来自你的AI幻觉或者纯属猜测,如果你不清楚你应该回答什么,那就应该不回复;如果是有人明确在询问你,但是你的上下文并没有提供回答依据的内容,你应该明确说你不清楚,禁止猜测一个答案\n提及的你完全不认识的人也同样不应该进行任何评价或者接话,被人询问也应该说自己不认识/不知道,只有在讨论一个你明确知道或者上下文中存在的角色你才能参与聊天;</禁止不懂装懂>"
 COT_NO_GAME_TOPICS = "<禁止主动参与游戏话题>在没有人主动与你聊天的情况下,你不应该参与任何游戏相关讨论,你不应该猜测任何游戏机制并进行回复,对于游戏相关内容,除非你的上下文有明确的内容可提供答案,否则一律禁止给出明确的答案;没有人主动问你,你也禁止主动参与游戏相关话题,如果聊天中只有游戏相关话题,并且没有人叫你,你应该直接取消回复</禁止主动参与游戏话题>"
 COT_NO_ECHO_IMAGES = "<禁止附和与解说图片>你不应该以任何形式复述或者转述别人说过的内容然后再进行评论,对一件事情发表观点不应该先复述;也不应该描述某张图片的内容,除非有人明确询问你</禁止附和与解说图片>"
+COT_CROSS_CHAT = "<跨聊天交互>当你有事情需要对某个人私聊说,或者在别的群聊说,你可以使用 cross_chat 工具</跨聊天交互>"
 COT_OUTRO = "</cot>"
 
 #: 块 id -> 逐字原文（顺序即注入顺序）。
@@ -37,6 +38,7 @@ COT_PARTS = {
     "cot_no_bluffing": COT_NO_BLUFFING,
     "cot_no_game_topics": COT_NO_GAME_TOPICS,
     "cot_no_echo_images": COT_NO_ECHO_IMAGES,
+    "cot_cross_chat": COT_CROSS_CHAT,
     "cot_outro": COT_OUTRO,
 }
 
@@ -48,6 +50,7 @@ COT_SWITCHES = {
     "no_bluffing": "cot_no_bluffing",
     "no_game_topics": "cot_no_game_topics",
     "no_echo_images": "cot_no_echo_images",
+    "cross_chat": "cot_cross_chat",
 }
 
 
