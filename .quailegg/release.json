@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "version": "2.1.0-a2",
-  "created_at": "2026-11-06T15:00:20.644559792Z",
+  "version": "2.1.0-a3",
+  "created_at": "2026-11-07T08:30:02.891798002Z",
   "mode": "pr",
   "channel": "alpha",
-  "fingerprint": "sha256:5040437d10ee75aaf89784c9a93fa499f43e13ef4163ce5215437d4c3dd661b3",
+  "fingerprint": "sha256:3c6e867a684e6d59684d12f0732a16f875086e442349710620a8a7d7247d1870",
   "repo": {
     "host": "github.com",
     "owner": "SuperQuail",
@@ -18,95 +18,95 @@
       "uv run pytest --strict-markers -m \"not browser and not network and not slow and not llm\""
     ],
     "skipped": false,
-    "at": "2026-11-06T15:00:20.644560864Z"
+    "at": "2026-11-07T08:30:02.891798563Z"
   },
   "packages": [
     {
       "name": "python@neobot",
       "path": ".",
       "resolver": "python",
-      "current": "2.1.0-a1",
-      "next": "2.1.0-a2",
+      "current": "2.1.0-a2",
+      "next": "2.1.0-a3",
       "bump": "minor",
-      "tag": "v2.1.0a2",
+      "tag": "v2.1.0a3",
       "publish": false
     },
     {
       "name": "python@neobot-app",
       "path": "app",
       "resolver": "python",
-      "current": "2.1.0-a1",
-      "next": "2.1.0-a2",
+      "current": "2.1.0-a2",
+      "next": "2.1.0-a3",
       "bump": "minor",
-      "tag": "v2.1.0a2",
+      "tag": "v2.1.0a3",
       "publish": true
     },
     {
       "name": "python@neobot-contracts",
       "path": "packages/contracts",
       "resolver": "python",
-      "current": "2.1.0-a1",
-      "next": "2.1.0-a2",
+      "current": "2.1.0-a2",
+      "next": "2.1.0-a3",
       "bump": "minor",
-      "tag": "v2.1.0a2",
+      "tag": "v2.1.0a3",
       "publish": true
     },
     {
       "name": "python@neobot-adapter",
       "path": "packages/adapter",
       "resolver": "python",
-      "current": "2.1.0-a1",
-      "next": "2.1.0-a2",
+      "current": "2.1.0-a2",
+      "next": "2.1.0-a3",
       "bump": "minor",
-      "tag": "v2.1.0a2",
+      "tag": "v2.1.0a3",
       "publish": true
     },
     {
       "name": "python@neobot-chat",
       "path": "packages/chat",
       "resolver": "python",
-      "current": "2.1.0-a1",
-      "next": "2.1.0-a2",
+      "current": "2.1.0-a2",
+      "next": "2.1.0-a3",
       "bump": "minor",
-      "tag": "v2.1.0a2",
+      "tag": "v2.1.0a3",
       "publish": true
     },
     {
       "name": "python@neobot-memory",
       "path": "packages/memory",
       "resolver": "python",
-      "current": "2.1.0-a1",
-      "next": "2.1.0-a2",
+      "current": "2.1.0-a2",
+      "next": "2.1.0-a3",
       "bump": "minor",
-      "tag": "v2.1.0a2",
+      "tag": "v2.1.0a3",
       "publish": true
     },
     {
       "name": "python@neobot-modloader",
       "path": "packages/modloader",
       "resolver": "python",
-      "current": "2.1.0-a1",
-      "next": "2.1.0-a2",
+      "current": "2.1.0-a2",
+      "next": "2.1.0-a3",
       "bump": "minor",
-      "tag": "v2.1.0a2",
+      "tag": "v2.1.0a3",
       "publish": true
     },
     {
       "name": "python@neobot-storage",
       "path": "packages/storage",
       "resolver": "python",
-      "current": "2.1.0-a1",
-      "next": "2.1.0-a2",
+      "current": "2.1.0-a2",
+      "next": "2.1.0-a3",
       "bump": "minor",
-      "tag": "v2.1.0a2",
+      "tag": "v2.1.0a3",
       "publish": true
     }
   ],
   "releases": [
     {
-      "version": "2.1.0-a2",
-      "tag": "v2.1.0a2",
-      "previous_tag": "v2.1.0a1",
+      "version": "2.1.0-a3",
+      "tag": "v2.1.0a3",
+      "previous_tag": "v2.1.0a2",
       "packages": [
         "python@neobot",
         "python@neobot-adapter",
@@ -122,6 +122,20 @@
   ],
   "changes": [
     {
+      "file": ".changes/cross-chat-session.md",
+      "type": "feat",
+      "bump": "minor",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Add a cross-chat cot hint, persist cross-chat sessions in storage and expose them to the agent.",
+      "commit": "d581b641727b04e09e5022c3291327feda4b7aef",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/d581b641727b04e09e5022c3291327feda4b7aef",
+      "pull_number": 283,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/283",
+      "author": "Tang-Tian-dev"
+    },
+    {
       "file": ".changes/dashboard-prompt-folding.md",
       "type": "feat",
       "bump": "minor",
@@ -134,6 +148,21 @@
       "pull_number": 266,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/266",
       "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/drop-legacy-release.md",
+      "type": "chore",
+      "scope": "ci",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Drop the legacy main→release publish pipeline and version scripts; QuailEgg now owns releases from main.",
+      "commit": "5b67f0629b5ae39a8cf218209d0b69a5d7118501",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/5b67f0629b5ae39a8cf218209d0b69a5d7118501",
+      "pull_number": 280,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/280",
+      "author": "Wsrsq"
     },
     {
       "file": ".changes/gentle-language-xml.md",
@@ -264,12 +293,17 @@
   ],
   "previous_changes": [
     ".changes/dashboard-prompt-folding.md",
+    ".changes/gentle-language-xml.md",
     ".changes/prompt-assets-cot.md",
     ".changes/prompt-registry-refactor.md",
+    ".changes/reply-contract-corrections.md",
+    ".changes/reply-cross-activation.md",
+    ".changes/reply-marker-lifecycle.md",
     ".changes/reply-receipt-raw.md",
+    ".changes/reply-tool-contract.md",
     ".changes/reply-tool-ids.md"
   ],
   "qegg": {
-    "version": "0.12.0"
+    "version": "0.13.0"
   }
 }
