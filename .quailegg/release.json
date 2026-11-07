@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "version": "2.1.0-a3",
-  "created_at": "2026-11-07T08:30:02.891798002Z",
+  "version": "2.1.0-a4",
+  "created_at": "2026-11-07T12:22:07.184875343Z",
   "mode": "pr",
   "channel": "alpha",
-  "fingerprint": "sha256:3c6e867a684e6d59684d12f0732a16f875086e442349710620a8a7d7247d1870",
+  "fingerprint": "sha256:007fcfb8a91840d402b92a1f94946ea3f6f0529883243aaf1178b137d759c1b0",
   "repo": {
     "host": "github.com",
     "owner": "SuperQuail",
@@ -18,95 +18,95 @@
       "uv run pytest --strict-markers -m \"not browser and not network and not slow and not llm\""
     ],
     "skipped": false,
-    "at": "2026-11-07T08:30:02.891798563Z"
+    "at": "2026-11-07T12:22:07.184876024Z"
   },
   "packages": [
     {
       "name": "python@neobot",
       "path": ".",
       "resolver": "python",
-      "current": "2.1.0-a2",
-      "next": "2.1.0-a3",
+      "current": "2.1.0-a3",
+      "next": "2.1.0-a4",
       "bump": "minor",
-      "tag": "v2.1.0a3",
+      "tag": "v2.1.0a4",
       "publish": false
     },
     {
       "name": "python@neobot-app",
       "path": "app",
       "resolver": "python",
-      "current": "2.1.0-a2",
-      "next": "2.1.0-a3",
+      "current": "2.1.0-a3",
+      "next": "2.1.0-a4",
       "bump": "minor",
-      "tag": "v2.1.0a3",
+      "tag": "v2.1.0a4",
       "publish": true
     },
     {
       "name": "python@neobot-contracts",
       "path": "packages/contracts",
       "resolver": "python",
-      "current": "2.1.0-a2",
-      "next": "2.1.0-a3",
+      "current": "2.1.0-a3",
+      "next": "2.1.0-a4",
       "bump": "minor",
-      "tag": "v2.1.0a3",
+      "tag": "v2.1.0a4",
       "publish": true
     },
     {
       "name": "python@neobot-adapter",
       "path": "packages/adapter",
       "resolver": "python",
-      "current": "2.1.0-a2",
-      "next": "2.1.0-a3",
+      "current": "2.1.0-a3",
+      "next": "2.1.0-a4",
       "bump": "minor",
-      "tag": "v2.1.0a3",
+      "tag": "v2.1.0a4",
       "publish": true
     },
     {
       "name": "python@neobot-chat",
       "path": "packages/chat",
       "resolver": "python",
-      "current": "2.1.0-a2",
-      "next": "2.1.0-a3",
+      "current": "2.1.0-a3",
+      "next": "2.1.0-a4",
       "bump": "minor",
-      "tag": "v2.1.0a3",
+      "tag": "v2.1.0a4",
       "publish": true
     },
     {
       "name": "python@neobot-memory",
       "path": "packages/memory",
       "resolver": "python",
-      "current": "2.1.0-a2",
-      "next": "2.1.0-a3",
+      "current": "2.1.0-a3",
+      "next": "2.1.0-a4",
       "bump": "minor",
-      "tag": "v2.1.0a3",
+      "tag": "v2.1.0a4",
       "publish": true
     },
     {
       "name": "python@neobot-modloader",
       "path": "packages/modloader",
       "resolver": "python",
-      "current": "2.1.0-a2",
-      "next": "2.1.0-a3",
+      "current": "2.1.0-a3",
+      "next": "2.1.0-a4",
       "bump": "minor",
-      "tag": "v2.1.0a3",
+      "tag": "v2.1.0a4",
       "publish": true
     },
     {
       "name": "python@neobot-storage",
       "path": "packages/storage",
       "resolver": "python",
-      "current": "2.1.0-a2",
-      "next": "2.1.0-a3",
+      "current": "2.1.0-a3",
+      "next": "2.1.0-a4",
       "bump": "minor",
-      "tag": "v2.1.0a3",
+      "tag": "v2.1.0a4",
       "publish": true
     }
   ],
   "releases": [
     {
-      "version": "2.1.0-a3",
-      "tag": "v2.1.0a3",
-      "previous_tag": "v2.1.0a2",
+      "version": "2.1.0-a4",
+      "tag": "v2.1.0a4",
+      "previous_tag": "v2.1.0a3",
       "packages": [
         "python@neobot",
         "python@neobot-adapter",
@@ -122,11 +122,39 @@
   ],
   "changes": [
     {
+      "file": ".changes/cross-chat-fixes.md",
+      "type": "fix",
+      "bump": "patch",
+      "packages": [
+        "python@neobot",
+        "python@neobot-adapter",
+        "python@neobot-app",
+        "python@neobot-chat",
+        "python@neobot-contracts",
+        "python@neobot-memory",
+        "python@neobot-modloader",
+        "python@neobot-storage"
+      ],
+      "body": "Fix cross-chat session reuse, per-process isolation and write ordering.",
+      "commit": "5ee593fd52f6f8bf65becfa3f0a76dfe213d4f6a",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/5ee593fd52f6f8bf65becfa3f0a76dfe213d4f6a",
+      "pull_number": 287,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/287",
+      "author": "Tang-Tian-dev"
+    },
+    {
       "file": ".changes/cross-chat-session.md",
       "type": "feat",
       "bump": "minor",
       "packages": [
-        "python@neobot-app"
+        "python@neobot",
+        "python@neobot-adapter",
+        "python@neobot-app",
+        "python@neobot-chat",
+        "python@neobot-contracts",
+        "python@neobot-memory",
+        "python@neobot-modloader",
+        "python@neobot-storage"
       ],
       "body": "Add a cross-chat cot hint, persist cross-chat sessions in storage and expose them to the agent.",
       "commit": "d581b641727b04e09e5022c3291327feda4b7aef",
@@ -292,7 +320,9 @@
     }
   ],
   "previous_changes": [
+    ".changes/cross-chat-session.md",
     ".changes/dashboard-prompt-folding.md",
+    ".changes/drop-legacy-release.md",
     ".changes/gentle-language-xml.md",
     ".changes/prompt-assets-cot.md",
     ".changes/prompt-registry-refactor.md",
