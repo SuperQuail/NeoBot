@@ -1539,6 +1539,44 @@ async def test_tool_reply_iterations_ignore_history_assistants() -> None:
     assert result.iterations == 2
 
 
+class _RecordingProvider:
+    def __init__(self) -> None:
+        self.messages: list[list[dict]] = []
+
+    async def chat(self, messages, tools=None):
+        self.messages.append(list(messages))
+        return {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_cancel",
+                    "type": "function",
+                    "function": {"name": "cancel", "arguments": "{}"},
+                }
+            ],
+        }
+
+
+class _SlowProvider:
+    async def chat(self, messages, tools=None):
+        await asyncio.sleep(1)
+        return {"role": "assistant", "content": ""}
+
+
+async def test_tool_reply_sends_prompt_verbatim() -> None:
+    """不再被通用 Agent 外壳包一层：system 就是调用方给的文本。"""
+    provider = _RecordingProvider()
+    result = await run_tool_reply(provider, "自定义人格", "在吗")
+
+    assert provider.messages[0][0] == {"role": "system", "content": "自定义人格"}
+    assert result.text is None
+
+
+async def test_tool_reply_has_per_call_timeout() -> None:
+    with pytest.raises(asyncio.TimeoutError):
+        await run_tool_reply(_SlowProvider(), "s", "u", call_timeout=0.05, timeout=5.0)
+
 async def test_tool_reply_reports_model_iterations() -> None:
     """ToolReply.iterations 必须等于实际模型调用次数，延迟才能归因。"""
     provider = _TwoTurnProvider()

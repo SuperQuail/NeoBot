@@ -6,7 +6,7 @@ covers:
   - app/src/neobot_app/analysis/
   - app/src/neobot_app/bilibili/
 verified_against: d525a5b
-verified_hash: 06808aba5988
+verified_hash: 0875b0d22811
 ---
 
 # 21 网页解析 · 音频 · 本地分析 · 视频抽帧
