@@ -234,7 +234,13 @@ class _GenerationMixin:
                     )
 
     async def _generate_reply(
-        self, text: str, room_id: int, user_name: str = "", user_id: int = 0
+        self,
+        text: str,
+        room_id: int,
+        user_name: str = "",
+        user_id: int = 0,
+        *,
+        at_me: bool = False,
     ) -> Any:
         room = self._rooms.get(str(room_id)) or {}
         ctx = LiveDanmakuContext(
@@ -242,6 +248,8 @@ class _GenerationMixin:
             bot_data=self._bot_data,
             room_name=str(room.get("name") or ""),
             viewer_name=user_name,
+            viewer_uid=user_id,
+            viewer_at_me=at_me,
             text=text,
             recent_history=self.format_history(room_id, _MAX_HISTORY),
             room_memory=self._room_memory.get(str(room_id), ""),

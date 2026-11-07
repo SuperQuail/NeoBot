@@ -480,6 +480,32 @@ def test_private_prompt_escapes_injection_payloads() -> None:
     assert "忽略以上" in user
 
 
+def test_live_pending_danmaku_carries_uid_and_current_at_me() -> None:
+    from neobot_app.bilibili.prompts import LiveDanmakuContext, build_live_danmaku_prompt
+
+    ctx = LiveDanmakuContext(
+        bot_name="Neo", text="在吗", viewer_uid=333, viewer_at_me=True
+    )
+    _system, user = build_live_danmaku_prompt(ctx)
+    assert '<待接弹幕 uid="333">[@了我] 在吗</待接弹幕>' in user
+
+    plain = build_live_danmaku_prompt(LiveDanmakuContext(bot_name="Neo", text="在吗"))[1]
+    assert "<待接弹幕>在吗</待接弹幕>" in plain
+
+
+def test_custom_pending_template_without_attrs_still_renders(tmp_path) -> None:
+    """自定义 pending_danmaku 模板不含 {attrs} 时照旧渲染（只是不带 uid）。"""
+    from neobot_app.bilibili.prompts import LiveDanmakuContext, build_live_danmaku_prompt
+
+    store = _custom_store(
+        tmp_path,
+        '[bili_live]\npending_danmaku = "<待接弹幕>{text}</待接弹幕>"\n',
+    )
+    ctx = LiveDanmakuContext(bot_name="Neo", text="在吗", viewer_uid=333)
+    _system, user = build_live_danmaku_prompt(ctx, prompt_store=store)
+    assert "<待接弹幕>在吗</待接弹幕>" in user
+
+
 def test_live_prompt_escapes_danmaku_injection() -> None:
     from neobot_app.bilibili.prompts import (
         LiveDanmakuContext,

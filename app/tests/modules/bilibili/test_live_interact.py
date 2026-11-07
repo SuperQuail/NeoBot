@@ -823,7 +823,7 @@ async def test_history_keeps_latest_500_danmu(tmp_path: Path) -> None:
     assert len(history) == 500
     assert history[0]["text"] == "弹幕5"
     assert history[-1]["text"] == "弹幕504"
-    assert set(history[0]) == {"uid", "name", "text", "time", "ts", "at_me"}
+    assert set(history[0]) == {"uid", "name", "text", "time", "ts"}
     assert len(history[0]["time"]) == 8
     assert interactor.get_history(5440, 2)[-1]["text"] == "弹幕504"
     assert interactor.get_history(9999) == []
@@ -1187,6 +1187,18 @@ async def test_live_generation_reads_custom_bili_live_text(tmp_path: Path) -> No
     assert "自定义直播间-MARK" in user
 
 
+async def test_history_does_not_mark_at_me(tmp_path: Path) -> None:
+    """历史行只带 uid：@ 只在当前弹幕上标注，避免模型反复回旧账。"""
+    interactor = BilibiliLiveInteractor(None, data_dir=tmp_path)
+    interactor._my_uid = 999
+    interactor._record_history(
+        "5440", {"uid": 8, "name": "观众", "text": "在吗", "reply_mid": 999}
+    )
+    line = interactor.format_history(5440)
+    assert "[uid=8]" in line
+    assert "[@了我]" not in line
+
+
 async def test_history_keeps_500_for_prompt(tmp_path: Path) -> None:
     interactor = BilibiliLiveInteractor(None, data_dir=tmp_path)
     for index in range(520):
@@ -1402,6 +1414,25 @@ async def test_live_observation_records_usage(tmp_path: Path, monkeypatch) -> No
     assert result is not None
     assert tracker.records and tracker.records[0]["conversation_kind"] == "bilibili_live"
     assert tracker.records[0]["input_tokens"] == 5000
+
+
+async def test_process_danmu_passes_at_me_to_generation(tmp_path: Path) -> None:
+    """reply_mid 指向自己时，端到端要把 at_me=True 传到生成层。"""
+    provider = _FakeProvider("在呢")
+    interactor, _client, _ = await _enabled(tmp_path, provider=provider)
+    interactor._my_uid = 999
+    calls: list[dict] = []
+    original = interactor._generate_reply
+
+    async def spy(*args, **kwargs):
+        calls.append(kwargs)
+        return await original(*args, **kwargs)
+
+    interactor._generate_reply = spy  # type: ignore[method-assign]
+    await interactor._handle_danmu(
+        "5440", {"uid": 8, "name": "观众", "text": "在吗", "reply_mid": 999}
+    )
+    assert calls and calls[0]["at_me"] is True
 
 
 async def test_tool_reply_reports_model_iterations() -> None:

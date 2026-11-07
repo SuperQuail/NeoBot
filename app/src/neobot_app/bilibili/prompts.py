@@ -602,6 +602,10 @@ class LiveDanmakuContext:
     bot_data: str = ""
     room_name: str = ""
     viewer_name: str = ""
+    #: 当前弹幕发送者 UID：直接给模型，省得它去 500 行历史里猜该 @ 谁。
+    viewer_uid: int = 0
+    #: 当前这条弹幕是否点名了 bot（历史行不再标注，只标当前）。
+    viewer_at_me: bool = False
     text: str = ""
     recent_history: str = ""
     frame_context: str = ""
@@ -686,7 +690,8 @@ def build_live_danmaku_prompt(
         )
     parts.append(
         _text("live", "pending_danmaku", store=prompt_store).format(
-            text=_data(ctx.text)
+            attrs=f' uid="{ctx.viewer_uid}"' if ctx.viewer_uid else "",
+            text=("[@了我] " if ctx.viewer_at_me else "") + _data(ctx.text),
         )
     )
     return system, "\n".join(parts)
