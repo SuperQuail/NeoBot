@@ -10,29 +10,21 @@ T = TypeVar('T', bound=BaseModel)
 
 # 缓存模型的解析信息
 @lru_cache(maxsize=128)
-def _get_model_parser(model_type: Type[BaseModel]):
+def _get_model_parser(model_type: Type[BaseModel]) -> list[dict[str, Any]]:
     """
-    获取模型的解析信息，包括字段默认值和类型信息
+    获取模型的字段信息，包括类型和默认值
     缓存以避免重复计算
     """
-    fields_info = []
-    model_fields = model_type.model_fields
-
-    for field_name, field_info in model_fields.items():
-        fields_info.append({
+    return [
+        {
             'name': field_name,
             'annotation': field_info.annotation,
             'is_required': field_info.is_required(),
             'default': field_info.get_default(call_default_factory=True)
-                if not field_info.is_required() else None,
-            'default_factory': field_info.default_factory
-                if hasattr(field_info, 'default_factory') else None
-        })
-
-    return {
-        'fields': fields_info,
-        'model_type': model_type
-    }
+            if not field_info.is_required() else None,
+        }
+        for field_name, field_info in model_type.model_fields.items()
+    ]
 
 
 @lru_cache(maxsize=256)
@@ -45,11 +37,9 @@ def safe_parse_model(data: Union[dict, str], data_type: Type[T]) -> T:
     """
     高性能解析 JSON 数据为 Pydantic 模型实例
     优化策略：
-    1. 使用 model_validate 作为主要路径（最快）
-    2. 对于复杂嵌套结构，使用预缓存的 TypeAdapter
-    3. 大幅减少日志开销
-    4. 批量处理列表元素
-    5. 避免重复的类型检查和异常捕获
+    1. 用 model_validate 一次校验，失败后直接进入容错解析
+    2. 字段信息与 TypeAdapter 按模型缓存，避免重复构建
+    3. 容错解析只在每个字段上尝试一次转换
 
     Args:
         data: 字典或 JSON 字符串
@@ -58,10 +48,6 @@ def safe_parse_model(data: Union[dict, str], data_type: Type[T]) -> T:
     Returns:
         模型实例
     """
-    # 极简化的日志记录，只在绝对必要时记录
-    if data is None:
-        return data_type()
-
     # 1. 快速处理字符串输入
     if isinstance(data, str):
         try:
@@ -76,22 +62,13 @@ def safe_parse_model(data: Union[dict, str], data_type: Type[T]) -> T:
     try:
         return data_type.model_validate(data, strict=False)
     except ValidationError:
-        # 验证失败，尝试第二种优化路径
+        # 验证失败：BaseModel 的 TypeAdapter 与 model_validate 是同一份校验器，
+        # 再跑一遍只会重复付成本，直接进入容错解析。
         pass
     except Exception:
         return data_type()
 
-    # 3. 第二种优化路径：使用 TypeAdapter（处理更复杂的验证错误）
-    try:
-        adapter = _get_type_adapter(data_type)
-        return adapter.validate_python(data)
-    except ValidationError:
-        # 仍然失败，使用容错解析
-        pass
-    except Exception:
-        return data_type()
-
-    # 4. 容错解析路径（极少使用）
+    # 3. 容错解析路径（极少使用）
     return _fast_fallback_parse(data, data_type)
 
 
@@ -103,11 +80,10 @@ def _fast_fallback_parse(data: Dict[str, Any], data_type: Type[T]) -> T:
     2. 批量处理字段
     3. 预计算字段信息
     """
-    # 获取缓存的模型信息
-    parser_info = _get_model_parser(data_type)
+    # 获取缓存的字段信息
     field_values = {}
 
-    for field_info in parser_info['fields']:
+    for field_info in _get_model_parser(data_type):
         field_name = field_info['name']
 
         # 检查字段是否存在
@@ -161,25 +137,13 @@ def _fast_parse_value(value: Any, expected_type: Any) -> Any:
 
     # 快速路径3：基本类型转换
     if expected_type is int:
-        try:
-            return int(value)
-        except (ValueError, TypeError):
-            raise
-    elif expected_type is float:
-        try:
-            return float(value)
-        except (ValueError, TypeError):
-            raise
-    elif expected_type is str:
-        try:
-            return str(value)
-        except (ValueError, TypeError):
-            raise
-    elif expected_type is bool:
-        try:
-            return bool(value)
-        except (ValueError, TypeError):
-            raise
+        return int(value)
+    if expected_type is float:
+        return float(value)
+    if expected_type is str:
+        return str(value)
+    if expected_type is bool:
+        return bool(value)
 
     # 获取类型信息（缓存结果）
     origin = get_origin(expected_type)
@@ -229,28 +193,18 @@ def _fast_parse_value(value: Any, expected_type: Any) -> Any:
         if not isinstance(value, dict):
             raise TypeError
 
-        # 极速路径：直接使用 TypeAdapter（已缓存）
         try:
-            adapter = _get_type_adapter(expected_type)
-            return adapter.validate_python(value)
+            return expected_type.model_validate(value, strict=False)
         except ValidationError:
-            # 验证失败，尝试 model_validate（更宽容）
-            try:
-                return expected_type.model_validate(value, strict=False)
-            except ValidationError:
-                # 最后回退到安全解析
-                return safe_parse_model(value, expected_type)
+            # 回退到安全解析
+            return safe_parse_model(value, expected_type)
 
     # 其他类型：尝试 TypeAdapter
     try:
-        adapter = _get_type_adapter(expected_type)
-        return adapter.validate_python(value)
+        return _get_type_adapter(expected_type).validate_python(value)
     except Exception:
         # 最后手段：尝试类型转换
-        try:
-            return expected_type(value)
-        except Exception:
-            raise
+        return expected_type(value)
 
 
 # 保持向后兼容的函数签名
