@@ -1,6 +1,3 @@
-[cot_cross_chat]
-template = '''<跨聊天交互>当你有事情需要对某个人私聊说,或者在别的群聊说,你可以使用 cross_chat 工具</跨聊天交互>'''
-
 [reply_tool_contract]
 template = '''<回复方式>
 必须调用 send_reply 发送回复（长文用 send_long_reply，语音用 speak）；不想回复调用 cancel。调用工具时 content 留空，正文只放 text/segments。没有调用发送工具就直接输出的正文不会发送。

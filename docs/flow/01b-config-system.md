@@ -29,7 +29,7 @@ verified_hash: 53a9e8451787
   `bootstrap/__init__.py:543 _load_config_or_defaults`（失败 → 默认配置 + 强制待机）；
 * 热重载三层：分类表 `RULES` → 消费者注册表 `HotReloadRegistry` → 具体消费者；
 * 新配置段 `[prompt_optimizations]`（`config/schemas/bot_parts/prompt.py`）：cot 板块总开关
-  `cot_enabled` 与 6 个子块开关，默认全开；旧 `chat.gentle_language_enabled` 在
+  `cot_enabled` 与 7 个子块开关，默认全开；旧 `chat.gentle_language_enabled` 在
   0.9.0 → 0.10.0 迁移里搬进 `gentle_language`，旧键删除；
 * 写入侧（`chat_writer`、dashboard `config_manager`）与它们的读盘语义。
 
@@ -140,7 +140,7 @@ flowchart TD
     C --> C1["chat 实际是 EnhancedChat（继承 core.Chat），共 79 个字段｜基类 13 + 增强 66"]
     C --> C2["models: registry 模型库 + assignments 调用方引用"]
     C2 --> C3["iter_role_models 只产出「被引用且库里存在」的角色"]
-    C --> C4["prompt_optimizations 7 个开关：cot_enabled + 6 个子块｜bot_parts/prompt.py:8"]
+    C --> C4["prompt_optimizations 8 个开关：cot_enabled + 7 个子块｜bot_parts/prompt.py:8"]
     E --> E1["agent 下 11 个子段：creator / memory / problem_solver / sandbox / tools…"]
     E1 --> E2["AgentMemoryTrigger group_interval=500 private_interval=200"]
     E1 --> E3["AgentMemoryArchive max_chars=500 max_total_chars=15000"]

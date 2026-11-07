@@ -532,9 +532,14 @@ class FakeSessionRepo:
         self.rows[key] = row
         return SimpleNamespace(**row)
 
-    async def record_result(self, *, origin_kind, origin_id, target_kind, target_id, reply, status, boot_id):
+    async def record_result(
+        self, *, origin_kind, origin_id, target_kind, target_id,
+        reply, status, boot_id, task_id=None,
+    ):
         key = (origin_kind, origin_id, target_kind, target_id)
         if key not in self.rows:
+            return None
+        if task_id is not None and self.rows[key].get("task_id") != task_id:
             return None
         self.rows[key].update({"reply": reply, "status": status, "boot_id": boot_id})
         return SimpleNamespace(**self.rows[key])
@@ -654,3 +659,134 @@ async def test_session_write_failure_does_not_break_delivery():
     }))
 
     assert result["ok"] is True
+
+
+class OrderTrackingRepo(FakeSessionRepo):
+    """记录 upsert/record_result 的进入与完成顺序，用来抓并发写。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[str] = []
+
+    async def upsert(self, **kwargs):
+        self.events.append("upsert:start")
+        await asyncio.sleep(0.02)
+        result = await super().upsert(**kwargs)
+        self.events.append("upsert:done")
+        return result
+
+    async def record_result(self, **kwargs):
+        self.events.append("record_result:start")
+        result = await super().record_result(**kwargs)
+        self.events.append("record_result:done")
+        return result
+
+
+async def test_fire_and_forget_upserts_before_relay_starts():
+    """回传任务必须在 upsert 提交之后派生，否则 record_result 会更新不到行。"""
+    repo = OrderTrackingRepo()
+    skill = CrossChatSkill(
+        orchestrator=FakeOrchestrator(FakeEvent("好的")),
+        uow_factory=_uow_factory(repo),
+        boot_id="boot-a",
+    )
+
+    await skill.execute("cross_chat_send", {
+        "target_kind": "group", "target_id": "888", "task": "回我一下",
+        "mode": "fire_and_forget", "notification_mode": "response",
+        "pipeline_key": "private:999",
+    })
+    for _ in range(100):
+        if "record_result:done" in repo.events:
+            break
+        await asyncio.sleep(0.01)
+
+    assert repo.events.index("upsert:done") < repo.events.index("record_result:start")
+    assert "record_result:done" in repo.events
+
+
+async def test_fire_and_forget_timeout_still_writes_status():
+    """超时的后台回传也要回写状态，避免库里停在 delivered。"""
+    repo = FakeSessionRepo()
+    skill = CrossChatSkill(
+        orchestrator=FakeOrchestrator(FakeEvent("", terminal=False)),
+        uow_factory=_uow_factory(repo),
+        boot_id="boot-a",
+        wait_timeout_seconds=0.05,
+    )
+
+    await skill.execute("cross_chat_send", {
+        "target_kind": "group", "target_id": "888", "task": "回我一下",
+        "mode": "fire_and_forget", "notification_mode": "response",
+        "pipeline_key": "private:999",
+    })
+    for _ in range(200):
+        row = repo.rows.get(("private", "999", "group", "888"))
+        if row and row["status"] == "timeout":
+            break
+        await asyncio.sleep(0.01)
+
+    row = repo.rows[("private", "999", "group", "888")]
+    assert row["status"] == "timeout"
+
+
+async def test_sessions_limit_is_validated_and_clamped():
+    repo = FakeSessionRepo()
+    skill = CrossChatSkill(uow_factory=_uow_factory(repo), boot_id="boot-a")
+
+    bad = _parse(await skill.execute("cross_chat_sessions", {
+        "pipeline_key": "private:999", "limit": "abc",
+    }))
+    assert bad["ok"] is False
+    assert "limit" in bad["error"]
+
+    huge = _parse(await skill.execute("cross_chat_sessions", {
+        "pipeline_key": "private:999", "limit": 10000,
+    }))
+    assert huge["ok"] is True
+
+
+def test_sessions_tool_description_hides_internal_boot_id():
+    skill = CrossChatSkill()
+    tool = next(
+        item for item in skill.get_tools()
+        if item["function"]["name"] == "cross_chat_sessions"
+    )
+    assert "boot_id" not in tool["function"]["description"]
+    assert "本次运行期间" in tool["function"]["description"]
+
+
+async def test_sessions_output_hides_internal_boot_id():
+    repo = FakeSessionRepo()
+    skill = CrossChatSkill(uow_factory=_uow_factory(repo), boot_id="boot-a")
+    await skill.execute("cross_chat_send", {
+        "target_kind": "group", "target_id": "888", "task": "hi",
+        "pipeline_key": "private:999",
+    })
+
+    listed = _parse(await skill.execute("cross_chat_sessions", {"pipeline_key": "private:999"}))
+    assert "boot_id" not in listed
+    assert "boot_id" not in json.dumps(listed, ensure_ascii=False)
+
+
+async def test_stale_relay_does_not_overwrite_newer_session():
+    """同一对聊天流第二次投递后，第一个任务迟到的回传不能覆盖新记录。"""
+    repo = FakeSessionRepo()
+    skill = CrossChatSkill(uow_factory=_uow_factory(repo), boot_id="boot-a")
+
+    await skill.execute("cross_chat_send", {
+        "target_kind": "group", "target_id": "888", "task": "第一次",
+        "pipeline_key": "private:999",
+    })
+    await skill.execute("cross_chat_send", {
+        "target_kind": "group", "target_id": "888", "task": "第二次",
+        "pipeline_key": "private:999",
+    })
+    with_first = repo.rows[("private", "999", "group", "888")]["task_id"]
+
+    await skill._session_result(
+        ("private", "999"), ("group", "888"), "旧回传", "responded", with_first + "-stale",
+    )
+
+    row = repo.rows[("private", "999", "group", "888")]
+    assert row["reply"] == ""

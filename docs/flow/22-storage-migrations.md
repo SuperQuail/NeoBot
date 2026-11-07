@@ -3,7 +3,7 @@ flow: 22-storage-migrations
 covers:
   - packages/storage/src/neobot_storage/
 verified_against: d525a5b
-verified_hash: 764ac84ed4f3
+verified_hash: a021061597eb
 ---
 
 # 22 存储与迁移
@@ -12,8 +12,8 @@ verified_hash: 764ac84ed4f3
 
 嵌入式 Alembic 迁移沿用宿主日志出口，迁移内部进度保留到 DEBUG，宿主按结果与耗时输出摘要；独立 Alembic 命令仍使用自身 ini 日志配置。
 
-`neobot_storage` 包：异步引擎与 PRAGMA、UoW 事务边界、17 张表、
-29 个 Alembic 迁移、仓储层与锁重试。所有上层（档案、画像、用量、定时任务、头像、
+`neobot_storage` 包：异步引擎与 PRAGMA、UoW 事务边界、18 张表、
+27 个 Alembic 迁移、仓储层与锁重试。所有上层（档案、画像、用量、定时任务、头像、
 图片引用索引）都通过它读写 SQLite。
 
 不在这里：档案的业务语义见 `07` / `07b`；用量与计费见 `23-billing-stats.md`；
@@ -96,7 +96,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["async with uow"] --> B["__aenter__: session = factory()"]
-    B --> C["绑定 9 个仓储：messages/memories/profiles/archive/<br/>archive_snapshots/images/emojis/creator_images/scheduled_tasks"]
+    B --> C["绑定 11 个仓储：messages/memories/profiles/archive/<br/>archive_snapshots/images/emojis/creator_images/scheduled_tasks/bilibili_links/cross_chat_sessions"]
     C --> D["业务代码用 uow.xxx.method()"]
     D --> E["__aexit__(exc)"]
     E --> F{"有异常?"}
@@ -106,7 +106,7 @@ flowchart TD
     H --> I
 ```
 
-仓储**按需绑定**在 `__aenter__`（`uow.py:27-38`），一次进入拿到全部 9 个入口。
+仓储**按需绑定**在 `__aenter__`（`uow.py:27-38`），一次进入拿到全部 11 个入口。
 `__aexit__` 只在有异常时 `rollback`，两种情况都会 `close`（`:40-43`）——
 漏掉 `async with` 手工管理 session 会泄漏连接。
 </details>
@@ -156,18 +156,18 @@ flowchart TD
 </details>
 
 <details>
-### 17 张表与谁在写
+### 18 张表与谁在写
 
 ```mermaid
 flowchart LR
     subgraph 身份与消息
       T1["user_data"] --> W1["18 画像 / 20 头像"]
       T2["group_data"] --> W2["18 群资料"]
-      T3["message_data"] --> W3["02c 消息落盘"]
+      T3["messages"] --> W3["02c 消息落盘"]
       T4["event_data"] --> W4["事件记录"]
     end
     subgraph 记忆与档案
-      T5["memory_data"] --> W5["07 记忆"]
+      T5["memories"] --> W5["07 记忆"]
       T6["archive_memories"] --> W6["07 档案"]
       T7["archive_snapshots"] --> W7["07b 压缩快照"]
     end
@@ -182,6 +182,7 @@ flowchart LR
       T12["model_usage_records"] --> W12["23 计费统计"]
       T13["maintenance_runs"] --> W13["沙箱维护（06）"]
       T14["cross_chat_sessions"] --> W14["跨聊天交互记录（按 boot_id 隔离）"]
+      T15["bilibili_links"] --> W15["B站账号关联（21）"]
     end
 ```
 
@@ -189,8 +190,9 @@ flowchart LR
 图片本体仍按内容哈希存 `images`，而拉不到的图算不出哈希，回显只能按引用摘要查
 （见 `14-emoji-image-parse` 的「拉不到的图片」小节）。写入时顺手清掉超过 30 天的行。
 
-`cross_chat_sessions` 按「发起方 + 目标」唯一，只保存最近一次交互；`boot_id` 是进程启动标识，
-查询只返回与当前进程一致的记录，所以重启后旧 session 不再显示（数据保留，等后续清理策略）。
+`cross_chat_sessions` 按「发起方 + 目标 + 进程」唯一（迁移 0031 起）：同一进程内复用一行并重置回传，
+不同进程各留各的行；`boot_id` 是进程启动标识，查询只返回与当前进程一致的记录，所以重启后旧 session
+不再显示。行按 `updated_at` 保留 30 天，写入时顺带清理更早的行。
 
 表名全部**小写复数**（迁移 `0002_lowercase_table_names` 统一过）。
 `completed_scheduled_tasks` 上有 `task_uuid` 唯一约束（迁移 0021）——
@@ -198,7 +200,7 @@ flowchart LR
 </details>
 
 <details>
-### 迁移链：29 个版本与不可逆操作
+### 迁移链：27 个版本与不可逆操作
 
 ```mermaid
 flowchart TD
@@ -215,6 +217,7 @@ flowchart TD
     K --> L["0028 image_refs（引用摘要 → 描述，可往返）"]
     L --> M["0029 emoji 曝光分/爱用列"]
     M --> N["0030 cross_chat_sessions（按 boot_id 只在本次运行内可见）"]
+    N --> O["0031 唯一键加入 boot_id（进程各留各的行）"]
 ```
 
 两个要注意的点：
