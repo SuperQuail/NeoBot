@@ -11,11 +11,12 @@
 ### 生成文件（不要手改）
 
 `.github/workflows/qegg-release.yml`、`qegg-pr.yml`、`qegg-status.yml` 都由 `qegg init` 生成。
-需要定制 release job 时改 `.quailegg.toml` 的 `[release.workflow]`（`steps` 或 `yaml`），再重新生成：
+需要定制前置步骤时改 `.quailegg.toml` 的 `[release.workflow]` / `[pr.workflow]` / `[status.workflow]`
+（`runner`、`timeout_minutes`、`steps` 或 `yaml`、`env`），再重新生成：
 
 ```bash
-qegg init --dry-run --force --no-input --no-hook --no-add-packages --qegg-version v0.12.0
-qegg init --force --no-input --no-hook --no-add-packages --qegg-version v0.12.0
+qegg init --dry-run --force --no-input --no-hook --no-add-packages --qegg-version v0.13.0
+qegg init --force --no-input --no-hook --no-add-packages --qegg-version v0.13.0
 ```
 
 当前配置的 `[release.workflow].yaml` 里有两条前置 step：固定 `UV_PYTHON=3.14`（onnxruntime 没有 cp315 wheel），
@@ -28,6 +29,7 @@ qegg init --force --no-input --no-hook --no-add-packages --qegg-version v0.12.0
   升级需要改 QuailEgg 模板并发版。
 - `qegg-pr` 的 Preview 步骤对 fork PR 会因只读 token 失败（非阻断检查）。
 - `qegg-pr` 的 job 没有中文名，非阻断性质只在分支保护里体现。
+- 升级 qegg 版本时要连 `--qegg-version` 一起改，生成文件里的安装步骤会跟着变（当前固定 `v0.13.0`）。
 
 ### 日常改动
 
