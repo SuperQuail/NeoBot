@@ -25,6 +25,11 @@ class Outer(BaseModel):
     tags: list[int] = []
 
 
+class Holder(BaseModel):
+    label: str = ""
+    inner: Inner = Inner()
+
+
 def test_valid_dict_parses() -> None:
     parsed = safe_parse_model({"label": "x", "inner": {"name": "n", "count": 2}, "tags": [1, 2]}, Outer)
     assert parsed == Outer(label="x", inner=Inner(name="n", count=2), tags=[1, 2])
@@ -48,13 +53,13 @@ def test_validation_failure_keeps_tolerantly_parsable_fields() -> None:
     assert dumped["sub_type"] == "poke"
 
 
-def test_tolerant_parse_drops_field_that_fails_to_convert() -> None:
-    parsed = safe_parse_model({"label": "x", "inner": {"name": "n", "count": "oops"}}, Outer)
-    assert parsed == Outer(label="x")
+def test_nested_model_keeps_convertible_subfields() -> None:
+    parsed = safe_parse_model({"label": "x", "inner": {"name": "n", "count": "oops"}}, Holder)
+    assert parsed == Holder(label="x", inner=Inner(name="n", count=0))
 
 
-def test_nested_model_with_non_dict_value_falls_back() -> None:
-    assert safe_parse_model({"label": "x", "inner": "oops"}, Outer) == Outer(label="x")
+def test_nested_model_with_non_dict_value_falls_back_to_default() -> None:
+    assert safe_parse_model({"label": "x", "inner": "oops"}, Holder) == Holder(label="x")
 
 
 def test_list_field_conversion_failure_falls_back_to_default_model() -> None:
