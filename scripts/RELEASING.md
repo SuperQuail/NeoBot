@@ -11,12 +11,17 @@
 ### 生成文件（不要手改）
 
 `.github/workflows/qegg-release.yml`、`qegg-pr.yml`、`qegg-status.yml` 都由 `qegg init` 生成。
-需要定制 release job 时改 `.quailegg.toml` 的 `[release.workflow]`（`steps` 或 `yaml`），再重新生成：
+需要定制前置步骤时改 `.quailegg.toml` 的 `[release.workflow]` / `[pr.workflow]` / `[status.workflow]`
+（`runner`、`timeout_minutes`、`steps` 或 `yaml`、`env`），再重新生成：
 
 ```bash
-qegg init --dry-run --force --no-input --no-hook --no-add-packages --qegg-version v0.12.0
-qegg init --force --no-input --no-hook --no-add-packages --qegg-version v0.12.0
+qegg init --dry-run --force --no-input --no-hook --no-add-packages --qegg-version v0.13.0
+qegg init --force --no-input --no-hook --no-add-packages --qegg-version v0.13.0
 ```
+
+> 这三个 section 只**追加**自定义步骤，不接管内置步骤。生成文件里已有的 checkout、setup-go、
+> 各生态 setup（例如 `qegg-pr.yml` 里的 `astral-sh/setup-uv`）和 QuailEgg 安装都来自模板，
+> 不要为了「补工具链」往 `[pr.workflow]` 里重复写一遍。
 
 当前配置的 `[release.workflow].yaml` 里有两条前置 step：固定 `UV_PYTHON=3.14`（onnxruntime 没有 cp315 wheel），
 以及把 uv workspace 的 `uv build` 输出固定到各包目录（qegg 随后在该目录 `uv publish`）。qegg 也支持
@@ -24,10 +29,11 @@ qegg init --force --no-input --no-hook --no-add-packages --qegg-version v0.12.0
 
 已知限制（由生成模板决定，不在仓库内手改）：
 
-- 生成工作流使用 qegg 模板内置的 action 版本（`checkout@v4`、`setup-uv@v5`），落后于仓库手写工作流；
-  升级需要改 QuailEgg 模板并发版。
+- 生成工作流使用 qegg 模板内置的 action 版本（`checkout@v4`、`setup-uv@v5`），落后于仓库手写工作流，
+  且使用可变大版本 tag（手写工作流已钉 SHA）；升级或改钉 SHA 需要改 QuailEgg 模板并发版，仓库内不要手改。
 - `qegg-pr` 的 Preview 步骤对 fork PR 会因只读 token 失败（非阻断检查）。
 - `qegg-pr` 的 job 没有中文名，非阻断性质只在分支保护里体现。
+- 升级 qegg 版本时要连 `--qegg-version` 一起改，生成文件里的安装步骤会跟着变（当前固定 `v0.13.0`）。
 
 ### 日常改动
 
@@ -45,6 +51,10 @@ qegg init --force --no-input --no-hook --no-add-packages --qegg-version v0.12.0
    ```
    **不要**为了让它变绿而手改生成的工作流，也**不要把** `QuailEgg PR` 设为必需检查。
 4. 合并发布 PR 后，同一工作流再次运行：`[verify].commands` 通过后构建并发布 7 个 Python 包到 PyPI，创建 Git tag 与 GitHub Release，并把 `release` 分支拉平到 `main`。
+
+**发版时确认 uv shim 生效**：`[release.workflow].yaml` 里的 shim 把 `uv build` 输出改到各包目录的 `dist/`。
+若发布日志出现「在成员目录 `uv publish` 找不到产物」或产物集中到仓库根 `dist/`，说明 shim 没生效——
+先修 `.quailegg.toml` 并重新生成，不要在生成的工作流里补步骤。
 
 ### 预发布
 
