@@ -33,6 +33,10 @@ class FakeProvider:
         self.calls.append(messages)
         if self.error is not None:
             raise self.error
+        # 真实模型调完发送工具就收尾；不模拟这一点会让 agent 一路跑到迭代上限，
+        # 把「本轮用量」放大成 200 次调用。
+        if len(self.calls) > 1:
+            return {"role": "assistant", "content": ""}
         name = "cancel" if self.content.strip().upper() == "[SKIP]" else "send_reply"
         arguments = {} if name == "cancel" else {"text": self.content}
         response = {
