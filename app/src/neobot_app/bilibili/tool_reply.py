@@ -119,14 +119,18 @@ class _ReplyExecutor:
 async def run_tool_reply(
     provider: Any,
     system: str,
-    user: str,
+    user: str = "",
     *,
+    messages: list[dict[str, Any]] | None = None,
     max_chars: int = 0,
     split: bool = False,
     timeout: float = 90.0,
     allow_reply_to: bool = False,
 ) -> ToolReply:
-    """跑一轮只含 send_reply/cancel 的 agent 循环，返回工具指定的回复。"""
+    """跑一轮只含 send_reply/cancel 的 agent 循环，返回工具指定的回复。
+
+    messages 给定时按多轮对话发送（system 之外的部分），否则只发一条 user。
+    """
     if provider is None:
         return ToolReply()
     executor = _ReplyExecutor(
@@ -146,8 +150,13 @@ async def run_tool_reply(
         max_iterations=200,
         system_prompt=system,
     )
+    conversation = (
+        list(messages)
+        if messages is not None
+        else [{"role": "user", "content": user}]
+    )
     state = await asyncio.wait_for(
-        agent.invoke({"messages": [{"role": "user", "content": user}]}),
+        agent.invoke({"messages": conversation}),
         timeout=timeout,
     )
     messages = state.get("messages", [])
@@ -169,7 +178,15 @@ async def run_tool_reply(
             }
         for key in usage:
             usage[key] += int(value.get(key, 0) or 0)
-    iterations = sum(1 for message in messages if message.get("role") == "assistant")
+    # 只算本轮产生的 assistant 消息：conversation 里可能已经带了历史 assistant 工具调用。
+    history_assistants = sum(
+        1 for message in conversation if message.get("role") == "assistant"
+    )
+    iterations = max(
+        0,
+        sum(1 for message in messages if message.get("role") == "assistant")
+        - history_assistants,
+    )
     return ToolReply(
         text=None if executor.cancelled else executor.text,
         usage=usage,

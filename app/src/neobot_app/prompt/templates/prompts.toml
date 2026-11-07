@@ -913,7 +913,7 @@ reply_to_rule = '''<回复对象>
 发送时可传 reply_to_uid = 对方的 uid（当前弹幕看 <待接弹幕 uid="...">，历史弹幕看行首 [uid=...]），B站会 @ 对方。被 @ 的弹幕（<待接弹幕> 里带 [@了我]）必须优先回，并传 reply_to_uid 指向它；不 @ 时不要传。
 </回复对象>'''
 danmaku_history = '''<直播历史一致性>
-最近弹幕里发送者是「{bot_name}」的是你自己;没有新内容就调用 cancel。
+最近弹幕里发送者是「{bot_name}」的、或你自己的 send_reply 工具调用，都是你自己发过的;没有新内容就调用 cancel。
 </直播历史一致性>'''
 scheduled_history = '''<直播历史一致性>
 最近弹幕里发送者是「{bot_name}」的是你自己;这是主动发的一条,必须调用 send_reply。

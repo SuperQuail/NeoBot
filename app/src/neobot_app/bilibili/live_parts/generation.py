@@ -243,6 +243,9 @@ class _GenerationMixin:
         at_me: bool = False,
     ) -> Any:
         room = self._rooms.get(str(room_id)) or {}
+        # 历史按角色消息给（别人的 user、自己的 assistant 工具调用），不再拼成一整段文本：
+        # 逐条追加的稳定前缀才能命中缓存，模型也才看得到"用工具说话"的示范。
+        history_messages = self.build_history_messages(room_id, _MAX_HISTORY)
         ctx = LiveDanmakuContext(
             bot_name=self._bot_name,
             bot_data=self._bot_data,
@@ -251,7 +254,6 @@ class _GenerationMixin:
             viewer_uid=user_id,
             viewer_at_me=at_me,
             text=text,
-            recent_history=self.format_history(room_id, _MAX_HISTORY),
             room_memory=self._room_memory.get(str(room_id), ""),
             viewer_memory=await self._load_user_memory(user_id),
             frame_context="",
@@ -264,16 +266,14 @@ class _GenerationMixin:
             content += "\n" + _text(
                 "live", "asr_wrapper", store=self._prompt_store
             ).format(asr_context=asr_context)
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": content},
-        ]
+        conversation = [*history_messages, {"role": "user", "content": content}]
+        messages = [{"role": "system", "content": system}, *conversation]
         self._record_live_flow(room_id, system, messages)
         try:
             result = await run_tool_reply(
                 self._provider,
                 system,
-                content,
+                messages=conversation,
                 max_chars=self._max_reply_chars,
                 split=True,
                 timeout=90.0,

@@ -22,6 +22,9 @@ class _ReplyMixin:
 
     async def _handle_danmu(self, room_id: str, danmu: dict[str, Any]) -> None:
         room_id = str(room_id)
+        # 自己发的弹幕会被服务器回显：发送时已经记过一条 self 历史，别再重复记一遍。
+        if self._my_uid and _to_int(danmu.get("uid")) == self._my_uid:
+            return
         self._record_history(room_id, danmu)
         _uid = _to_int(danmu.get("uid"))
         if _uid and _uid not in self._user_archive_seen:
@@ -116,9 +119,13 @@ class _ReplyMixin:
             "ts": time.time(),
             "time": datetime.now().astimezone().strftime("%H:%M:%S"),
         }
+        if danmu.get("self"):
+            # 自己发出的弹幕：历史里要渲染成 assistant，而不是别人的 user 行。
+            entry["self"] = True
         room_history = self._history.get(room_id)
         if room_history is None:
-            room_history = self._history[room_id] = deque(maxlen=_MAX_HISTORY)
+            # 存两倍窗口：按块淘汰，历史前缀不会每来一条弹幕就整体位移，缓存才能命中。
+            room_history = self._history[room_id] = deque(maxlen=_MAX_HISTORY * 2)
         room_history.append(entry)
         if self._summary_every:
             self._summary_counts[room_id] += 1
@@ -152,7 +159,8 @@ class _ReplyMixin:
             self._record_send_failure(room_id)
             return False
         self._record_history(
-            str(room_id), {"uid": 0, "name": self._bot_name or "你", "text": text}
+            str(room_id),
+            {"uid": 0, "name": self._bot_name or "你", "text": text, "self": True},
         )
         return True
 
