@@ -70,8 +70,6 @@ class _ReplyMixin:
         replies = result.segments or ([result.text] if result.text else [])
         if not replies:
             return
-        if self._screenshot_replies:
-            await self._save_reply_frame(room_id)
         target_uid = _to_int(result.reply_to)
         target_name = ""
         if target_uid:
@@ -86,6 +84,9 @@ class _ReplyMixin:
             ):
                 return
         self._record_reply(room_id)
+        # 截图在回复发出之后再做：拉流截帧要起 ffmpeg，不能挡在发送前面。
+        if self._screenshot_replies:
+            await self._save_reply_frame(room_id)
         # 延迟与用量归因：排队耗时（收包到开始处理）+ 生成发送耗时 + 模型轮次/token。
         recv_at = float(danmu.get("recv_at") or 0.0)
         queued = max(0.0, started - recv_at) if recv_at else 0.0
@@ -248,10 +249,6 @@ class _ReplyMixin:
             return {"ok": False, "error": "willing_service 未配置"}
         self._willing_service.remove_runtime_conversation_coefficient(f"live:{rid}")
         return {"ok": True, "room_id": rid}
-
-    def _mentions_bot(self, text: str) -> bool:
-        lowered = text.lower()
-        return any(name.lower() in lowered for name in self._known_bot_names())
 
     def _reply_allowed(self, room_id: str) -> bool:
         now = time.monotonic()

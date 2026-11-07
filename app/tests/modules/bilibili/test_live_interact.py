@@ -1066,18 +1066,6 @@ async def test_live_auto_reply_skips_when_willingness_denies(tmp_path: Path) -> 
 
 
 
-def test_mention_aliases_are_used_for_at_detection(tmp_path: Path) -> None:
-    interactor = BilibiliLiveInteractor(
-        None,
-        bot_name="QQ名",
-        data_dir=tmp_path,
-        mention_names=["B站小号"],
-    )
-    assert interactor._mentions_bot("@B站小号 在吗") is True
-    assert interactor._mentions_bot("@别人 在吗") is False
-
-
-
 class _FakeFlowRegistry:
     def __init__(self) -> None:
         self.prompts: list[tuple] = []
