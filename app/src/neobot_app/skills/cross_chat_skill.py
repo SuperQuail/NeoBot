@@ -341,8 +341,12 @@ class CrossChatSkill(SkillModule):
         target: tuple[str, str],
         reply: str,
         status: str,
+        task_id: str | None = None,
     ) -> None:
-        """更新最近一次交互的回传结果；仅影响「查看」接口。"""
+        """更新最近一次交互的回传结果；仅影响「查看」接口。
+
+        task_id 不匹配时（该行已被同一对的后续投递重置）不覆盖，返回 None 只告警。
+        """
         if self._uow_factory is None or origin is None:
             return
         try:
@@ -350,7 +354,7 @@ class CrossChatSkill(SkillModule):
                 repo = getattr(uow, "cross_chat_sessions", None)
                 if repo is None:
                     return
-                await repo.record_result(
+                updated = await repo.record_result(
                     origin_kind=origin[0],
                     origin_id=origin[1],
                     target_kind=target[0],
@@ -358,8 +362,14 @@ class CrossChatSkill(SkillModule):
                     reply=reply,
                     status=status,
                     boot_id=self._boot_id,
+                    task_id=task_id,
                 )
                 await uow.commit()
+                if updated is None:
+                    logger.warning(
+                        "跨聊天会话回传未落库（记录已不存在或已被新投递覆盖）",
+                        task_id=task_id,
+                    )
         except Exception as exc:
             logger.warning(
                 f"跨聊天会话回传更新失败（不影响回传）: {type(exc).__name__}: {exc}"
@@ -584,7 +594,7 @@ class CrossChatSkill(SkillModule):
                     f"跨聊天回传失败（会话记录仍更新）: task={record.task_id}"
                 )
         # 超时/未终结也要回写状态，否则库里停在 delivered，与 cross_chat_status 矛盾。
-        await self._session_result(origin, target, reply, record.status)
+        await self._session_result(origin, target, reply, record.status, record.task_id)
 
 
 # ── Handlers ──
@@ -765,7 +775,6 @@ async def _handle_cross_chat_sessions(self: CrossChatSkill, args: dict) -> str:
         return _json({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
     return _json({
         "ok": True,
-        "boot_id": self._boot_id,
         "chat_flow": f"{origin[0]}:{origin[1]}",
         "count": len(records),
         "sessions": [

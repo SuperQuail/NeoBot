@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -80,6 +80,8 @@ class SqlAlchemyCrossChatSessionAccess:
         )
         await self._session.execute(stmt)
         await self._session.flush()
+        # 每次写入顺带清理过期行（同一事务，代价可忽略）
+        await self.prune_older_than(now - timedelta(days=30))
         record = await self.get(
             origin_kind=origin_kind,
             origin_id=origin_id,
@@ -100,11 +102,15 @@ class SqlAlchemyCrossChatSessionAccess:
         reply: str,
         status: str,
         boot_id: str,
+        task_id: str | None = None,
     ) -> CrossChatSessionRecord | None:
         row = await self._get_row(
             origin_kind, origin_id, target_kind, target_id, boot_id
         )
         if row is None:
+            return None
+        # task_id 不匹配说明该行已被同一对的后续投递重置，旧回传不要覆盖新记录。
+        if task_id is not None and row.task_id != str(task_id):
             return None
         row.reply = str(reply)
         row.status = str(status)
@@ -152,6 +158,22 @@ class SqlAlchemyCrossChatSessionAccess:
             origin_kind, origin_id, target_kind, target_id, boot_id
         )
         return self._to_domain(row) if row is not None else None
+
+    async def prune_older_than(self, cutoff: datetime) -> int:
+        """删除 ``updated_at`` 早于 cutoff 的行，返回删除条数。
+
+        0031 起「每进程每对一行」，不清理会随重启次数无界增长；按时间窗清理
+        不会影响仍在运行的其它进程（它们的行是新的）。
+        """
+        from sqlalchemy import delete
+
+        result = await self._session.execute(
+            delete(CrossChatSessionData).where(
+                CrossChatSessionData.updated_at < cutoff
+            )
+        )
+        await self._session.flush()
+        return int(result.rowcount or 0)
 
     async def _get_row(
         self,

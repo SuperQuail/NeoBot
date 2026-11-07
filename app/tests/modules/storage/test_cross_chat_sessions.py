@@ -178,14 +178,47 @@ def test_migration_0031_moves_boot_id_into_unique_key(tmp_path: Path) -> None:
     assert [
         "origin_kind", "origin_id", "target_kind", "target_id", "boot_id"
     ] in after
+    assert ["origin_kind", "origin_id", "target_kind", "target_id"] not in after, (
+        "0031 必须把四列唯一索引换掉，而不是两个都留"
+    )
     assert _columns(db) == {
         "id", "origin_kind", "origin_id", "target_kind", "target_id",
         "task_id", "mode", "notification_mode", "status", "reply", "boot_id",
         "created_at", "updated_at",
     }
 
+    # 迁移后的库真的能容纳同一对的两个 boot 行
+    connection = sqlite3.connect(str(db))
+    try:
+        for boot in ("boot-a", "boot-b"):
+            connection.execute(
+                "INSERT INTO cross_chat_sessions "
+                "(origin_kind, origin_id, target_kind, target_id, task_id, mode, "
+                " notification_mode, status, reply, boot_id, created_at, updated_at) "
+                "VALUES ('group', '1', 'private', '2', ?, 'wait', 'response', "
+                "        'delivered', '', ?, '2026-11-07 00:00:00', '2026-11-07 00:00:00')",
+                (f"t-{boot}", boot),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+    # 降级会按 pair 去重（保留最新一行），不能因为跨 boot 行而抛 IntegrityError
     command.downgrade(cfg, "0030")
     assert ["origin_kind", "origin_id", "target_kind", "target_id"] in _unique_index_columns(db)
+    assert "boot_id" in _columns(db)
+    connection = sqlite3.connect(str(db))
+    try:
+        rows = connection.execute(
+            "SELECT task_id FROM cross_chat_sessions ORDER BY id"
+        ).fetchall()
+        leftovers = connection.execute(
+            "SELECT name FROM sqlite_master WHERE name LIKE '_alembic_tmp%'"
+        ).fetchall()
+    finally:
+        connection.close()
+    assert len(rows) == 1, f"降级后应只剩 1 行，实际 {rows}"
+    assert leftovers == [], f"batch 重建不应留下临时表：{leftovers}"
 
 
 @pytest.mark.asyncio
@@ -224,6 +257,11 @@ async def test_orm_and_migration_schema_match(tmp_path: Path) -> None:
     }
 
     assert orm_columns == migrated_columns
+
+    # 唯一索引列集合必须一致，否则两条建表路径的冲突语义不同
+    assert sorted(map(tuple, map(sorted, _unique_index_columns(tmp_path / "orm.db")))) == sorted(
+        map(tuple, map(sorted, _unique_index_columns(migrated)))
+    )
 
 
 async def test_repeat_upsert_resets_reply(uow_factory) -> None:
@@ -278,3 +316,79 @@ async def test_new_boot_does_not_hide_previous_boot_rows(uow_factory) -> None:
 
     assert [item.task_id for item in a] == ["t-boot-a"]
     assert [item.task_id for item in b] == ["t-boot-b"]
+
+
+async def test_record_result_ignores_stale_task_id(uow_factory) -> None:
+    """同一对聊天流被新投递重置后，旧回传不能覆盖新记录。"""
+    async with uow_factory() as uow:
+        await uow.cross_chat_sessions.upsert(
+            origin_kind="group", origin_id="1",
+            target_kind="private", target_id="2",
+            task_id="t1", mode="fire_and_forget", notification_mode="response",
+            status="delivered", boot_id="boot-a",
+        )
+        await uow.commit()
+
+    async with uow_factory() as uow:
+        # 第二次投递重置这一行
+        await uow.cross_chat_sessions.upsert(
+            origin_kind="group", origin_id="1",
+            target_kind="private", target_id="2",
+            task_id="t2", mode="fire_and_forget", notification_mode="response",
+            status="delivered", boot_id="boot-a",
+        )
+        await uow.commit()
+
+    async with uow_factory() as uow:
+        # 第一个任务的后台回传迟到
+        stale = await uow.cross_chat_sessions.record_result(
+            origin_kind="group", origin_id="1",
+            target_kind="private", target_id="2",
+            reply="旧回传", status="responded", boot_id="boot-a",
+            task_id="t1",
+        )
+        await uow.commit()
+
+    assert stale is None
+
+    async with uow_factory() as uow:
+        record = await uow.cross_chat_sessions.get(
+            origin_kind="group", origin_id="1",
+            target_kind="private", target_id="2", boot_id="boot-a",
+        )
+    assert record is not None
+    assert record.task_id == "t2"
+    assert record.reply == ""
+
+
+async def test_prune_older_than_removes_only_expired_rows(uow_factory) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from neobot_storage.models import CrossChatSessionData
+
+    async with uow_factory() as uow:
+        await uow.cross_chat_sessions.upsert(
+            origin_kind="group", origin_id="old",
+            target_kind="private", target_id="2",
+            task_id="t-old", mode="wait", notification_mode="response",
+            status="delivered", boot_id="boot-old",
+        )
+        await uow.commit()
+
+    # 把这一行改成 60 天前
+    async with uow_factory() as uow:
+        row = await uow.cross_chat_sessions._get_row(
+            "group", "old", "private", "2", "boot-old"
+        )
+        assert row is not None
+        row.updated_at = datetime.now(timezone.utc) - timedelta(days=60)
+        await uow.commit()
+
+    async with uow_factory() as uow:
+        removed = await uow.cross_chat_sessions.prune_older_than(
+            datetime.now(timezone.utc) - timedelta(days=30)
+        )
+        await uow.commit()
+
+    assert removed == 1
+    assert CrossChatSessionData is not None

@@ -532,9 +532,14 @@ class FakeSessionRepo:
         self.rows[key] = row
         return SimpleNamespace(**row)
 
-    async def record_result(self, *, origin_kind, origin_id, target_kind, target_id, reply, status, boot_id):
+    async def record_result(
+        self, *, origin_kind, origin_id, target_kind, target_id,
+        reply, status, boot_id, task_id=None,
+    ):
         key = (origin_kind, origin_id, target_kind, target_id)
         if key not in self.rows:
+            return None
+        if task_id is not None and self.rows[key].get("task_id") != task_id:
             return None
         self.rows[key].update({"reply": reply, "status": status, "boot_id": boot_id})
         return SimpleNamespace(**self.rows[key])
@@ -749,3 +754,39 @@ def test_sessions_tool_description_hides_internal_boot_id():
     )
     assert "boot_id" not in tool["function"]["description"]
     assert "本次运行期间" in tool["function"]["description"]
+
+
+async def test_sessions_output_hides_internal_boot_id():
+    repo = FakeSessionRepo()
+    skill = CrossChatSkill(uow_factory=_uow_factory(repo), boot_id="boot-a")
+    await skill.execute("cross_chat_send", {
+        "target_kind": "group", "target_id": "888", "task": "hi",
+        "pipeline_key": "private:999",
+    })
+
+    listed = _parse(await skill.execute("cross_chat_sessions", {"pipeline_key": "private:999"}))
+    assert "boot_id" not in listed
+    assert "boot_id" not in json.dumps(listed, ensure_ascii=False)
+
+
+async def test_stale_relay_does_not_overwrite_newer_session():
+    """同一对聊天流第二次投递后，第一个任务迟到的回传不能覆盖新记录。"""
+    repo = FakeSessionRepo()
+    skill = CrossChatSkill(uow_factory=_uow_factory(repo), boot_id="boot-a")
+
+    await skill.execute("cross_chat_send", {
+        "target_kind": "group", "target_id": "888", "task": "第一次",
+        "pipeline_key": "private:999",
+    })
+    await skill.execute("cross_chat_send", {
+        "target_kind": "group", "target_id": "888", "task": "第二次",
+        "pipeline_key": "private:999",
+    })
+    with_first = repo.rows[("private", "999", "group", "888")]["task_id"]
+
+    await skill._session_result(
+        ("private", "999"), ("group", "888"), "旧回传", "responded", with_first + "-stale",
+    )
+
+    row = repo.rows[("private", "999", "group", "888")]
+    assert row["reply"] == ""

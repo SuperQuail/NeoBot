@@ -14,7 +14,11 @@ Create Date: 2026-11-07
 改成 (origin, target, boot_id)：同进程内复用一行并重置 reply，不同进程各留各的行，
 「重启后旧记录不再显示」由查询侧的 boot_id 过滤保证，不再靠覆盖实现。
 
-SQLite 不能直接改表级 UNIQUE，用 batch 模式重建表；数据原样搬运。
+SQLite 不能直接改表级 UNIQUE，用 batch 模式重建表；升级时数据原样搬运。
+
+**降级有损**：0031 允许同一对聊天流存在多个 boot 的行，0030 只允许一行。
+downgrade 会先按 pair 去重（保留 id 最大、即最新写入的那行）再重建约束，
+旧 boot 的历史行会被删除——这是回到「每对一行」语义的必然代价。
 """
 
 from __future__ import annotations
@@ -48,6 +52,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # 先按 pair 去重（保留最新一行），否则四列唯一约束建不起来。
+    op.execute(
+        "DELETE FROM cross_chat_sessions WHERE id NOT IN ("
+        "  SELECT MAX(id) FROM cross_chat_sessions"
+        "  GROUP BY origin_kind, origin_id, target_kind, target_id)"
+    )
     with op.batch_alter_table(
         "cross_chat_sessions", recreate="always", naming_convention={}
     ) as batch:

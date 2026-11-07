@@ -42,6 +42,7 @@ class CrossChatSessionAccess(Protocol):
         reply: str,
         status: str,
         boot_id: str,
+        task_id: str | None = None,
     ) -> CrossChatSessionRecord | None: ...
 
     async def list_for_chat(
