@@ -101,7 +101,7 @@
 - 主动观察：可配置定时看画面并决定是否发弹幕，默认关闭
 - 复用QQ档案表：直播间用 group_summary/group_profile（key 前缀 bilibili_live:room:），观众用 user_summary/user_profile（key 前缀 bilibili_live:uid:）；每 200 条弹幕自动总结一次并注入 <直播间档案>/<观众档案>，没有手动存记忆工具
 - 截图保留：默认关闭；开启后每条自动回复保存一张直播画面
-- 自动回复按 QQ 群聊同一套意愿公式：基础概率 0.5 + 问句加成，再乘全局/会话/用户系数；@/叫名字按 at_mention_guaranteed_reply 必回。之后再加 5 秒冷却；排除自己的弹幕。回复可带 reply_to（弹幕行首 uid），B站会 @ 对方。当前弹幕的 uid 会直接注入 `<待接弹幕 uid="…">`，[@了我] 只标当前这条弹幕；历史行只带 [uid=]，不再挂永久 @ 标记。
+- 自动回复按 QQ 群聊同一套意愿公式：基础概率 0.5 + 问句加成，再乘全局/会话/用户系数；@/叫名字按 at_mention_guaranteed_reply 必回。之后再加 5 秒冷却；排除自己的弹幕。回复可带 reply_to（弹幕行首 uid），B站会 @ 对方。
 - 状态文件：data/bilibili/live_interact.json，重启自动恢复。
 - 直播监听（开播/下播通知）在 streaming_parser 插件里，和这里完全分开。
 

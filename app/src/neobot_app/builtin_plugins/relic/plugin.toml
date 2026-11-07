@@ -1,6 +1,0 @@
-name = "relic"
-enabled = false
-version = "0.1.0"
-description = "官方插件骨架（功能规划中）"
-author = "NeoBot"
-tags = ["official"]
