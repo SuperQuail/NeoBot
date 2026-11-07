@@ -291,14 +291,18 @@ async def test_at_filter_generates_and_sends(tmp_path: Path) -> None:
     assert client.sent == [(5440, "在呢")]
     messages = provider.messages[0]
     system = next(item for item in messages if item.get("role") == "system")
-    user = next(item for item in messages if item.get("role") == "user")
+    users = [
+        str(item.get("content") or "")
+        for item in messages
+        if item.get("role") == "user"
+    ]
     assert system["role"] == "system"
     assert "<直播场景>这是B站直播间。</直播场景>" in system["content"]
     assert "最多20个字" not in system["content"]
     assert "<活人感增强>" in system["content"]
-    assert user["role"] == "user"
-    assert "@小助手 唱首歌" in user["content"]
-    assert "最近弹幕" in user["content"]
+    # 历史是逐条角色消息：当前弹幕既在历史行里，也在末尾的待接弹幕块里。
+    assert any("@小助手 唱首歌" in content for content in users)
+    assert any("[uid=8]" in content for content in users)
 
     await interactor._handle_danmu("5440", {"uid": 8, "name": "观众", "text": "随便说"})
     assert client.sent == [(5440, "在呢"), (5440, "在呢")]
@@ -1179,7 +1183,7 @@ async def test_live_generation_reads_custom_bili_live_text(tmp_path: Path) -> No
 
     await interactor._handle_danmu("5440", {"uid": 9, "name": "观众", "text": "在吗"})
 
-    user = next(
+    user = "\n".join(
         str(item.get("content") or "")
         for item in provider.messages[0]
         if item.get("role") == "user"
@@ -1362,9 +1366,11 @@ class _TwoTurnProvider:
 
     def __init__(self) -> None:
         self.calls = 0
+        self.messages: list[list[dict]] = []
 
     async def chat(self, messages, tools=None):
         self.calls += 1
+        self.messages.append(list(messages))
         if self.calls == 1:
             return {
                 "role": "assistant",
@@ -1433,6 +1439,33 @@ async def test_process_danmu_passes_at_me_to_generation(tmp_path: Path) -> None:
         "5440", {"uid": 8, "name": "观众", "text": "在吗", "reply_mid": 999}
     )
     assert calls and calls[0]["at_me"] is True
+
+
+async def test_live_history_is_role_messages(tmp_path: Path) -> None:
+    """直播历史按角色消息给：别人的 user、自己的 assistant 工具调用。"""
+    provider = _TwoTurnProvider()
+    interactor = BilibiliLiveInteractor(
+        _FakeClient(), provider=provider, bot_name="小助手", data_dir=tmp_path
+    )
+    await interactor.enable(5440)
+    interactor._record_history("5440", {"uid": 8, "name": "观众", "text": "在吗"})
+    interactor._record_history("5440", {"uid": 0, "name": "小助手", "text": "在的"})
+
+    await interactor._handle_danmu("5440", {"uid": 9, "name": "观众B", "text": "哈哈"})
+
+    convo = provider.messages[0]
+    users = [item for item in convo if item.get("role") == "user"]
+    assistants = [item for item in convo if item.get("role") == "assistant"]
+    assert any("[uid=8]" in str(item.get("content") or "") for item in users)
+    # 自己发过的弹幕不是纯文本，而是 send_reply 工具调用历史。
+    assert assistants and all(item.get("tool_calls") for item in assistants)
+    assert any(
+        "在的" in json.dumps(item["tool_calls"], ensure_ascii=False)
+        for item in assistants
+    )
+    assert any(item.get("role") == "tool" for item in convo)
+    # 末尾仍是待接弹幕块。
+    assert any("<待接弹幕" in str(item.get("content") or "") for item in users)
 
 
 async def test_tool_reply_reports_model_iterations() -> None:
