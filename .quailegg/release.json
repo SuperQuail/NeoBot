@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "version": "2.1.0-a4",
-  "created_at": "2026-11-07T12:22:07.184875343Z",
+  "version": "2.1.0-a5",
+  "created_at": "2026-11-07T13:22:27.182777708Z",
   "mode": "pr",
   "channel": "alpha",
-  "fingerprint": "sha256:007fcfb8a91840d402b92a1f94946ea3f6f0529883243aaf1178b137d759c1b0",
+  "fingerprint": "sha256:c85884411e6b269facf44e5d3861b2bf31b755e92b7d5b277d9b85656d312776",
   "repo": {
     "host": "github.com",
     "owner": "SuperQuail",
@@ -18,95 +18,95 @@
       "uv run pytest --strict-markers -m \"not browser and not network and not slow and not llm\""
     ],
     "skipped": false,
-    "at": "2026-11-07T12:22:07.184876024Z"
+    "at": "2026-11-07T13:22:27.182778177Z"
   },
   "packages": [
     {
       "name": "python@neobot",
       "path": ".",
       "resolver": "python",
-      "current": "2.1.0-a3",
-      "next": "2.1.0-a4",
+      "current": "2.1.0-a4",
+      "next": "2.1.0-a5",
       "bump": "minor",
-      "tag": "v2.1.0a4",
+      "tag": "v2.1.0a5",
       "publish": false
     },
     {
       "name": "python@neobot-app",
       "path": "app",
       "resolver": "python",
-      "current": "2.1.0-a3",
-      "next": "2.1.0-a4",
+      "current": "2.1.0-a4",
+      "next": "2.1.0-a5",
       "bump": "minor",
-      "tag": "v2.1.0a4",
+      "tag": "v2.1.0a5",
       "publish": true
     },
     {
       "name": "python@neobot-contracts",
       "path": "packages/contracts",
       "resolver": "python",
-      "current": "2.1.0-a3",
-      "next": "2.1.0-a4",
+      "current": "2.1.0-a4",
+      "next": "2.1.0-a5",
       "bump": "minor",
-      "tag": "v2.1.0a4",
+      "tag": "v2.1.0a5",
       "publish": true
     },
     {
       "name": "python@neobot-adapter",
       "path": "packages/adapter",
       "resolver": "python",
-      "current": "2.1.0-a3",
-      "next": "2.1.0-a4",
+      "current": "2.1.0-a4",
+      "next": "2.1.0-a5",
       "bump": "minor",
-      "tag": "v2.1.0a4",
+      "tag": "v2.1.0a5",
       "publish": true
     },
     {
       "name": "python@neobot-chat",
       "path": "packages/chat",
       "resolver": "python",
-      "current": "2.1.0-a3",
-      "next": "2.1.0-a4",
+      "current": "2.1.0-a4",
+      "next": "2.1.0-a5",
       "bump": "minor",
-      "tag": "v2.1.0a4",
+      "tag": "v2.1.0a5",
       "publish": true
     },
     {
       "name": "python@neobot-memory",
       "path": "packages/memory",
       "resolver": "python",
-      "current": "2.1.0-a3",
-      "next": "2.1.0-a4",
+      "current": "2.1.0-a4",
+      "next": "2.1.0-a5",
       "bump": "minor",
-      "tag": "v2.1.0a4",
+      "tag": "v2.1.0a5",
       "publish": true
     },
     {
       "name": "python@neobot-modloader",
       "path": "packages/modloader",
       "resolver": "python",
-      "current": "2.1.0-a3",
-      "next": "2.1.0-a4",
+      "current": "2.1.0-a4",
+      "next": "2.1.0-a5",
       "bump": "minor",
-      "tag": "v2.1.0a4",
+      "tag": "v2.1.0a5",
       "publish": true
     },
     {
       "name": "python@neobot-storage",
       "path": "packages/storage",
       "resolver": "python",
-      "current": "2.1.0-a3",
-      "next": "2.1.0-a4",
+      "current": "2.1.0-a4",
+      "next": "2.1.0-a5",
       "bump": "minor",
-      "tag": "v2.1.0a4",
+      "tag": "v2.1.0a5",
       "publish": true
     }
   ],
   "releases": [
     {
-      "version": "2.1.0-a4",
-      "tag": "v2.1.0a4",
-      "previous_tag": "v2.1.0a3",
+      "version": "2.1.0-a5",
+      "tag": "v2.1.0a5",
+      "previous_tag": "v2.1.0a4",
       "packages": [
         "python@neobot",
         "python@neobot-adapter",
@@ -204,6 +204,21 @@
       "commit_url": "https://github.com/SuperQuail/NeoBot/commit/17053075d8f88e4207286f568917694f7ee64d58",
       "pull_number": 271,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/271",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/log-info-debug.md",
+      "type": "fix",
+      "scope": "logging",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Downgrade per-request HTTP INFO logs (httpx, aiohttp access) to DEBUG so AI and media calls stop flooding the console and dashboard log view.",
+      "commit": "6919c44f4232f18c3f646ddadf458a1bd9861991",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/6919c44f4232f18c3f646ddadf458a1bd9861991",
+      "pull_number": 290,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/290",
       "author": "Tang-Tian-dev"
     },
     {
@@ -320,6 +335,7 @@
     }
   ],
   "previous_changes": [
+    ".changes/cross-chat-fixes.md",
     ".changes/cross-chat-session.md",
     ".changes/dashboard-prompt-folding.md",
     ".changes/drop-legacy-release.md",
