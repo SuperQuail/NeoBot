@@ -3,14 +3,49 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
+import time
 from dataclasses import dataclass
 from typing import Any
 
-from neobot_chat import Agent
-from neobot_chat.schema.types import ToolAccessRule
-from neobot_chat.tools.toolset import ToolSpec, Toolset
+from neobot_chat.schema.exceptions import ProviderError
 from neobot_app.reply.postprocess import split_into_sentences_w_remove_punctuation
+
+#: 单次模型调用超时上限；整轮仍受 timeout 约束。默认与整轮一致，避免把慢模型提前掐掉。
+_CALL_TIMEOUT_SECONDS = 90.0
+#: 循环上限：一轮正常 1~2 次调用，这里只防止模型持续调工具时死循环。
+_MAX_ITERATIONS = 200
+_USAGE_KEYS = ("input_tokens", "output_tokens", "cache_hit_tokens", "cache_miss_tokens")
+
+
+def _add_usage(usage: dict[str, int] | None, response: Any) -> dict[str, int] | None:
+    """把单轮 usage 累加进本轮总量（每轮都要记，回复正文常在前几轮）。"""
+    if not isinstance(response, dict):
+        return usage
+    value = (response.get("extensions") or {}).get("usage")
+    if not isinstance(value, dict):
+        return usage
+    if usage is None:
+        usage = {key: 0 for key in _USAGE_KEYS}
+    for key in _USAGE_KEYS:
+        usage[key] += int(value.get(key, 0) or 0)
+    return usage
+
+
+def _parse_tool_args(raw: Any) -> dict:
+    """解析工具参数；坏 JSON 抛 ValueError，由循环按"工具报错"回给模型。"""
+    if isinstance(raw, dict):
+        return dict(raw)
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(str(exc)) from exc
+    if not isinstance(value, dict):
+        raise ValueError("参数必须是 JSON 对象")
+    return value
 
 _SEND_REPLY = {
     "type": "function",
@@ -39,6 +74,10 @@ _CANCEL = {
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     },
 }
+
+#: 工具面：只有发送与取消，其余一律不暴露。
+_TOOL_DEFS = (_SEND_REPLY, _CANCEL)
+_TOOL_NAMES = frozenset(item["function"]["name"] for item in _TOOL_DEFS)
 
 
 @dataclass
@@ -126,67 +165,92 @@ async def run_tool_reply(
     split: bool = False,
     timeout: float = 90.0,
     allow_reply_to: bool = False,
+    call_timeout: float = _CALL_TIMEOUT_SECONDS,
+    max_iterations: int = _MAX_ITERATIONS,
 ) -> ToolReply:
-    """跑一轮只含 send_reply/cancel 的 agent 循环，返回工具指定的回复。
+    """跑一轮只含 send_reply/cancel 的模型循环，返回工具指定的回复。
 
-    messages 给定时按多轮对话发送（system 之外的部分），否则只发一条 user。
+    自己驱动循环、不用通用 Agent 外壳：system 就是调用方给的文本，单次调用与整轮
+    各有超时，工具面只有发送与取消。messages 给定时按多轮对话发送（system 之外）。
     """
     if provider is None:
         return ToolReply()
     executor = _ReplyExecutor(
         max_chars=max_chars, split=split, allow_reply_to=allow_reply_to
     )
-    toolset = Toolset(
-        executor=executor,
-        specs=[
-            ToolSpec(_SEND_REPLY, lambda *_: ToolAccessRule(action="allow")),
-            ToolSpec(_CANCEL, lambda *_: ToolAccessRule(action="allow")),
-        ],
-    )
-    agent = Agent(
-        provider,
-        toolset=toolset,
-        include_builtin_tools=False,
-        max_iterations=200,
-        system_prompt=system,
-    )
-    conversation = (
+    conversation: list[dict[str, Any]] = [{"role": "system", "content": system}]
+    conversation.extend(
         list(messages)
         if messages is not None
         else [{"role": "user", "content": user}]
     )
-    state = await asyncio.wait_for(
-        agent.invoke({"messages": conversation}),
-        timeout=timeout,
-    )
-    messages = state.get("messages", [])
-    # 每一轮工具调用都有用量，按轮累加：回复正文常出现在首轮 send_reply 里，
-    # 只取最后一条会漏掉绝大部分 output token，和群聊的逐次记录也不能对账。
+    deadline = time.monotonic() + max(0.0, timeout)
     usage: dict[str, int] | None = None
-    for message in messages:
-        if message.get("role") != "assistant":
-            continue
-        value = (message.get("extensions") or {}).get("usage")
-        if not isinstance(value, dict):
-            continue
-        if usage is None:
-            usage = {
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "cache_hit_tokens": 0,
-                "cache_miss_tokens": 0,
-            }
-        for key in usage:
-            usage[key] += int(value.get(key, 0) or 0)
-    # 只算本轮产生的 assistant 消息：conversation 里可能已经带了历史 assistant 工具调用。
-    history_assistants = sum(
-        1 for message in conversation if message.get("role") == "assistant"
-    )
-    iterations = max(
-        0,
-        sum(1 for message in messages if message.get("role") == "assistant")
-        - history_assistants,
-    )
+    iterations = 0
+
+    async def _call_provider() -> Any:
+        """provider 自身的异常统一包成 ProviderError（调用方按可重试处理）。"""
+        try:
+            return await provider.chat(conversation, tools=list(_TOOL_DEFS))
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError(
+                f"{type(exc).__name__}: {exc}",
+                provider=str(
+                    getattr(provider, "registered_key", "")
+                    or getattr(provider, "model", "")
+                    or type(provider).__name__
+                ),
+                original=exc,
+                iteration=iterations,
+            ) from exc
+
+    async def _execute_tool(call: dict[str, Any]) -> str:
+        """单个工具调用：参数/执行异常都回给模型，不打断整轮（与旧 Agent 一致）。"""
+        function = call.get("function") or {}
+        name = str(function.get("name") or "")
+        if name not in _TOOL_NAMES:
+            return '{"ok": false, "error": "未知工具"}'
+        try:
+            args = _parse_tool_args(function.get("arguments"))
+        except ValueError as exc:
+            return json.dumps(
+                {"ok": False, "error": f"工具参数解析失败：{exc}"}, ensure_ascii=False
+            )
+        try:
+            return await executor.execute(name, args)
+        except Exception as exc:
+            return json.dumps(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+                ensure_ascii=False,
+            )
+
+    while iterations < max_iterations:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise asyncio.TimeoutError("B站回复生成超过整轮时限")
+        response = await asyncio.wait_for(
+            _call_provider(),
+            timeout=min(remaining, call_timeout),
+        )
+        iterations += 1
+        conversation.append(response)
+        usage = _add_usage(usage, response)
+        tool_calls = response.get("tool_calls") if isinstance(response, dict) else None
+        if not tool_calls:
+            break
+        for call in tool_calls:
+            conversation.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": str(call.get("id") or ""),
+                    "name": str((call.get("function") or {}).get("name") or ""),
+                    "content": await _execute_tool(call),
+                }
+            )
+        if executor.cancelled:
+            break
     return ToolReply(
         text=None if executor.cancelled else executor.text,
         usage=usage,
