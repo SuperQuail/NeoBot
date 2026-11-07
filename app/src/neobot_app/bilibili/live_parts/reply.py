@@ -100,6 +100,8 @@ class _ReplyMixin:
             f"tokens {usage.get('input_tokens', 0)}/{usage.get('output_tokens', 0)}，"
             f"缓存命中 {usage.get('cache_hit_tokens', 0)}"
         )
+        # 发送完成后再落库：DB 写不能挡在弹幕前面。
+        await self._record_live_usage(_to_int(room_id), result.usage)
 
     def _record_history(self, room_id: str, danmu: dict[str, Any]) -> None:
         text = str(danmu.get("text") or "").strip()

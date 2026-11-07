@@ -97,7 +97,7 @@ class _GenerationMixin:
             lines = self.format_history(_to_int(room_id), self._summary_every)
             if not lines:
                 return
-            summary = await self._chat(
+            summary, summary_usage = await self._chat(
                 [
                     {
                         "role": "system",
@@ -112,6 +112,7 @@ class _GenerationMixin:
             summary = summary.strip()
             if not summary:
                 return
+            await self._record_live_usage(_to_int(room_id), summary_usage)
             self._room_memory[room_id] = summary[:2000]
             if self._archive_service is not None:
                 try:
@@ -193,7 +194,7 @@ class _GenerationMixin:
         except Exception as exc:
             self._logger.warning(f"B站直播主动观察生成失败：{type(exc).__name__}: {exc}")
             return None
-        await self._record_live_usage(room_id, result)
+        await self._record_live_usage(room_id, result.usage)
         return result
 
     async def _auto_look_loop(self) -> None:
@@ -275,7 +276,6 @@ class _GenerationMixin:
         except Exception as exc:
             self._logger.warning(f"B站直播回复生成失败：{type(exc).__name__}: {exc}")
             return ToolReply()
-        await self._record_live_usage(room_id, result)
         return result
 
     async def _generate_schedule_danmaku(
@@ -319,12 +319,14 @@ class _GenerationMixin:
         except Exception as exc:
             self._logger.warning(f"B站直播定时弹幕生成失败：{type(exc).__name__}: {exc}")
             return []
-        await self._record_live_usage(room_id, result)
+        await self._record_live_usage(room_id, result.usage)
         return result.segments or ([result.text] if result.text else [])
 
-    async def _record_live_usage(self, room_id: int, result: ToolReply | None) -> None:
+    async def _record_live_usage(self, room_id: int, usage: dict | None) -> None:
         """把本轮模型用量写进统一用量表（与 B站评论/私信同一张表、同一 module）。"""
-        usage = result.usage if result is not None and isinstance(result.usage, dict) else {}
+        usage = usage if isinstance(usage, dict) else {}
+        if not usage:
+            return
         provider = self._provider
         try:
             await get_usage_tracker().record(
@@ -343,9 +345,12 @@ class _GenerationMixin:
                 f"B站直播用量记录失败：房间 {room_id}，错误 {type(exc).__name__}: {exc}"
             )
 
-    async def _chat(self, messages: list[dict[str, str]], *, error_label: str) -> str:
+    async def _chat(
+        self, messages: list[dict[str, str]], *, error_label: str
+    ) -> tuple[str, dict]:
+        """单次模型调用；返回 (正文, usage)，失败返回空正文与空 usage。"""
         if self._provider is None:
-            return ""
+            return "", {}
         try:
             response = self._provider.chat(messages)
             if inspect.isawaitable(response):
@@ -354,6 +359,7 @@ class _GenerationMixin:
             raise
         except Exception as exc:
             self._logger.warning(f"{error_label}：{type(exc).__name__}: {exc}")
-            return ""
+            return "", {}
         content = response.get("content", "") if isinstance(response, dict) else get_field(response, "content", "")
-        return str(content or "")
+        usage = response.get("extensions", {}).get("usage") if isinstance(response, dict) else None
+        return str(content or ""), usage if isinstance(usage, dict) else {}

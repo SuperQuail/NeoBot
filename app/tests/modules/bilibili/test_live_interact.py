@@ -1234,7 +1234,7 @@ async def test_live_summarizes_every_200(tmp_path: Path) -> None:
         archive_service=archive,
         summary_every=200,
     )
-    interactor._chat = AsyncMock(return_value="这直播间在聊游戏")  # type: ignore[method-assign]
+    interactor._chat = AsyncMock(return_value=("这直播间在聊游戏", {}))  # type: ignore[method-assign]
     for index in range(200):
         interactor._record_history("5440", {"uid": 8, "name": "观众", "text": f"弹幕{index}"})
     await asyncio.gather(*interactor._summary_tasks)
@@ -1297,10 +1297,17 @@ async def test_live_reply_records_usage(tmp_path: Path, monkeypatch) -> None:
     assert record["module"] == "bilibili"
     assert record["conversation_kind"] == "bilibili_live"
     assert record["conversation_id"] == "5440"
+    # 两轮调用按轮累加：回复正文在首轮，只记末轮会漏掉几乎所有 output token。
+    assert record["input_tokens"] == 5000
+    assert record["output_tokens"] == 20
+    assert record["cache_hit_tokens"] == 3500
 
 
 class _TwoTurnProvider:
     """第一轮调 send_reply，第二轮空正文收尾：两次模型调用。"""
+
+    model = "test-model"
+    registered_key = "test/model"
 
     def __init__(self) -> None:
         self.calls = 0
@@ -1311,6 +1318,13 @@ class _TwoTurnProvider:
             return {
                 "role": "assistant",
                 "content": "",
+                "extensions": {
+                    "usage": {
+                        "input_tokens": 3000,
+                        "output_tokens": 15,
+                        "cache_hit_tokens": 2000,
+                    }
+                },
                 "tool_calls": [
                     {
                         "id": "call_1",
@@ -1322,7 +1336,33 @@ class _TwoTurnProvider:
                     }
                 ],
             }
-        return {"role": "assistant", "content": ""}
+        return {
+            "role": "assistant",
+            "content": "",
+            "extensions": {
+                "usage": {
+                    "input_tokens": 2000,
+                    "output_tokens": 5,
+                    "cache_hit_tokens": 1500,
+                }
+            },
+        }
+
+
+async def test_live_observation_records_usage(tmp_path: Path, monkeypatch) -> None:
+    tracker = _UsageTracker()
+    monkeypatch.setattr(live_generation, "get_usage_tracker", lambda: tracker)
+    provider = _TwoTurnProvider()
+    interactor = BilibiliLiveInteractor(
+        _FakeClient(), provider=provider, bot_name="小助手", data_dir=tmp_path
+    )
+    await interactor.enable(5440)
+
+    result = await interactor._generate_observation(5440)
+
+    assert result is not None
+    assert tracker.records and tracker.records[0]["conversation_kind"] == "bilibili_live"
+    assert tracker.records[0]["input_tokens"] == 5000
 
 
 async def test_tool_reply_reports_model_iterations() -> None:
