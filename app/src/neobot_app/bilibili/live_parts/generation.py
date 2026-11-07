@@ -273,7 +273,6 @@ class _GenerationMixin:
             result = await run_tool_reply(
                 self._provider,
                 system,
-                content,
                 messages=conversation,
                 max_chars=self._max_reply_chars,
                 split=True,

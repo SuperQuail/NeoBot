@@ -178,7 +178,15 @@ async def run_tool_reply(
             }
         for key in usage:
             usage[key] += int(value.get(key, 0) or 0)
-    iterations = sum(1 for message in messages if message.get("role") == "assistant")
+    # 只算本轮产生的 assistant 消息：conversation 里可能已经带了历史 assistant 工具调用。
+    history_assistants = sum(
+        1 for message in conversation if message.get("role") == "assistant"
+    )
+    iterations = max(
+        0,
+        sum(1 for message in messages if message.get("role") == "assistant")
+        - history_assistants,
+    )
     return ToolReply(
         text=None if executor.cancelled else executor.text,
         usage=usage,

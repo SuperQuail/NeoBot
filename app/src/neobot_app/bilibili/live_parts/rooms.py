@@ -16,7 +16,7 @@ from neobot_app.bilibili.live_parts.constants import (
 from neobot_app.bilibili.live_parts.helpers import _normalize_schedule, _to_int
 from neobot_app.prompt.role_messages import _as_send_reply_tool_history
 from neobot_app.bilibili.live_protocol import LiveEvent
-from neobot_app.bilibili.prompts import MAX_LIVE_DANMAKU_CHARS
+from neobot_app.bilibili.prompts import MAX_LIVE_DANMAKU_CHARS, _data
 from neobot_app.utils.atomic import atomic_write_text
 
 
@@ -237,16 +237,21 @@ class _RoomsMixin:
             if not text:
                 continue
             uid = _to_int(item.get("uid"))
-            if uid == 0:
-                messages.append({"role": "assistant", "content": text})
+            if item.get("self"):
+                messages.append({"role": "assistant", "content": _data(text)})
                 continue
-            name = str(item.get("name") or "观众")
+            name = _data(item.get("name") or "观众")
             clock = str(item.get("time") or "")
             prefix = f"[{clock}] " if clock else ""
             if uid:
                 prefix += f"[uid={uid}] "
-            messages.append({"role": "user", "content": f"{prefix}{name}: {text}"})
-        return _as_send_reply_tool_history(messages)
+            messages.append({"role": "user", "content": f"{prefix}{name}: {_data(text)}"})
+        converted = _as_send_reply_tool_history(messages)
+        # 窗口截断可能正好从自己的发言开始；多数 provider 要求首条不是 assistant，
+        # 于是把开头的自己发言（连同它的 tool 回执）一起丢掉。
+        while converted and converted[0].get("role") != "user":
+            converted.pop(0)
+        return converted
 
     def _load(self) -> None:
         if self._loaded:
