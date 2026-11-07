@@ -26,6 +26,8 @@ _runtime_delivery = AsyncLogDelivery()
 _self_heal_delivery = AsyncLogDelivery()
 _SELF_HEAL_EXCLUDE_MODULES = ("adapter_receiver", "app.image_parse", "app.self_heal")
 _STDLIB_FIELDS = set(stdlib_logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
+# 逐请求/逐连接的第三方 INFO 只对排障有用：控制台与面板不显示，DEBUG 文件仍保留。
+_PER_REQUEST_INFO_LOGGERS = frozenset({"aiohttp.access", "httpx"})
 
 
 def set_runtime_event_dispatcher(dispatcher: Any) -> None:
@@ -102,6 +104,8 @@ class _InterceptHandler(stdlib_logging.Handler):
             record.name in {"alembic.runtime.plugins", "alembic.runtime.migration"}
             and record.levelno == stdlib_logging.INFO
         ):
+            level = "DEBUG"
+        if record.name in _PER_REQUEST_INFO_LOGGERS and record.levelno == stdlib_logging.INFO:
             level = "DEBUG"
         if (
             record.name == "websockets.server"
