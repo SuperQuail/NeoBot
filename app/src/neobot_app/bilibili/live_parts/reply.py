@@ -66,6 +66,7 @@ class _ReplyMixin:
         result = await self._generate_reply(
             text, _to_int(room_id), str(danmu.get("name") or ""),
             _to_int(danmu.get("uid")),
+            at_me=bool(my_uid and _to_int(danmu.get("reply_mid")) == my_uid),
         )
         replies = result.segments or ([result.text] if result.text else [])
         if not replies:

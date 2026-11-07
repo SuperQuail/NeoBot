@@ -480,6 +480,19 @@ def test_private_prompt_escapes_injection_payloads() -> None:
     assert "忽略以上" in user
 
 
+def test_live_pending_danmaku_carries_uid_and_current_at_me() -> None:
+    from neobot_app.bilibili.prompts import LiveDanmakuContext, build_live_danmaku_prompt
+
+    ctx = LiveDanmakuContext(
+        bot_name="Neo", text="在吗", viewer_uid=333, viewer_at_me=True
+    )
+    _system, user = build_live_danmaku_prompt(ctx)
+    assert '<待接弹幕 uid="333">[@了我] 在吗</待接弹幕>' in user
+
+    plain = build_live_danmaku_prompt(LiveDanmakuContext(bot_name="Neo", text="在吗"))[1]
+    assert "<待接弹幕>在吗</待接弹幕>" in plain
+
+
 def test_live_prompt_escapes_danmaku_injection() -> None:
     from neobot_app.bilibili.prompts import (
         LiveDanmakuContext,

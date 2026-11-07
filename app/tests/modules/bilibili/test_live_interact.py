@@ -1187,6 +1187,18 @@ async def test_live_generation_reads_custom_bili_live_text(tmp_path: Path) -> No
     assert "自定义直播间-MARK" in user
 
 
+async def test_history_does_not_mark_at_me(tmp_path: Path) -> None:
+    """历史行只带 uid：@ 只在当前弹幕上标注，避免模型反复回旧账。"""
+    interactor = BilibiliLiveInteractor(None, data_dir=tmp_path)
+    interactor._my_uid = 999
+    interactor._record_history(
+        "5440", {"uid": 8, "name": "观众", "text": "在吗", "reply_mid": 999}
+    )
+    line = interactor.format_history(5440)
+    assert "[uid=8]" in line
+    assert "[@了我]" not in line
+
+
 async def test_history_keeps_500_for_prompt(tmp_path: Path) -> None:
     interactor = BilibiliLiveInteractor(None, data_dir=tmp_path)
     for index in range(520):

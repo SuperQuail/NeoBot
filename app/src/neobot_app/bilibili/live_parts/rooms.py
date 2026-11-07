@@ -214,9 +214,9 @@ class _RoomsMixin:
                 lines.append(f"--- {datetime.fromtimestamp(ts).strftime('%H:%M')} ---")
             name = str(item.get("name") or "观众")
             uid = _to_int(item.get("uid"))
+            # 只给 uid：@ 只在当前这条弹幕上标注（见 build_live_danmaku_prompt），
+            # 历史行挂永久 [@了我] 会让模型反复去回旧账。
             prefix = f"[uid={uid}] " if uid else ""
-            if item.get("at_me"):
-                prefix = "[@了我] " + prefix
             lines.append(f"[{clock}] {prefix}{name}: {text}")
             if ts:
                 last_ts = ts
