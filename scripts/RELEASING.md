@@ -23,13 +23,20 @@ qegg init --force --no-input --no-hook --no-add-packages --qegg-version v0.13.0
 >
 > - `runner` / `timeout_minutes` / `env` 改的是**整个 job**（`runs-on`、`timeout-minutes`、job 级 env），
 >   不属于「追加步骤」。
-> - `steps` / `yaml` 只把自定义步骤**插入**到「安装 QuailEgg 之后、`qegg check` / `qegg release` 之前」；
->   内置的 checkout、setup-go、各生态 setup（由 `[publish].registries` 推导，为空时回退各包 resolver，
->   再回退检测到的生态）、QuailEgg 安装照常渲染。
+> - `steps` / `yaml` 只把自定义步骤**插入**到内置命令之前；内置步骤照常渲染，各自不同：
+>   - `[release.workflow]`：checkout → setup-go → 各生态 setup → 安装 QuailEgg → **自定义步骤** → `qegg release`
+>   - `[pr.workflow]`：checkout → setup-go → 各生态 setup → 安装 QuailEgg → **自定义步骤** → `qegg check --ci`
+>   - `[status.workflow]`：checkout → setup-go → 安装 QuailEgg → **自定义步骤** → `qegg status --json`
+>     （**没有**生态 setup；status 命令本身不依赖 uv/cargo 这类工具）
 >
-> 插入的步骤排在 `qegg check` / `qegg release` 之前，因此能通过 `$GITHUB_ENV`、`$GITHUB_PATH` 影响它们——
-> 下面的 `UV_PYTHON` 与 uv shim 就是这么生效的。也正因如此，工具链 setup 已经在模板里，
+> 各生态 setup 由 `[publish].registries` 推导，为空时回退各包 resolver，再回退检测到的生态；
+> 只有 release 与 pr 两个工作流会渲染它。
+>
+> 自定义步骤排在内置命令之前，因此能通过 `$GITHUB_ENV`、`$GITHUB_PATH` 影响它们——
+> 下面的 `UV_PYTHON` 与 uv shim 就是这么作用于 `qegg release` 的。也正因如此，工具链 setup 已经在模板里，
 > 不要为了「补 uv」往 `[pr.workflow]` 里重复写一遍。
+>
+> `steps` 只能渲染成单行 `run:`；要写多步或调用 action（`uses:`）时改用 `yaml`。
 
 `env` 与 `yaml` 互斥：同时设置会报 `… is only used by steps; set env inside the yaml block`。
 
@@ -39,10 +46,10 @@ qegg init --force --no-input --no-hook --no-add-packages --qegg-version v0.13.0
 
 已知限制（由生成模板决定，不在仓库内手改）：
 
-- 生成工作流使用 qegg 模板内置的 action 版本（`checkout@v4`、`setup-uv@v5`），落后于手写工作流，
-  且用可变大版本 tag；而 `plugin-ci.yml`、`plugin-sdk-validation.yml`、`video-frame-validation.yml`
-  已钉到 SHA（`ci.yml`、`pr-gates.yml` 等仍是可变 tag）。升级版本或改钉 SHA 都得改 QuailEgg 模板并发版，
-  仓库内不要手改生成文件。
+- 生成工作流使用 qegg 模板内置的 action 版本（`checkout@v4`、`setup-uv@v5`），落后于手写工作流，且用可变大版本 tag。
+  手写工作流里只有 `plugin-ci.yml`、`plugin-sdk-validation.yml`、`video-frame-validation.yml` 钉了 SHA，
+  `ci.yml`、`pr-gates.yml`、`pr-gates-refresh.yml`、`pr-title.yml` 仍是可变 tag。
+  升级版本或改钉 SHA 都得改 QuailEgg 模板并发版，仓库内不要手改生成文件。
 - `qegg-pr` 的 Preview 步骤对 fork PR 会因只读 token 失败（非阻断检查）。
 - `qegg-pr` 的 job 没有中文名，非阻断性质只在分支保护里体现。
 - 升级 qegg 版本时要连 `--qegg-version` 一起改，生成文件里的安装步骤会跟着变（当前固定 `v0.13.0`）。
@@ -51,7 +58,8 @@ qegg init --force --no-input --no-hook --no-add-packages --qegg-version v0.13.0
 
 - 功能/修复 PR 提到 `main`；修改 `app/` 或 `packages/*` 时用 `qegg commit` 写一条 `.changes/<slug>.md`（或手写合法记录，字段见 `.changes/README.md`）。
 - `.changes/` 记录决定下一版本与 CHANGELOG；没有记录的代码改动不会进入版本说明（发布前请检查 `qegg plan`）。
-- 提到 `main` 的 PR 上，`QuailEgg PR` 工作流会运行 `qegg check --ci` 并评论发版计划；它当前是**非阻断**检查（该工作流只监听 base 为 `main` 的 PR）。
+- 提到 `main` 的 PR 上，`QuailEgg PR` 工作流会运行 `qegg check --ci` 并评论发版计划；它当前是**非阻断**检查。
+  该工作流只监听 base 为 `main` 的 PR，且对 `release` 发布 PR 直接跳过（`if: github.head_ref != 'release'`）。
 
 ### 发布流程（自动）
 
