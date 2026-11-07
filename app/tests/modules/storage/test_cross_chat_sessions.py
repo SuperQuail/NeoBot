@@ -1,0 +1,139 @@
+"""跨聊天会话表：迁移 0030 往返 + 仓库按聊天流/启动标识查询。"""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+import pytest_asyncio
+
+from neobot_storage.uow import make_uow_factory
+
+from .archive_test_utils import create_memory_engine, create_schema
+
+
+def _alembic_config(url: str):
+    from alembic.config import Config
+
+    from neobot_storage import engine as storage_engine
+
+    pkg_dir = Path(storage_engine.__file__).resolve().parent
+    cfg = Config(str(pkg_dir / "alembic.ini"))
+    cfg.set_main_option("sqlalchemy.url", url)
+    cfg.set_main_option("script_location", str(pkg_dir / "alembic"))
+    return cfg
+
+
+def _columns(db: Path) -> set[str]:
+    connection = sqlite3.connect(str(db))
+    try:
+        rows = connection.execute("PRAGMA table_info(cross_chat_sessions)").fetchall()
+    finally:
+        connection.close()
+    return {str(row[1]) for row in rows}
+
+
+def test_migration_0030_round_trip(tmp_path: Path) -> None:
+    """0029 → head 建表；downgrade 只删表，可往返。"""
+    from alembic import command
+
+    from neobot_storage.engine import sqlite_url
+
+    db = tmp_path / "cross_chat_0030.db"
+    cfg = _alembic_config(sqlite_url(db))
+
+    command.upgrade(cfg, "0029")
+    assert _columns(db) == set()
+
+    command.upgrade(cfg, "head")
+    columns = _columns(db)
+    assert {"origin_kind", "target_kind", "boot_id", "status", "reply"} <= columns
+
+    connection = sqlite3.connect(str(db))
+    try:
+        connection.execute(
+            "INSERT INTO cross_chat_sessions "
+            "(origin_kind, origin_id, target_kind, target_id, task_id, mode, "
+            " notification_mode, status, reply, boot_id, created_at, updated_at) "
+            "VALUES ('group', '111', 'private', '222', 't1', 'wait', 'response', "
+            "        'responded', 'hi', 'boot-a', '2026-11-07 00:00:00', '2026-11-07 00:00:00')"
+        )
+        connection.commit()
+        kept = connection.execute(
+            "SELECT origin_id, target_id, reply FROM cross_chat_sessions"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert kept == ("111", "222", "hi")
+
+    command.downgrade(cfg, "0029")
+    assert _columns(db) == set()
+    command.upgrade(cfg, "head")
+    assert "boot_id" in _columns(db)
+
+
+@pytest_asyncio.fixture
+async def uow_factory():
+    engine = create_memory_engine()
+    await create_schema(engine)
+    yield make_uow_factory(engine)
+    await engine.dispose()
+
+
+async def test_upsert_and_list_scoped_by_boot_id(uow_factory) -> None:
+    async with uow_factory() as uow:
+        await uow.cross_chat_sessions.upsert(
+            origin_kind="group", origin_id="111",
+            target_kind="private", target_id="222",
+            task_id="t1", mode="wait", notification_mode="response",
+            status="waiting", boot_id="boot-a",
+        )
+        await uow.cross_chat_sessions.upsert(
+            origin_kind="group", origin_id="333",
+            target_kind="group", target_id="444",
+            task_id="t2", mode="fire_and_forget", notification_mode="no_response",
+            status="delivered", boot_id="boot-b",
+        )
+        await uow.commit()
+
+    async with uow_factory() as uow:
+        first = await uow.cross_chat_sessions.list_for_chat(
+            kind="group", conversation_id="111", boot_id="boot-a"
+        )
+        other_boot = await uow.cross_chat_sessions.list_for_chat(
+            kind="group", conversation_id="111", boot_id="boot-b"
+        )
+        # 目标聊天流也能看到同一条记录
+        as_target = await uow.cross_chat_sessions.list_for_chat(
+            kind="private", conversation_id="222", boot_id="boot-a"
+        )
+
+    assert [item.task_id for item in first] == ["t1"]
+    assert other_boot == []
+    assert [item.task_id for item in as_target] == ["t1"]
+
+
+async def test_record_result_updates_reply(uow_factory) -> None:
+    async with uow_factory() as uow:
+        await uow.cross_chat_sessions.upsert(
+            origin_kind="group", origin_id="111",
+            target_kind="private", target_id="222",
+            task_id="t1", mode="wait", notification_mode="response",
+            status="waiting", boot_id="boot-a",
+        )
+        updated = await uow.cross_chat_sessions.record_result(
+            origin_kind="group", origin_id="111",
+            target_kind="private", target_id="222",
+            reply="收到", status="responded", boot_id="boot-a",
+        )
+        await uow.commit()
+
+    assert updated is not None
+    async with uow_factory() as uow:
+        record = await uow.cross_chat_sessions.get(
+            origin_kind="group", origin_id="111",
+            target_kind="private", target_id="222", boot_id="boot-a",
+        )
+    assert record is not None
+    assert record.reply == "收到"
+    assert record.status == "responded"

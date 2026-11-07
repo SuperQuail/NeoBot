@@ -3,7 +3,7 @@ flow: 22-storage-migrations
 covers:
   - packages/storage/src/neobot_storage/
 verified_against: d525a5b
-verified_hash: dd5c2b98a6d6
+verified_hash: 764ac84ed4f3
 ---
 
 # 22 存储与迁移
@@ -12,8 +12,8 @@ verified_hash: dd5c2b98a6d6
 
 嵌入式 Alembic 迁移沿用宿主日志出口，迁移内部进度保留到 DEBUG，宿主按结果与耗时输出摘要；独立 Alembic 命令仍使用自身 ini 日志配置。
 
-`neobot_storage` 包（32 个 py 文件）：异步引擎与 PRAGMA、UoW 事务边界、16 张表、
-28 个 Alembic 迁移、仓储层与锁重试。所有上层（档案、画像、用量、定时任务、头像、
+`neobot_storage` 包：异步引擎与 PRAGMA、UoW 事务边界、17 张表、
+29 个 Alembic 迁移、仓储层与锁重试。所有上层（档案、画像、用量、定时任务、头像、
 图片引用索引）都通过它读写 SQLite。
 
 不在这里：档案的业务语义见 `07` / `07b`；用量与计费见 `23-billing-stats.md`；
@@ -156,7 +156,7 @@ flowchart TD
 </details>
 
 <details>
-### 16 张表与谁在写
+### 17 张表与谁在写
 
 ```mermaid
 flowchart LR
@@ -181,6 +181,7 @@ flowchart LR
       T11["scheduled_tasks / completed_scheduled_tasks"] --> W11["16 定时任务"]
       T12["model_usage_records"] --> W12["23 计费统计"]
       T13["maintenance_runs"] --> W13["沙箱维护（06）"]
+      T14["cross_chat_sessions"] --> W14["跨聊天交互记录（按 boot_id 隔离）"]
     end
 ```
 
@@ -188,13 +189,16 @@ flowchart LR
 图片本体仍按内容哈希存 `images`，而拉不到的图算不出哈希，回显只能按引用摘要查
 （见 `14-emoji-image-parse` 的「拉不到的图片」小节）。写入时顺手清掉超过 30 天的行。
 
+`cross_chat_sessions` 按「发起方 + 目标」唯一，只保存最近一次交互；`boot_id` 是进程启动标识，
+查询只返回与当前进程一致的记录，所以重启后旧 session 不再显示（数据保留，等后续清理策略）。
+
 表名全部**小写复数**（迁移 `0002_lowercase_table_names` 统一过）。
 `completed_scheduled_tasks` 上有 `task_uuid` 唯一约束（迁移 0021）——
 这是「同一任务不会被重复标记完成」的数据库级保证（见 `16` 的去重）。
 </details>
 
 <details>
-### 迁移链：28 个版本与不可逆操作
+### 迁移链：29 个版本与不可逆操作
 
 ```mermaid
 flowchart TD
@@ -209,6 +213,8 @@ flowchart TD
     I --> J["0022 maintenance_runs / 0023 gallery_no / 0024 sequences"]
     J --> K["0025 usage_cost_source / 0026 archive_snapshots / 0027 avatar_storage"]
     K --> L["0028 image_refs（引用摘要 → 描述，可往返）"]
+    L --> M["0029 emoji 曝光分/爱用列"]
+    M --> N["0030 cross_chat_sessions（按 boot_id 只在本次运行内可见）"]
 ```
 
 两个要注意的点：

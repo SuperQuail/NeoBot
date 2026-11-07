@@ -89,7 +89,7 @@ template = '''<回复方式>
 # 总开关与子块开关都在 config.toml 的 [prompt_optimizations] 下，默认全部开启；
 # 子块顺序：cot_intro → cot_at_mention → gentle_language（见本文件后部）
 #           → cot_avoid_bot_chat → cot_no_bluffing → cot_no_game_topics
-#           → cot_no_echo_images → cot_outro。
+#           → cot_no_echo_images → cot_cross_chat → cot_outro。
 # 文本逐字固定，请勿改写（包括标点与疑似笔误）。
 
 [cot_intro]
@@ -111,6 +111,9 @@ template = '''<禁止主动参与游戏话题>在没有人主动与你聊天的�
 
 [cot_no_echo_images]
 template = '''<禁止附和与解说图片>你不应该以任何形式复述或者转述别人说过的内容然后再进行评论,对一件事情发表观点不应该先复述;也不应该描述某张图片的内容,除非有人明确询问你</禁止附和与解说图片>'''
+
+[cot_cross_chat]
+template = '''<跨聊天交互>当你有事情需要对某个人私聊说,或者在别的群聊说,你可以使用 cross_chat 工具</跨聊天交互>'''
 
 [cot_outro]
 template = '''</cot>'''

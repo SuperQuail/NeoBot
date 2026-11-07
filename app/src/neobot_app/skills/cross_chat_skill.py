@@ -20,10 +20,14 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from neobot_app.core.constants import BOOT_ID
 from neobot_app.skills.base import SkillModule
+from neobot_app.utils.logger import get_module_logger
 
 #: wait 模式等待目标聊天回复的上限。目标聊天要跑完整条回复管线（建提示词、
 #: 调模型、发送），给太短会把「还没开始」误判成失败。
+logger = get_module_logger("app.skills.cross_chat")
+
 DEFAULT_WAIT_TIMEOUT_SECONDS = 90.0
 _REPLY_POLL_INTERVAL_SECONDS = 0.2
 _MAX_TRACKED_TASKS = 50
@@ -155,6 +159,8 @@ class CrossChatSkill(SkillModule):
         bilibili_channel: Any = None,
         archive_memory_service: Any = None,
         wait_timeout_seconds: float = DEFAULT_WAIT_TIMEOUT_SECONDS,
+        uow_factory: Any = None,
+        boot_id: str = BOOT_ID,
     ) -> None:
         self._config = config
         self._adapter = adapter
@@ -165,6 +171,8 @@ class CrossChatSkill(SkillModule):
         self._bilibili_channel = bilibili_channel
         self._archive = archive_memory_service
         self._wait_timeout = float(wait_timeout_seconds)
+        self._uow_factory = uow_factory
+        self._boot_id = str(boot_id or BOOT_ID)
         self._tasks: dict[str, _CrossChatTask] = {}
         self._watchers: set[asyncio.Task[None]] = set()
 
@@ -242,6 +250,21 @@ class CrossChatSkill(SkillModule):
                 },
             ),
             self._tool_def(
+                "cross_chat_sessions",
+                "查看当前聊天流在本进程内参与过的跨聊天交互记录（持久化在数据库）。"
+                "只返回本次启动 `boot_id` 的记录：重启后旧 session 不再显示。",
+                {
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "description": "最多返回条数，默认 20",
+                            "default": 20,
+                        },
+                    },
+                    "required": [],
+                },
+            ),
+            self._tool_def(
                 "cross_chat_status",
                 "查询当前跨聊天通信任务的状态与回传结果。",
                 {
@@ -271,6 +294,73 @@ class CrossChatSkill(SkillModule):
         task = asyncio.create_task(coro)
         self._watchers.add(task)
         task.add_done_callback(self._watchers.discard)
+
+    # ── 会话持久化（只观察，不影响投递/回传行为） ─────────────────────
+
+    @staticmethod
+    def _parse_flow(value: str) -> tuple[str, str] | None:
+        return _parse_pipeline_key(value)
+
+    async def _session_upsert(
+        self,
+        origin: tuple[str, str] | None,
+        target: tuple[str, str],
+        record: _CrossChatTask,
+    ) -> None:
+        """把本次交互写入 cross_chat_sessions；失败只告警，绝不影响投递。"""
+        if self._uow_factory is None or origin is None:
+            return
+        try:
+            async with self._uow_factory() as uow:
+                repo = getattr(uow, "cross_chat_sessions", None)
+                if repo is None:
+                    return
+                await repo.upsert(
+                    origin_kind=origin[0],
+                    origin_id=origin[1],
+                    target_kind=target[0],
+                    target_id=target[1],
+                    task_id=record.task_id,
+                    mode=record.mode,
+                    notification_mode=record.notification_mode,
+                    status=record.status,
+                    boot_id=self._boot_id,
+                )
+                await uow.commit()
+        except Exception as exc:
+            logger.warning(
+                f"跨聊天会话写入失败（不影响投递）: {type(exc).__name__}: {exc}"
+            )
+
+    async def _session_result(
+        self,
+        origin: tuple[str, str] | None,
+        target: tuple[str, str],
+        reply: str,
+        status: str,
+    ) -> None:
+        """更新最近一次交互的回传结果；仅影响「查看」接口。"""
+        if self._uow_factory is None or origin is None:
+            return
+        try:
+            async with self._uow_factory() as uow:
+                repo = getattr(uow, "cross_chat_sessions", None)
+                if repo is None:
+                    return
+                await repo.record_result(
+                    origin_kind=origin[0],
+                    origin_id=origin[1],
+                    target_kind=target[0],
+                    target_id=target[1],
+                    reply=reply,
+                    status=status,
+                    boot_id=self._boot_id,
+                )
+                await uow.commit()
+        except Exception as exc:
+            logger.warning(
+                f"跨聊天会话回传更新失败（不影响回传）: {type(exc).__name__}: {exc}"
+            )
 
 
     # ── 跨聊天来源说明 ─────────────────────────────────────────────────
@@ -485,6 +575,9 @@ class CrossChatSkill(SkillModule):
                 origin, reply, record.task_id, detail,
                 source=(target_kind, target_id),
             )
+            await self._session_result(
+                origin, (target_kind, target_id), reply, record.status
+            )
 
 
 # ── Handlers ──
@@ -527,9 +620,17 @@ async def _handle_cross_chat_send(self: CrossChatSkill, args: dict) -> str:
     self._remember(record)
 
     if target_kind == "bilibili":
-        return await self._send_bilibili(
+        payload_text = await self._send_bilibili(
             target_id, task_text, mode, notification_mode, origin, record
         )
+        await self._session_upsert(
+            origin, (target_kind, target_id), record
+        )
+        if record.reply:
+            await self._session_result(
+                origin, (target_kind, target_id), record.reply, record.status
+            )
+        return payload_text
 
     delivered, event, detail = await self._deliver(
         target_kind, target_id, task_text, task_id, origin,
@@ -537,6 +638,7 @@ async def _handle_cross_chat_send(self: CrossChatSkill, args: dict) -> str:
     if not delivered:
         record.status = "failed"
         record.detail = detail
+        await self._session_upsert(origin, (target_kind, target_id), record)
         return _json({"ok": False, "error": detail, "task_id": task_id})
 
     payload: dict[str, Any] = {
@@ -556,6 +658,7 @@ async def _handle_cross_chat_send(self: CrossChatSkill, args: dict) -> str:
             payload["detail"] = detail + "；结果会在目标聊天回复后回传到本聊天"
         elif notification_mode == "response":
             payload["detail"] = detail + "；当前无法等待结果，不会回传"
+        await self._session_upsert(origin, (target_kind, target_id), record)
         return _json(payload)
 
     # mode == "wait"：等目标聊天出结果，直接放进工具返回值。
@@ -563,6 +666,7 @@ async def _handle_cross_chat_send(self: CrossChatSkill, args: dict) -> str:
         record.status = "delegated"
         payload["status"] = "delegated"
         payload["detail"] = detail + "；无法等待具体回复，如需结果请稍后用 cross_chat_query 查看"
+        await self._session_upsert(origin, (target_kind, target_id), record)
         return _json(payload)
 
     record.status = "waiting"
@@ -573,6 +677,10 @@ async def _handle_cross_chat_send(self: CrossChatSkill, args: dict) -> str:
         record.status = "timeout"
         payload["status"] = "timeout"
         payload["detail"] = wait_detail
+        await self._session_upsert(origin, (target_kind, target_id), record)
+        await self._session_result(
+            origin, (target_kind, target_id), reply, record.status
+        )
         return _json(payload)
 
     record.status = "responded"
@@ -586,6 +694,10 @@ async def _handle_cross_chat_send(self: CrossChatSkill, args: dict) -> str:
             source=(target_kind, target_id),
         )
         payload["relayed"] = relayed
+    await self._session_upsert(origin, (target_kind, target_id), record)
+    await self._session_result(
+        origin, (target_kind, target_id), reply, record.status
+    )
     return _json(payload)
 
 
@@ -629,6 +741,49 @@ async def _handle_cross_chat_query(self: CrossChatSkill, args: dict) -> str:
         return _json({"ok": False, "error": str(e)})
 
 
+async def _handle_cross_chat_sessions(self: CrossChatSkill, args: dict) -> str:
+    """列出当前聊天流在本进程内的跨聊天交互记录（持久化在数据库）。"""
+    if self._uow_factory is None:
+        return _json({"ok": False, "error": "uow_factory 未配置，无法读取会话记录"})
+    origin = CrossChatSkill._parse_flow(str(args.get("pipeline_key", "") or ""))
+    if origin is None:
+        return _json({"ok": False, "error": "缺少 pipeline_key，无法确定当前聊天流"})
+    limit = int(args.get("limit", 20) or 20)
+    try:
+        async with self._uow_factory() as uow:
+            repo = getattr(uow, "cross_chat_sessions", None)
+            if repo is None:
+                return _json({"ok": False, "error": "storage 未提供 cross_chat_sessions 仓库"})
+            records = await repo.list_for_chat(
+                kind=origin[0],
+                conversation_id=origin[1],
+                boot_id=self._boot_id,
+                limit=limit,
+            )
+    except Exception as exc:
+        return _json({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+    return _json({
+        "ok": True,
+        "boot_id": self._boot_id,
+        "chat_flow": f"{origin[0]}:{origin[1]}",
+        "count": len(records),
+        "sessions": [
+            {
+                "task_id": item.task_id,
+                "origin": item.origin_key,
+                "target": item.target_key,
+                "mode": item.mode,
+                "notification_mode": item.notification_mode,
+                "status": item.status,
+                "reply": item.reply,
+                "created_at": item.created_at.isoformat() if item.created_at else None,
+                "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+            }
+            for item in records
+        ],
+    })
+
+
 async def _handle_cross_chat_status(self: CrossChatSkill, args: dict) -> str:
     task_id = str(args.get("task_id", "") or "").strip()
     if task_id:
@@ -644,4 +799,5 @@ _HANDLERS = {
     "cross_chat_send": _handle_cross_chat_send,
     "cross_chat_query": _handle_cross_chat_query,
     "cross_chat_status": _handle_cross_chat_status,
+    "cross_chat_sessions": _handle_cross_chat_sessions,
 }

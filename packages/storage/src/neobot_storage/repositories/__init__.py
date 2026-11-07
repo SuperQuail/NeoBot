@@ -12,6 +12,7 @@ from neobot_storage.repositories.profile import SqlAlchemyProfileRepository
 from neobot_storage.repositories.scheduled_task import SqlAlchemyScheduledTaskAccess
 from neobot_storage.repositories.usage import SqlAlchemyUsageRepository
 from neobot_storage.repositories.bilibili_link import SqlAlchemyBilibiliLinkAccess
+from neobot_storage.repositories.cross_chat_session import SqlAlchemyCrossChatSessionAccess
 
 __all__ = [
     "SqlAlchemyArchiveMemoryAccess",
@@ -26,4 +27,5 @@ __all__ = [
     "SqlAlchemyScheduledTaskAccess",
     "SqlAlchemyUsageRepository",
     "SqlAlchemyBilibiliLinkAccess",
+    "SqlAlchemyCrossChatSessionAccess",
 ]

@@ -1,0 +1,168 @@
+"""跨聊天会话仓库 —— 按（发起方, 目标）对保存一次性记录。"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from neobot_contracts.models.cross_chat_session import CrossChatSessionRecord
+from neobot_storage.models import CrossChatSessionData
+
+
+class SqlAlchemyCrossChatSessionAccess:
+    """跨聊天会话的异步数据访问。"""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    @staticmethod
+    def _to_domain(row: CrossChatSessionData) -> CrossChatSessionRecord:
+        return CrossChatSessionRecord(
+            origin_kind=row.origin_kind,
+            origin_id=row.origin_id,
+            target_kind=row.target_kind,
+            target_id=row.target_id,
+            task_id=row.task_id,
+            mode=row.mode,
+            notification_mode=row.notification_mode,
+            status=row.status,
+            reply=row.reply,
+            boot_id=row.boot_id,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+    async def upsert(
+        self,
+        *,
+        origin_kind: str,
+        origin_id: str,
+        target_kind: str,
+        target_id: str,
+        task_id: str,
+        mode: str,
+        notification_mode: str,
+        status: str,
+        boot_id: str,
+    ) -> CrossChatSessionRecord:
+        now = datetime.now(timezone.utc)
+        stmt = sqlite_insert(CrossChatSessionData).values(
+            origin_kind=str(origin_kind),
+            origin_id=str(origin_id),
+            target_kind=str(target_kind),
+            target_id=str(target_id),
+            task_id=str(task_id),
+            mode=str(mode),
+            notification_mode=str(notification_mode),
+            status=str(status),
+            reply="",
+            boot_id=str(boot_id),
+            created_at=now,
+            updated_at=now,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["origin_kind", "origin_id", "target_kind", "target_id"],
+            set_={
+                "task_id": stmt.excluded.task_id,
+                "mode": stmt.excluded.mode,
+                "notification_mode": stmt.excluded.notification_mode,
+                "status": stmt.excluded.status,
+                "boot_id": stmt.excluded.boot_id,
+                "updated_at": now,
+            },
+        )
+        await self._session.execute(stmt)
+        await self._session.flush()
+        record = await self.get(
+            origin_kind=origin_kind,
+            origin_id=origin_id,
+            target_kind=target_kind,
+            target_id=target_id,
+            boot_id=boot_id,
+        )
+        assert record is not None
+        return record
+
+    async def record_result(
+        self,
+        *,
+        origin_kind: str,
+        origin_id: str,
+        target_kind: str,
+        target_id: str,
+        reply: str,
+        status: str,
+        boot_id: str,
+    ) -> CrossChatSessionRecord | None:
+        row = await self._get_row(
+            origin_kind, origin_id, target_kind, target_id, boot_id
+        )
+        if row is None:
+            return None
+        row.reply = str(reply)
+        row.status = str(status)
+        row.updated_at = datetime.now(timezone.utc)
+        await self._session.flush()
+        return self._to_domain(row)
+
+    async def list_for_chat(
+        self,
+        *,
+        kind: str,
+        conversation_id: str,
+        boot_id: str,
+        limit: int = 20,
+    ) -> list[CrossChatSessionRecord]:
+        stmt = (
+            select(CrossChatSessionData)
+            .where(
+                CrossChatSessionData.boot_id == str(boot_id),
+                (
+                    (CrossChatSessionData.origin_kind == str(kind))
+                    & (CrossChatSessionData.origin_id == str(conversation_id))
+                )
+                | (
+                    (CrossChatSessionData.target_kind == str(kind))
+                    & (CrossChatSessionData.target_id == str(conversation_id))
+                ),
+            )
+            .order_by(CrossChatSessionData.updated_at.desc())
+            .limit(max(1, int(limit)))
+        )
+        result = await self._session.execute(stmt)
+        return [self._to_domain(row) for row in result.scalars().all()]
+
+    async def get(
+        self,
+        *,
+        origin_kind: str,
+        origin_id: str,
+        target_kind: str,
+        target_id: str,
+        boot_id: str,
+    ) -> CrossChatSessionRecord | None:
+        row = await self._get_row(
+            origin_kind, origin_id, target_kind, target_id, boot_id
+        )
+        return self._to_domain(row) if row is not None else None
+
+    async def _get_row(
+        self,
+        origin_kind: str,
+        origin_id: str,
+        target_kind: str,
+        target_id: str,
+        boot_id: str,
+    ) -> CrossChatSessionData | None:
+        stmt = select(CrossChatSessionData).where(
+            CrossChatSessionData.origin_kind == str(origin_kind),
+            CrossChatSessionData.origin_id == str(origin_id),
+            CrossChatSessionData.target_kind == str(target_kind),
+            CrossChatSessionData.target_id == str(target_id),
+            CrossChatSessionData.boot_id == str(boot_id),
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()

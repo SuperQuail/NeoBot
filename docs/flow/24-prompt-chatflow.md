@@ -6,7 +6,7 @@ covers:
   - app/src/neobot_app/observability/context_recorder.py
   - app/src/neobot_app/observability/prompt_diff.py
 verified_against: d525a5b
-verified_hash: 73d8dae4968c
+verified_hash: a518faeb0f71
 ---
 
 # 24 提示词系统与聊天流快照
@@ -148,7 +148,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["Stage.SYSTEM_PREFIX｜blocks.py"] --> A1["cot_intro → cot_at_mention → gentle_language<br/>→ cot_avoid_bot_chat → cot_no_bluffing<br/>→ cot_no_game_topics → cot_no_echo_images → cot_outro"]
+    A["Stage.SYSTEM_PREFIX｜blocks.py"] --> A1["cot_intro → cot_at_mention → gentle_language<br/>→ cot_avoid_bot_chat → cot_no_bluffing<br/>→ cot_no_game_topics → cot_no_echo_images<br/>→ cot_cross_chat → cot_outro"]
     B["Stage.FRAGMENT"] --> B1["qq_chat / qq_chat_examples：不单独注入<br/>渲染成 {块id} 给主模板引用"]
     C["Stage.CATALOG"] --> C1["label_* / bili_*：不经过注入管道<br/>assets.text(id) 按键读取"]
     D["Stage.CONTEXT / RUNTIME_DATA / REMINDER / TIME"] --> D1["user 块按阶段顺序追加<br/>TIME 是 terminal，保证在最后一条"]
@@ -300,7 +300,7 @@ flowchart TD
 |---|---|---|---|
 | PromptStore 缓存签名 | `_file_signature`（mtime/size） | 下次重载覆盖 | 同秒内二次写入可能不触发重载 |
 | 分区开关 `enabled` | 提示词文件 | 文件改回 true | `block_skip_reason` 先查分区；主模板（SYSTEM_MAIN）不受影响 |
-| cot 前缀与子块开关 | `[prompt_optimizations]` 的 `cot_enabled` 与 6 个子块 | 配置改回 true | 关闭的块进 `skipped`，整段前缀随之消失或缩短 |
+| cot 前缀与子块开关 | `[prompt_optimizations]` 的 `cot_enabled` 与 7 个子块（含 `cross_chat`） | 配置改回 true | 关闭的块进 `skipped`，整段前缀随之消失或缩短 |
 | 块跳过原因 | `PromptComposer.block_skip_reason` | 每次构建重算 | 同时进 `SystemPrompt.skipped` 与 debug「提示词块已跳过」 |
 | FRAGMENT 占位符取值 | `_with_fragments` | 每次 `build_system` 重算 | 片段关闭/为空时显式给空值，避免 `{qq_chat}` 以字面量泄漏 |
 | `ChatFlowState.active` | `set_active(True)` | `set_active(False)` 或淘汰 | 只影响面板展示，不影响回复 |

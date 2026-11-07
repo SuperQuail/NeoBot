@@ -509,3 +509,148 @@ async def test_unknown_tool_returns_error():
 
     assert result["ok"] is False
     assert "unknown cross_chat tool" in result["error"]
+
+
+# ── 会话记录：持久化到数据库，按 boot_id 隔离 ──────────────────────────────
+
+
+class FakeSessionRepo:
+    """内存版 cross_chat_sessions 仓库，只验证 skill 侧调用契约。"""
+
+    def __init__(self) -> None:
+        self.rows: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+        self.upserts: list[dict[str, Any]] = []
+
+    async def upsert(self, **kwargs):
+        self.upserts.append(kwargs)
+        key = (
+            kwargs["origin_kind"], kwargs["origin_id"],
+            kwargs["target_kind"], kwargs["target_id"],
+        )
+        row = dict(kwargs)
+        row.setdefault("reply", "")
+        self.rows[key] = row
+        return SimpleNamespace(**row)
+
+    async def record_result(self, *, origin_kind, origin_id, target_kind, target_id, reply, status, boot_id):
+        key = (origin_kind, origin_id, target_kind, target_id)
+        if key not in self.rows:
+            return None
+        self.rows[key].update({"reply": reply, "status": status, "boot_id": boot_id})
+        return SimpleNamespace(**self.rows[key])
+
+    async def list_for_chat(self, *, kind, conversation_id, boot_id, limit=20):
+        return [
+            SimpleNamespace(
+                **row,
+                origin_key=f"{row['origin_kind']}:{row['origin_id']}",
+                target_key=f"{row['target_kind']}:{row['target_id']}",
+                created_at=None,
+                updated_at=None,
+            )
+            for row in self.rows.values()
+            if row["boot_id"] == boot_id
+            and conversation_id in (row["origin_id"], row["target_id"])
+        ][:limit]
+
+
+class FakeUow:
+    def __init__(self, repo: FakeSessionRepo) -> None:
+        self.cross_chat_sessions = repo
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def commit(self) -> None:
+        return None
+
+
+def _uow_factory(repo: FakeSessionRepo):
+    def factory() -> FakeUow:
+        return FakeUow(repo)
+    return factory
+
+
+async def test_send_records_session_with_origin_and_target():
+    """投递成功后写入 session：origin/target/mode/status 都落到仓库。"""
+    repo = FakeSessionRepo()
+    skill = CrossChatSkill(
+        orchestrator=FakeOrchestrator(FakeEvent()),
+        uow_factory=_uow_factory(repo),
+        boot_id="boot-a",
+    )
+
+    result = _parse(await skill.execute("cross_chat_send", {
+        "target_kind": "group", "target_id": "888",
+        "task": "告知群里明天十点集合",
+        "mode": "fire_and_forget", "notification_mode": "no_response",
+        "pipeline_key": "private:999",
+    }))
+
+    assert result["ok"] is True
+    assert len(repo.upserts) == 1
+    row = repo.upserts[0]
+    assert (row["origin_kind"], row["origin_id"]) == ("private", "999")
+    assert (row["target_kind"], row["target_id"]) == ("group", "888")
+    assert row["mode"] == "fire_and_forget"
+    assert row["boot_id"] == "boot-a"
+
+
+async def test_sessions_lists_only_current_boot_and_reports_reply():
+    repo = FakeSessionRepo()
+    skill = CrossChatSkill(
+        orchestrator=FakeOrchestrator(FakeEvent("好的")),
+        uow_factory=_uow_factory(repo),
+        boot_id="boot-a",
+    )
+    await skill.execute("cross_chat_send", {
+        "target_kind": "group", "target_id": "888",
+        "task": "问一下进度",
+        "mode": "wait", "notification_mode": "response",
+        "pipeline_key": "private:999",
+    })
+
+    listed = _parse(await skill.execute("cross_chat_sessions", {"pipeline_key": "private:999"}))
+    assert listed["ok"] is True
+    assert listed["count"] == 1
+    item = listed["sessions"][0]
+    assert item["origin"] == "private:999"
+    assert item["target"] == "group:888"
+    assert item["status"] == "responded"
+    assert item["reply"] == "好的"
+
+    other = CrossChatSkill(uow_factory=_uow_factory(repo), boot_id="boot-b")
+    other_listed = _parse(await other.execute("cross_chat_sessions", {"pipeline_key": "private:999"}))
+    assert other_listed["count"] == 0
+
+
+async def test_sessions_without_uow_is_reported_not_raised():
+    skill = CrossChatSkill()
+
+    result = _parse(await skill.execute("cross_chat_sessions", {"pipeline_key": "private:999"}))
+
+    assert result["ok"] is False
+    assert "uow_factory" in result["error"]
+
+
+async def test_session_write_failure_does_not_break_delivery():
+    """仓库抛异常时投递仍然成功（只告警）。"""
+    class BoomRepo(FakeSessionRepo):
+        async def upsert(self, **kwargs):
+            raise RuntimeError("db down")
+
+    skill = CrossChatSkill(
+        orchestrator=FakeOrchestrator(FakeEvent()),
+        uow_factory=_uow_factory(BoomRepo()),
+        boot_id="boot-a",
+    )
+
+    result = _parse(await skill.execute("cross_chat_send", {
+        "target_kind": "group", "target_id": "888", "task": "hi",
+        "pipeline_key": "private:999",
+    }))
+
+    assert result["ok"] is True

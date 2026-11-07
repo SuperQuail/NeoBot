@@ -50,6 +50,13 @@ class PromptOptimizations:
             "不猜游戏机制"
         },
     )
+    cross_chat: Optional[bool] = field(
+        default=True,
+        metadata={
+            "description": "cot 子块开关：<跨聊天交互> 有事情需要对某个人私聊说、"
+            "或者在别的群聊说时，可以使用 cross_chat 工具"
+        },
+    )
     no_echo_images: Optional[bool] = field(
         default=True,
         metadata={

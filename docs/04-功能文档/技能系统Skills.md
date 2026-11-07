@@ -106,6 +106,9 @@ skills__load_tools(skills=["archive_crud", "browser"])
   时，主回复管线会自动预加载 `cross_chat` 与 `archive_crud` 工具，agent 可直接查来源聊天流、读完整档案，
   无需先 `skills__load_tools`。
 - **B站通道例外**：B站侧没有常驻主 agent，任务由通道改写成一次 B站发言，`task` 原文不额外加 QQ 内部说明。
+- **交互记录**：每次投递都会写一条 `cross_chat_sessions` 记录（发起方聊天流、目标聊天流、task_id、
+  模式、状态、回传正文），`cross_chat_sessions` 工具按当前聊天流查询。记录带本进程的 `boot_id`，
+  **重启后旧记录不再显示**（数据仍在库中，等待清理策略）；写入失败只告警，不影响投递与回传。
 
 ### 图像与创作
 | Skill | 能力 |
