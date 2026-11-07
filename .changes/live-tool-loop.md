@@ -4,4 +4,4 @@ packages:
   python@neobot-app: minor
 ---
 
-Run the live reply's tool loop without the generic agent wrapper: the prompt is sent verbatim, each model call and the whole turn get their own timeouts, and the tool surface stays send_reply/cancel.
+Drive the B站 reply tool loop directly instead of through the generic agent wrapper: prompts are sent verbatim, each model call and the whole turn get their own timeouts, and tool errors go back to the model instead of aborting the turn. Applies to comments, private messages and live replies.

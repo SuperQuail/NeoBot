@@ -12,8 +12,8 @@ from typing import Any
 from neobot_chat.schema.exceptions import ProviderError
 from neobot_app.reply.postprocess import split_into_sentences_w_remove_punctuation
 
-#: 单次模型调用超时上限；整轮仍受 timeout 约束（两次调用不会共用一个 60s）。
-_CALL_TIMEOUT_SECONDS = 60.0
+#: 单次模型调用超时上限；整轮仍受 timeout 约束。默认与整轮一致，避免把慢模型提前掐掉。
+_CALL_TIMEOUT_SECONDS = 90.0
 #: 循环上限：一轮正常 1~2 次调用，这里只防止模型持续调工具时死循环。
 _MAX_ITERATIONS = 200
 _USAGE_KEYS = ("input_tokens", "output_tokens", "cache_hit_tokens", "cache_miss_tokens")
@@ -34,16 +34,18 @@ def _add_usage(usage: dict[str, int] | None, response: Any) -> dict[str, int] | 
 
 
 def _parse_tool_args(raw: Any) -> dict:
-    """工具参数容错解析：JSON 字符串/对象都接受，坏参数按空对象处理。"""
+    """解析工具参数；坏 JSON 抛 ValueError，由循环按"工具报错"回给模型。"""
     if isinstance(raw, dict):
         return dict(raw)
     if not raw:
         return {}
     try:
         value = json.loads(raw)
-    except (TypeError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
+    except (TypeError, ValueError) as exc:
+        raise ValueError(str(exc)) from exc
+    if not isinstance(value, dict):
+        raise ValueError("参数必须是 JSON 对象")
+    return value
 
 _SEND_REPLY = {
     "type": "function",
@@ -204,6 +206,26 @@ async def run_tool_reply(
                 iteration=iterations,
             ) from exc
 
+    async def _execute_tool(call: dict[str, Any]) -> str:
+        """单个工具调用：参数/执行异常都回给模型，不打断整轮（与旧 Agent 一致）。"""
+        function = call.get("function") or {}
+        name = str(function.get("name") or "")
+        if name not in _TOOL_NAMES:
+            return '{"ok": false, "error": "未知工具"}'
+        try:
+            args = _parse_tool_args(function.get("arguments"))
+        except ValueError as exc:
+            return json.dumps(
+                {"ok": False, "error": f"工具参数解析失败：{exc}"}, ensure_ascii=False
+            )
+        try:
+            return await executor.execute(name, args)
+        except Exception as exc:
+            return json.dumps(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+                ensure_ascii=False,
+            )
+
     while iterations < max_iterations:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -219,20 +241,12 @@ async def run_tool_reply(
         if not tool_calls:
             break
         for call in tool_calls:
-            function = call.get("function") or {}
-            name = str(function.get("name") or "")
-            if name in _TOOL_NAMES:
-                result = await executor.execute(
-                    name, _parse_tool_args(function.get("arguments"))
-                )
-            else:
-                result = '{"ok": false, "error": "未知工具"}'
             conversation.append(
                 {
                     "role": "tool",
                     "tool_call_id": str(call.get("id") or ""),
-                    "name": name,
-                    "content": result,
+                    "name": str((call.get("function") or {}).get("name") or ""),
+                    "content": await _execute_tool(call),
                 }
             )
         if executor.cancelled:

@@ -1558,6 +1558,73 @@ class _RecordingProvider:
         }
 
 
+class _ScriptedProvider:
+    """按脚本依次返回响应，用来覆盖工具循环的各种边界。"""
+
+    def __init__(self, responses: list[dict]) -> None:
+        self.responses = responses
+        self.calls = 0
+        self.messages: list[list[dict]] = []
+
+    async def chat(self, messages, tools=None):
+        self.messages.append(list(messages))
+        index = min(self.calls, len(self.responses) - 1)
+        self.calls += 1
+        return self.responses[index]
+
+
+def _tool_call(call_id: str, name: str, arguments: str) -> dict:
+    return {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": arguments},
+            }
+        ],
+    }
+
+
+async def test_tool_reply_unknown_tool_is_reported_to_model() -> None:
+    provider = _ScriptedProvider(
+        [
+            _tool_call("c1", "nope", "{}"),
+            _tool_call("c2", "send_reply", '{"text":"在"}'),
+            {"role": "assistant", "content": ""},
+        ]
+    )
+    result = await run_tool_reply(provider, "系统", "问")
+
+    assert result.text == "在"
+    tool_messages = [m for m in provider.messages[1] if m.get("role") == "tool"]
+    assert tool_messages and "未知工具" in tool_messages[0]["content"]
+
+
+async def test_tool_reply_bad_json_arguments_are_reported() -> None:
+    provider = _ScriptedProvider(
+        [
+            _tool_call("c1", "send_reply", "not-json"),
+            _tool_call("c2", "send_reply", '{"text":"在"}'),
+            {"role": "assistant", "content": ""},
+        ]
+    )
+    result = await run_tool_reply(provider, "系统", "问")
+
+    assert result.text == "在"
+    tool_messages = [m for m in provider.messages[1] if m.get("role") == "tool"]
+    assert tool_messages and "解析失败" in tool_messages[0]["content"]
+
+
+async def test_tool_reply_stops_after_cancel() -> None:
+    provider = _ScriptedProvider([_tool_call("c1", "cancel", "{}")])
+    result = await run_tool_reply(provider, "系统", "问")
+
+    assert provider.calls == 1
+    assert result.text is None
+
+
 class _SlowProvider:
     async def chat(self, messages, tools=None):
         await asyncio.sleep(1)
