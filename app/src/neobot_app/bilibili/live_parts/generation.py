@@ -23,6 +23,7 @@ from neobot_app.bilibili.prompts import (
 )
 from neobot_app.bilibili.tool_reply import ToolReply, run_tool_reply
 from neobot_app.prompt import assets
+from neobot_app.statistics.tracker import get_usage_tracker
 
 
 class _GenerationMixin:
@@ -178,7 +179,7 @@ class _GenerationMixin:
         ]
         self._record_live_flow(room_id, system, messages)
         try:
-            return await run_tool_reply(
+            result = await run_tool_reply(
                 self._provider,
                 system,
                 content,
@@ -192,6 +193,8 @@ class _GenerationMixin:
         except Exception as exc:
             self._logger.warning(f"B站直播主动观察生成失败：{type(exc).__name__}: {exc}")
             return None
+        await self._record_live_usage(room_id, result)
+        return result
 
     async def _auto_look_loop(self) -> None:
         while self._running:
@@ -272,6 +275,7 @@ class _GenerationMixin:
         except Exception as exc:
             self._logger.warning(f"B站直播回复生成失败：{type(exc).__name__}: {exc}")
             return ToolReply()
+        await self._record_live_usage(room_id, result)
         return result
 
     async def _generate_schedule_danmaku(
@@ -315,7 +319,29 @@ class _GenerationMixin:
         except Exception as exc:
             self._logger.warning(f"B站直播定时弹幕生成失败：{type(exc).__name__}: {exc}")
             return []
+        await self._record_live_usage(room_id, result)
         return result.segments or ([result.text] if result.text else [])
+
+    async def _record_live_usage(self, room_id: int, result: ToolReply | None) -> None:
+        """把本轮模型用量写进统一用量表（与 B站评论/私信同一张表、同一 module）。"""
+        usage = result.usage if result is not None and isinstance(result.usage, dict) else {}
+        provider = self._provider
+        try:
+            await get_usage_tracker().record(
+                module="bilibili",
+                model_name=str(getattr(provider, "model", "") or ""),
+                registered_key=str(getattr(provider, "registered_key", "") or ""),
+                input_tokens=int(usage.get("input_tokens", 0) or 0),
+                output_tokens=int(usage.get("output_tokens", 0) or 0),
+                cache_hit_tokens=int(usage.get("cache_hit_tokens", 0) or 0),
+                cache_miss_tokens=int(usage.get("cache_miss_tokens", 0) or 0),
+                conversation_kind="bilibili_live",
+                conversation_id=str(_to_int(room_id)),
+            )
+        except Exception as exc:
+            self._logger.debug(
+                f"B站直播用量记录失败：房间 {room_id}，错误 {type(exc).__name__}: {exc}"
+            )
 
     async def _chat(self, messages: list[dict[str, str]], *, error_label: str) -> str:
         if self._provider is None:

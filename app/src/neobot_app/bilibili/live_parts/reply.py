@@ -62,6 +62,7 @@ class _ReplyMixin:
             return
         if not await self.is_live(_to_int(room_id)):
             return
+        started = time.monotonic()
         result = await self._generate_reply(
             text, _to_int(room_id), str(danmu.get("name") or ""),
             _to_int(danmu.get("uid")),
@@ -85,10 +86,19 @@ class _ReplyMixin:
             ):
                 return
         self._record_reply(room_id)
+        # 延迟与用量归因：排队耗时（收包到开始处理）+ 生成发送耗时 + 模型轮次/token。
+        recv_at = float(danmu.get("recv_at") or 0.0)
+        queued = max(0.0, started - recv_at) if recv_at else 0.0
+        elapsed = max(0.0, time.monotonic() - started)
+        usage = result.usage if isinstance(result.usage, dict) else {}
         self._logger.info(
             f"B站直播已自动回复：房间 {room_id}，{len(replies)} 段，"
             f"共 {sum(len(item) for item in replies)} 字，"
-            f"回复给 {target_uid or '无'}"
+            f"回复给 {target_uid or '无'}，"
+            f"排队 {queued:.1f}s，耗时 {elapsed:.1f}s，"
+            f"模型 {result.iterations} 轮，"
+            f"tokens {usage.get('input_tokens', 0)}/{usage.get('output_tokens', 0)}，"
+            f"缓存命中 {usage.get('cache_hit_tokens', 0)}"
         )
 
     def _record_history(self, room_id: str, danmu: dict[str, Any]) -> None:

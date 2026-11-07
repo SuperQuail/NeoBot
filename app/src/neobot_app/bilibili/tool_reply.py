@@ -47,6 +47,8 @@ class ToolReply:
     usage: dict[str, Any] | None = None
     segments: list[str] | None = None
     reply_to: int = 0
+    #: 本轮实际发起的模型调用次数（= assistant 消息数），用于延迟/成本归因。
+    iterations: int = 0
 
 
 class _ReplyExecutor:
@@ -148,18 +150,21 @@ async def run_tool_reply(
         agent.invoke({"messages": [{"role": "user", "content": user}]}),
         timeout=timeout,
     )
+    messages = state.get("messages", [])
     usage = None
     # 取最后一条带 usage 的 assistant 消息：末尾消息可能只有工具调用，没有用量。
-    for message in reversed(state.get("messages", [])):
+    for message in reversed(messages):
         if message.get("role") != "assistant":
             continue
         value = (message.get("extensions") or {}).get("usage")
         if isinstance(value, dict):
             usage = value
             break
+    iterations = sum(1 for message in messages if message.get("role") == "assistant")
     return ToolReply(
         text=None if executor.cancelled else executor.text,
         usage=usage,
         segments=None if executor.cancelled else executor.segments,
         reply_to=0 if executor.cancelled else executor.reply_to,
+        iterations=iterations,
     )

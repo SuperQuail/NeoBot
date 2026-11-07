@@ -23,7 +23,9 @@ from neobot_app.bilibili.live_interact import (
     encode_packet,
     parse_danmu_message,
 )
+from neobot_app.bilibili.live_parts import generation as live_generation
 from neobot_app.bilibili.live_protocol import LiveAuthError
+from neobot_app.bilibili.tool_reply import run_tool_reply
 
 _ROOM_INFO = {
     "room_info": {"room_id": 21452505, "title": "测试直播间", "live_status": 1},
@@ -1269,3 +1271,64 @@ async def test_ensure_started_starts_listener_when_not_running(tmp_path: Path) -
 
     await interactor.stop()
     assert interactor.is_running is False
+
+
+class _UsageTracker:
+    def __init__(self) -> None:
+        self.records: list[dict] = []
+
+    async def record(self, **kwargs) -> None:
+        self.records.append(kwargs)
+
+
+async def test_live_reply_records_usage(tmp_path: Path, monkeypatch) -> None:
+    """直播回复也要进统一用量表：conversation_kind=bilibili_live + 房间号。"""
+    tracker = _UsageTracker()
+    monkeypatch.setattr(live_generation, "get_usage_tracker", lambda: tracker)
+    provider = _TwoTurnProvider()
+    interactor = BilibiliLiveInteractor(
+        _FakeClient(), provider=provider, bot_name="小助手", data_dir=tmp_path
+    )
+    await interactor.enable(5440)
+    await interactor._handle_danmu("5440", {"uid": 8, "name": "观众", "text": "在吗"})
+
+    assert len(tracker.records) == 1
+    record = tracker.records[0]
+    assert record["module"] == "bilibili"
+    assert record["conversation_kind"] == "bilibili_live"
+    assert record["conversation_id"] == "5440"
+
+
+class _TwoTurnProvider:
+    """第一轮调 send_reply，第二轮空正文收尾：两次模型调用。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def chat(self, messages, tools=None):
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "send_reply",
+                            "arguments": json.dumps({"text": "在"}, ensure_ascii=False),
+                        },
+                    }
+                ],
+            }
+        return {"role": "assistant", "content": ""}
+
+
+async def test_tool_reply_reports_model_iterations() -> None:
+    """ToolReply.iterations 必须等于实际模型调用次数，延迟才能归因。"""
+    provider = _TwoTurnProvider()
+    result = await run_tool_reply(provider, "system", "user", max_chars=20)
+    assert result.text == "在"
+    assert provider.calls == 2
+    assert result.iterations == 2
