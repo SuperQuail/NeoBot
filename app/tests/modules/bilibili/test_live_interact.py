@@ -1416,6 +1416,25 @@ async def test_live_observation_records_usage(tmp_path: Path, monkeypatch) -> No
     assert tracker.records[0]["input_tokens"] == 5000
 
 
+async def test_process_danmu_passes_at_me_to_generation(tmp_path: Path) -> None:
+    """reply_mid 指向自己时，端到端要把 at_me=True 传到生成层。"""
+    provider = _FakeProvider("在呢")
+    interactor, _client, _ = await _enabled(tmp_path, provider=provider)
+    interactor._my_uid = 999
+    calls: list[dict] = []
+    original = interactor._generate_reply
+
+    async def spy(*args, **kwargs):
+        calls.append(kwargs)
+        return await original(*args, **kwargs)
+
+    interactor._generate_reply = spy  # type: ignore[method-assign]
+    await interactor._handle_danmu(
+        "5440", {"uid": 8, "name": "观众", "text": "在吗", "reply_mid": 999}
+    )
+    assert calls and calls[0]["at_me"] is True
+
+
 async def test_tool_reply_reports_model_iterations() -> None:
     """ToolReply.iterations 必须等于实际模型调用次数，延迟才能归因。"""
     provider = _TwoTurnProvider()

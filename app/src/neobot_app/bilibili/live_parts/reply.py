@@ -66,7 +66,7 @@ class _ReplyMixin:
         result = await self._generate_reply(
             text, _to_int(room_id), str(danmu.get("name") or ""),
             _to_int(danmu.get("uid")),
-            at_me=bool(my_uid and _to_int(danmu.get("reply_mid")) == my_uid),
+            at_me=self._is_at_me(danmu),
         )
         replies = result.segments or ([result.text] if result.text else [])
         if not replies:
@@ -186,9 +186,7 @@ class _ReplyMixin:
                 for item in history
                 if str(item.get("text") or "").strip()
             )
-            at_me = bool(
-                my_uid and _to_int(danmu.get("reply_mid")) == my_uid
-            )
+            at_me = self._is_at_me(danmu)
             decision = willing.evaluate_live(
                 room_id=_to_int(room_id),
                 uid=_to_int(danmu.get("uid")),
@@ -248,6 +246,11 @@ class _ReplyMixin:
             return {"ok": False, "error": "willing_service 未配置"}
         self._willing_service.remove_runtime_conversation_coefficient(f"live:{rid}")
         return {"ok": True, "room_id": rid}
+
+    def _is_at_me(self, danmu: dict[str, Any]) -> bool:
+        """这条弹幕是否点名了 bot（B站把被 @ 的人放在 reply_mid 里）。"""
+        my_uid = self._my_uid
+        return bool(my_uid and _to_int(danmu.get("reply_mid")) == my_uid)
 
     def _reply_allowed(self, room_id: str) -> bool:
         now = time.monotonic()
