@@ -70,8 +70,6 @@ class _ReplyMixin:
         replies = result.segments or ([result.text] if result.text else [])
         if not replies:
             return
-        if self._screenshot_replies:
-            await self._save_reply_frame(room_id)
         target_uid = _to_int(result.reply_to)
         target_name = ""
         if target_uid:
@@ -102,6 +100,9 @@ class _ReplyMixin:
         )
         # 发送完成后再落库：DB 写不能挡在弹幕前面。
         await self._record_live_usage(_to_int(room_id), result.usage)
+        # 截图放最后：拉流截帧要起 ffmpeg（可能数十秒），别挡在发送、日志与记账前面。
+        if self._screenshot_replies:
+            await self._save_reply_frame(room_id)
 
     def _record_history(self, room_id: str, danmu: dict[str, Any]) -> None:
         text = str(danmu.get("text") or "").strip()
@@ -248,10 +249,6 @@ class _ReplyMixin:
             return {"ok": False, "error": "willing_service 未配置"}
         self._willing_service.remove_runtime_conversation_coefficient(f"live:{rid}")
         return {"ok": True, "room_id": rid}
-
-    def _mentions_bot(self, text: str) -> bool:
-        lowered = text.lower()
-        return any(name.lower() in lowered for name in self._known_bot_names())
 
     def _reply_allowed(self, room_id: str) -> bool:
         now = time.monotonic()
