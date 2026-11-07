@@ -1206,6 +1206,54 @@ async def test_history_does_not_mark_at_me(tmp_path: Path) -> None:
     assert "[@了我]" not in line
 
 
+def test_new_live_session_clears_history(tmp_path: Path) -> None:
+    """开播时间变化 = 新一场：上一场弹幕清空；同一场/拿不到时间都不清。"""
+    interactor = BilibiliLiveInteractor(None, data_dir=tmp_path)
+    interactor._record_history("5440", {"uid": 8, "name": "观众", "text": "上一场"})
+    assert interactor.get_history(5440)
+
+    interactor._note_live_session("5440", "2026-11-07 21:00:00")
+    assert interactor.get_history(5440) == []
+    assert interactor._live_started_at["5440"] == "2026-11-07 21:00:00"
+
+    interactor._record_history("5440", {"uid": 8, "name": "观众", "text": "本场"})
+    interactor._note_live_session("5440", "2026-11-07 21:00:00")
+    assert interactor.get_history(5440)
+    interactor._note_live_session("5440", "")
+    assert interactor.get_history(5440)
+
+
+async def test_live_status_records_start_time_and_clears_history(tmp_path: Path) -> None:
+    client = _FakeClient(
+        room_info={
+            "room_info": {
+                "room_id": 21452505,
+                "live_status": 1,
+                "live_time": "2026-11-07 21:00:00",
+            }
+        }
+    )
+    interactor = BilibiliLiveInteractor(client, data_dir=tmp_path)
+    interactor._record_history("5440", {"uid": 8, "name": "观众", "text": "旧的"})
+
+    assert (await interactor.live_status(5440))["live"] is True
+    assert interactor._live_started_at["5440"] == "2026-11-07 21:00:00"
+    assert interactor.get_history(5440) == []
+
+
+async def test_ws_live_start_event_marks_session(tmp_path: Path) -> None:
+    from neobot_app.bilibili.live_protocol import LiveEvent
+
+    interactor = BilibiliLiveInteractor(None, data_dir=tmp_path)
+    interactor._record_history("5440", {"uid": 8, "name": "观众", "text": "旧的"})
+
+    await interactor._handle_event(
+        "5440", LiveEvent("live_start", 5440, text="2026-11-07 21:00:00")
+    )
+    assert interactor._live_started_at["5440"] == "2026-11-07 21:00:00"
+    assert interactor.get_history(5440) == []
+
+
 async def test_history_keeps_500_for_prompt(tmp_path: Path) -> None:
     interactor = BilibiliLiveInteractor(None, data_dir=tmp_path)
     for index in range(520):

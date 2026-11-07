@@ -929,6 +929,7 @@ viewer_memory = '''<观众档案>
 recent_history = '''<最近弹幕>
 {history}
 </最近弹幕>'''
+live_started = "<开播时间>主播 {time} 开播</开播时间>"
 frame = "<当前直播画面>{frame}</当前直播画面>"
 pending_danmaku = "<待接弹幕{attrs}>{text}</待接弹幕>"
 scheduled_task = "<主动弹幕>这是你主动发的一条弹幕,不是回复某个人。说你要说的事,不要解释这是定时任务或任务指令。</主动弹幕>"

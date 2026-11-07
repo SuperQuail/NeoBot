@@ -613,6 +613,16 @@ class LiveDanmakuContext:
     memory: str = ""
     room_memory: str = ""
     viewer_memory: str = ""
+    #: 本场直播的开播时间（B站 live_time）；让模型知道哪些弹幕是这一场的。
+    live_started_at: str = ""
+
+
+def _live_started_block(ctx: LiveDanmakuContext, *, store: Any = None) -> str:
+    if not ctx.live_started_at.strip():
+        return ""
+    return _text("live", "live_started", store=store).format(
+        time=_data(ctx.live_started_at)
+    )
 
 
 def _render_live_persona(
@@ -682,6 +692,9 @@ def build_live_danmaku_prompt(
                 history=_data(ctx.recent_history)
             )
         )
+    started = _live_started_block(ctx, store=prompt_store)
+    if started:
+        parts.append(started)
     if ctx.frame_context:
         parts.append(
             _text("live", "frame", store=prompt_store).format(
@@ -743,6 +756,9 @@ def build_live_scheduled_prompt(
                 history=_data(ctx.recent_history)
             )
         )
+    started = _live_started_block(ctx, store=prompt_store)
+    if started:
+        parts.append(started)
     if ctx.frame_context:
         parts.append(
             _text("live", "frame", store=prompt_store).format(
@@ -799,6 +815,9 @@ def build_live_observation_prompt(
                 history=_data(ctx.recent_history)
             )
         )
+    started = _live_started_block(ctx, store=prompt_store)
+    if started:
+        parts.append(started)
     if ctx.frame_context:
         parts.append(
             _text("live", "frame", store=prompt_store).format(

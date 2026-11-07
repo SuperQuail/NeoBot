@@ -170,6 +170,7 @@ class _GenerationMixin:
             text="",
             recent_history=self.format_history(room_id, _MAX_HISTORY),
             room_memory=self._room_memory.get(str(room_id), ""),
+            live_started_at=self._live_started_at.get(str(room_id), ""),
             frame_context=await self.frame_context(room_id),
         )
         system, content = build_live_observation_prompt(
@@ -257,6 +258,7 @@ class _GenerationMixin:
             text=text,
             room_memory=self._room_memory.get(str(room_id), ""),
             viewer_memory=await self._load_user_memory(user_id),
+            live_started_at=self._live_started_at.get(str(room_id), ""),
             frame_context="",
         )
         system, content = build_live_danmaku_prompt(
@@ -300,6 +302,7 @@ class _GenerationMixin:
             text=prompt,
             recent_history=context or self.format_history(room_id, _MAX_HISTORY),
             room_memory=self._room_memory.get(str(room_id), ""),
+            live_started_at=self._live_started_at.get(str(room_id), ""),
             frame_context="",
             scheduled_prompt=prompt,
         )

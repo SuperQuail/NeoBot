@@ -178,7 +178,27 @@ class _RoomsMixin:
             return {"live": False, "error": "读取开播状态失败：接口未返回直播间信息"}
         live = _to_int(get_field(room_info, "live_status", 0)) == 1
         self._live_cache[key] = (now, live)
+        if live:
+            self._note_live_session(key, str(get_field(room_info, "live_time", "") or ""))
         return {"live": live, "error": ""}
+
+    def _note_live_session(self, room_id: Any, live_time: str) -> None:
+        """记录开播时间；时间变了就是新一场直播，清掉上一场的弹幕历史。
+
+        上一场/开播前的弹幕对当前回复没有意义，留着只会让模型翻旧账。
+        拿不到 live_time 时什么都不做（绝不因为读不到就清历史）。
+        """
+        started = str(live_time or "").strip()
+        if not started:
+            return
+        key = str(_to_int(room_id))
+        if self._live_started_at.get(key) == started:
+            return
+        self._live_started_at[key] = started
+        history = self._history.get(key)
+        if history:
+            history.clear()
+        self._logger.info(f"B站直播新场次：房间 {key}，开播时间 {started}")
 
     async def is_live(self, room_id: int, *, refresh: bool = False) -> bool:
         """兼容包装：接口不可用时按未开播处理；需要区分三态的调用方用 live_status。"""
