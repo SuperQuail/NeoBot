@@ -823,7 +823,7 @@ async def test_history_keeps_latest_500_danmu(tmp_path: Path) -> None:
     assert len(history) == 500
     assert history[0]["text"] == "弹幕5"
     assert history[-1]["text"] == "弹幕504"
-    assert set(history[0]) == {"uid", "name", "text", "time", "ts", "at_me"}
+    assert set(history[0]) == {"uid", "name", "text", "time", "ts"}
     assert len(history[0]["time"]) == 8
     assert interactor.get_history(5440, 2)[-1]["text"] == "弹幕504"
     assert interactor.get_history(9999) == []

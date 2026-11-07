@@ -109,14 +109,12 @@ class _ReplyMixin:
         text = str(danmu.get("text") or "").strip()
         if not text:
             return
-        my_uid = self._my_uid
         entry = {
             "uid": _to_int(danmu.get("uid")),
             "name": str(danmu.get("name") or ""),
             "text": text,
             "ts": time.time(),
             "time": datetime.now().astimezone().strftime("%H:%M:%S"),
-            "at_me": bool(my_uid and _to_int(danmu.get("reply_mid")) == my_uid),
         }
         room_history = self._history.get(room_id)
         if room_history is None:
