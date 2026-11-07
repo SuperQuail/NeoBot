@@ -47,6 +47,7 @@ class SqlAlchemyCrossChatSessionAccess:
         notification_mode: str,
         status: str,
         boot_id: str,
+        reply: str = "",
     ) -> CrossChatSessionRecord:
         now = datetime.now(timezone.utc)
         stmt = sqlite_insert(CrossChatSessionData).values(
@@ -58,19 +59,22 @@ class SqlAlchemyCrossChatSessionAccess:
             mode=str(mode),
             notification_mode=str(notification_mode),
             status=str(status),
-            reply="",
+            reply=str(reply),
             boot_id=str(boot_id),
             created_at=now,
             updated_at=now,
         )
+        # 唯一键含 boot_id：同一对聊天流在同一进程内复用一行（重置 reply/created_at，
+        # 不会把上一次的回复带到这次），不同进程各留自己的行，互不覆盖。
         stmt = stmt.on_conflict_do_update(
-            index_elements=["origin_kind", "origin_id", "target_kind", "target_id"],
+            index_elements=["origin_kind", "origin_id", "target_kind", "target_id", "boot_id"],
             set_={
                 "task_id": stmt.excluded.task_id,
                 "mode": stmt.excluded.mode,
                 "notification_mode": stmt.excluded.notification_mode,
                 "status": stmt.excluded.status,
-                "boot_id": stmt.excluded.boot_id,
+                "reply": stmt.excluded.reply,
+                "created_at": stmt.excluded.created_at,
                 "updated_at": now,
             },
         )

@@ -29,6 +29,7 @@ class CrossChatSessionAccess(Protocol):
         notification_mode: str,
         status: str,
         boot_id: str,
+        reply: str = "",
     ) -> CrossChatSessionRecord: ...
 
     async def record_result(

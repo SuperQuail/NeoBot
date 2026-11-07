@@ -3,7 +3,7 @@ flow: 22-storage-migrations
 covers:
   - packages/storage/src/neobot_storage/
 verified_against: d525a5b
-verified_hash: 764ac84ed4f3
+verified_hash: eb6a37f199bf
 ---
 
 # 22 存储与迁移
@@ -12,8 +12,8 @@ verified_hash: 764ac84ed4f3
 
 嵌入式 Alembic 迁移沿用宿主日志出口，迁移内部进度保留到 DEBUG，宿主按结果与耗时输出摘要；独立 Alembic 命令仍使用自身 ini 日志配置。
 
-`neobot_storage` 包：异步引擎与 PRAGMA、UoW 事务边界、17 张表、
-29 个 Alembic 迁移、仓储层与锁重试。所有上层（档案、画像、用量、定时任务、头像、
+`neobot_storage` 包：异步引擎与 PRAGMA、UoW 事务边界、18 张表、
+26 个 Alembic 迁移、仓储层与锁重试。所有上层（档案、画像、用量、定时任务、头像、
 图片引用索引）都通过它读写 SQLite。
 
 不在这里：档案的业务语义见 `07` / `07b`；用量与计费见 `23-billing-stats.md`；
@@ -96,7 +96,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["async with uow"] --> B["__aenter__: session = factory()"]
-    B --> C["绑定 9 个仓储：messages/memories/profiles/archive/<br/>archive_snapshots/images/emojis/creator_images/scheduled_tasks"]
+    B --> C["绑定 11 个仓储：messages/memories/profiles/archive/<br/>archive_snapshots/images/emojis/creator_images/scheduled_tasks/bilibili_links/cross_chat_sessions"]
     C --> D["业务代码用 uow.xxx.method()"]
     D --> E["__aexit__(exc)"]
     E --> F{"有异常?"}
@@ -156,7 +156,7 @@ flowchart TD
 </details>
 
 <details>
-### 17 张表与谁在写
+### 18 张表与谁在写
 
 ```mermaid
 flowchart LR
@@ -198,7 +198,7 @@ flowchart LR
 </details>
 
 <details>
-### 迁移链：29 个版本与不可逆操作
+### 迁移链：26 个版本与不可逆操作
 
 ```mermaid
 flowchart TD
@@ -215,6 +215,7 @@ flowchart TD
     K --> L["0028 image_refs（引用摘要 → 描述，可往返）"]
     L --> M["0029 emoji 曝光分/爱用列"]
     M --> N["0030 cross_chat_sessions（按 boot_id 只在本次运行内可见）"]
+    N --> O["0031 唯一键加入 boot_id（进程各留各的行）"]
 ```
 
 两个要注意的点：
