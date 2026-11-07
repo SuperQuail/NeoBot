@@ -1211,6 +1211,57 @@ async def test_screenshot_replies_captures_frame_when_enabled(tmp_path: Path) ->
 
 
 
+async def test_screenshot_happens_after_send(tmp_path: Path, monkeypatch) -> None:
+    """截图必须在弹幕发出之后，不能挡在发送前。"""
+    provider = _FakeProvider("欢迎")
+    interactor, client, _ = await _enabled(tmp_path, provider=provider, at_only=False)
+    interactor._screenshot_replies = True
+    order: list[str] = []
+
+    async def fake_frame(room_id):
+        order.append("frame")
+
+    async def fake_send(room_id, text, **kwargs):
+        order.append("send")
+        return True
+
+    monkeypatch.setattr(interactor, "_save_reply_frame", fake_frame)
+    monkeypatch.setattr(client, "send_danmaku", fake_send)
+    await interactor._handle_danmu("5440", {"uid": 9, "name": "观众", "text": "在吗"})
+
+    assert order == ["send", "frame"]
+
+
+async def test_screenshot_skipped_when_send_fails(tmp_path: Path, monkeypatch) -> None:
+    provider = _FakeProvider("欢迎")
+    interactor, client, _ = await _enabled(tmp_path, provider=provider, at_only=False)
+    interactor._screenshot_replies = True
+    frames: list[int] = []
+
+    async def fake_frame(room_id):
+        frames.append(room_id)
+
+    monkeypatch.setattr(interactor, "_save_reply_frame", fake_frame)
+    monkeypatch.setattr(client, "send_danmaku", AsyncMock(return_value=False))
+    await interactor._handle_danmu("5440", {"uid": 9, "name": "观众", "text": "在吗"})
+
+    assert frames == []
+
+
+def test_mention_aliases_reach_willingness(tmp_path: Path) -> None:
+    """别名仍参与 @ 识别：经 extra_bot_names 传给意愿服务。"""
+    willing = _FakeWilling(True)
+    interactor = BilibiliLiveInteractor(
+        None,
+        data_dir=tmp_path,
+        bot_name="QQ名",
+        mention_names=["B站小号"],
+        willing_service=willing,
+    )
+    assert interactor._should_reply("5440", {"uid": 8}, "在吗") is True
+    assert "B站小号" in willing.calls[0]["extra_bot_names"]
+
+
 async def test_live_summarizes_every_200(tmp_path: Path) -> None:
     provider = _FakeProvider("这直播间在聊游戏")
     archive = SimpleNamespace(set=AsyncMock())

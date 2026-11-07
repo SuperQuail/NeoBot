@@ -84,9 +84,6 @@ class _ReplyMixin:
             ):
                 return
         self._record_reply(room_id)
-        # 截图在回复发出之后再做：拉流截帧要起 ffmpeg，不能挡在发送前面。
-        if self._screenshot_replies:
-            await self._save_reply_frame(room_id)
         # 延迟与用量归因：排队耗时（收包到开始处理）+ 生成发送耗时 + 模型轮次/token。
         recv_at = float(danmu.get("recv_at") or 0.0)
         queued = max(0.0, started - recv_at) if recv_at else 0.0
@@ -103,6 +100,9 @@ class _ReplyMixin:
         )
         # 发送完成后再落库：DB 写不能挡在弹幕前面。
         await self._record_live_usage(_to_int(room_id), result.usage)
+        # 截图放最后：拉流截帧要起 ffmpeg（可能数十秒），别挡在发送、日志与记账前面。
+        if self._screenshot_replies:
+            await self._save_reply_frame(room_id)
 
     def _record_history(self, room_id: str, danmu: dict[str, Any]) -> None:
         text = str(danmu.get("text") or "").strip()
