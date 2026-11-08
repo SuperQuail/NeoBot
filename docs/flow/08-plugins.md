@@ -34,7 +34,7 @@ verified_hash: 6109e45330e2
 
 **不画什么**（避免与相邻图重叠）：
 
-* `modloader/runtime.py`（2328 行编排门面）的逐行细节、`installer.py` 的下载/解压/备份、`hooks.py` 的处理器绑定与参数注入 → 见 `08b-plugin-runtime.md`（待补）。本图只在节点上标注它们的位置与调用顺序。
+* `modloader/runtime.py`（2415 行编排门面）的逐行细节、`installer.py` 的下载/解压/备份、`hooks.py` 的处理器绑定与参数注入 → 见 `08b-plugin-runtime.md`。本图只在节点上标注它们的位置与调用顺序。
 * `Plugin`（`plugin.py`）的装饰器注册面（命令/工具/Agent/Markdown Skill 绑定）→ 见 06-tools-skills。
 
 **触发边界**：面板按钮 / `plugin_control` 门面 / 插件自身可以显式重载。开启 `[plugins].watch=true` 后，`PluginHotReloader` 还会扫描已就绪且支持热重载的插件，将稳定的源码保存送入同一事务重载；默认关闭，修改开关需重启。`config.reload` 命令只分发**本体**配置（`HotReloadRegistry.apply`），插件配置走 `apply_plugin_config_change` 独立通道。文件监测生命周期与防抖详见 `08b-plugin-runtime.md`。
@@ -108,7 +108,7 @@ sequenceDiagram
     alt 新代进入预期状态
         RT->>MG: register + load + start（候选代转正, 然后恢复依赖方）
     else 新代失败
-        RT->>RT: _rollback_failed_generation: 丢弃候选代 + 恢复旧代（08b 待补）
+        RT->>RT: _rollback_failed_generation: 丢弃候选代 + 恢复旧代（见 08b-plugin-runtime.md）
     end
     P->>HR: 面板保存插件配置（勾选 reload）
     HR->>HR: classify_plugin_path 最长前缀 -> 只挑运行期安全项
@@ -370,7 +370,7 @@ flowchart TD
 ```
 
 判据细节：`hot_reload` 与 `config_hot_reload` 的最终取值是「`plugin.toml` 显式声明优先，否则取 `Plugin(...)` 的属性，都没有则 True」（`loader.py:276`、`loader.py:279`），快照里已加载插件用 `_loaded_flags` 覆盖发现结果（`runtime.py:1355`）。
-回滚细节（旧代重新注册、按原状态恢复 RUNNING/LOADED、候选代清理）见 `08b-plugin-runtime.md`（待补）；本图只标出「失败必须回到旧代」这条不变量。
+回滚细节（旧代重新注册、按原状态恢复 RUNNING/LOADED、候选代清理）见 `08b-plugin-runtime.md`；本图只标出「失败必须回到旧代」这条不变量。
 </details>
 
 <details>
@@ -485,7 +485,7 @@ flowchart TD
 * **清理模块缓存 ≠ 让新代码生效**：新代码靠 `_gN` 新命名空间 + 删 `__pycache__`；清理是为了不留孤儿模块代（注册失败、被禁用、被官方同名覆盖三种情况必须清）。
 * **`clear_module_cache` 按「名字长度倒序 + 前缀」删**：每个名字同时匹配自身与 `name.` 前缀，传顶层代名也会清掉其全部子模块；子包字节码则由 `_clear_bytecode` 递归删除。
 * **插件名含连续两个下划线直接拒绝**：与工具全局名 `{plugin}__{tool}` 的分隔符冲突，早失败好过在 `bind_tools` 阶段整批注册失败。
-* **官方插件与第三方插件同名时静默丢弃第三方**：只有一条 warning，没有任何面板冲突提示（安装路径的冲突提示是 `installer.probe` 的另一回事，见 08b 待补）。
+* **官方插件与第三方插件同名时静默丢弃第三方**：只有一条 warning，没有任何面板冲突提示（安装路径的冲突提示是 `installer.probe` 的另一回事，见 `08b-plugin-runtime.md`）。
 * **两处「重复注册」语义相反**：`HotReloadRegistry.register` 同名忽略（先注册者胜），`PluginRuntime.register_plugin_config_consumer` 是字典赋值（后登记覆盖）。
 * **联动停用发生在 runtime 的 `stop/unload/reload` 入口**：显式与自动重载共用这一入口；候选失败但旧代恢复就绪时仍恢复依赖方。手工 `manager.stop_plugin` 绕过 runtime 不会触发联动。
 * **操作锁只增不减是刻意的**（manager 侧），runtime 侧的操作锁却要主动剪枝 —— 改这两个字典时别把策略搞反。

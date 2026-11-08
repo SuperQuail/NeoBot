@@ -164,7 +164,7 @@ plugin.view("tasks", title="待办清单", entry="web/tasks/index.html", anchors
 
 页面以入口所在目录为分发边界；私有文件、Python、TOML、隐藏路径和逃逸符号链接不公开。宿主与工具共用资源解析规则，静态检查会验证明确的相对资源引用。页面文件为公开分发内容，不应放凭据或真实用户数据。
 
-特殊页面引用相对 `_sdk.js` 后使用 `window.NeoBotPlugin`；可按需引用宿主 `frontend/public/assets/plugin-view-sdk.d.ts` 的同版本类型声明，普通 Python 模板不需要前端文件：
+特殊页面引用相对 `_sdk.js` 后使用 `window.NeoBotPlugin`；可按需引用宿主 `app/src/neobot_app/builtin_plugins/dashboard/web/assets/plugin-view-sdk.d.ts` 的同版本类型声明，普通 Python 模板不需要前端文件：
 
 | 方法 | 行为 |
 | --- | --- |
