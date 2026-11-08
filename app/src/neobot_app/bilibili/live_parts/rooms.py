@@ -182,19 +182,36 @@ class _RoomsMixin:
             self._note_live_session(key, str(get_field(room_info, "live_time", "") or ""))
         return {"live": live, "error": ""}
 
-    def _note_live_session(self, room_id: Any, live_time: str) -> None:
-        """记录开播时间；时间变了就是新一场直播，清掉上一场的弹幕历史。
+    @staticmethod
+    def _normalize_live_time(value: Any) -> str:
+        """把开播时间归一成 "YYYY-MM-DD HH:MM:SS"：接口给字符串，WS 可能给秒级时间戳。"""
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if text.isdigit():
+            try:
+                return datetime.fromtimestamp(int(text)).strftime("%Y-%m-%d %H:%M:%S")
+            except (OverflowError, OSError, ValueError):
+                return ""
+        return text
 
-        上一场/开播前的弹幕对当前回复没有意义，留着只会让模型翻旧账。
-        拿不到 live_time 时什么都不做（绝不因为读不到就清历史）。
+    def _note_live_session(self, room_id: Any, live_time: Any) -> None:
+        """记录开播时间；第一次只记基线，之后时间变了才清上一场的弹幕。
+
+        首次观测（进程重启、房间中途启用）时历史里可能已有本场弹幕，不能清；
+        只有同一房间的开播时间从已知值变成另一个值，才是真的换了场次。
+        拿不到开播时间时什么都不做（绝不因为读不到就清历史）。
         """
-        started = str(live_time or "").strip()
+        started = self._normalize_live_time(live_time)
         if not started:
             return
         key = str(_to_int(room_id))
-        if self._live_started_at.get(key) == started:
+        known = self._live_started_at.get(key)
+        if known == started:
             return
         self._live_started_at[key] = started
+        if known is None:
+            return
         history = self._history.get(key)
         if history:
             history.clear()

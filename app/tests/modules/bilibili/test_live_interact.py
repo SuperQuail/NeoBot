@@ -1207,23 +1207,60 @@ async def test_history_does_not_mark_at_me(tmp_path: Path) -> None:
 
 
 def test_new_live_session_clears_history(tmp_path: Path) -> None:
-    """开播时间变化 = 新一场：上一场弹幕清空；同一场/拿不到时间都不清。"""
+    """首见只记基线；开播时间变了才清；同一场/拿不到时间都不清。"""
     interactor = BilibiliLiveInteractor(None, data_dir=tmp_path)
-    interactor._record_history("5440", {"uid": 8, "name": "观众", "text": "上一场"})
-    assert interactor.get_history(5440)
+    interactor._record_history("5440", {"uid": 8, "name": "观众", "text": "开播前就记下的"})
 
+    # 首次观测（重启/中途启用）：历史里已经有本场弹幕，不能清。
     interactor._note_live_session("5440", "2026-11-07 21:00:00")
-    assert interactor.get_history(5440) == []
+    assert interactor.get_history(5440)
     assert interactor._live_started_at["5440"] == "2026-11-07 21:00:00"
 
-    interactor._record_history("5440", {"uid": 8, "name": "观众", "text": "本场"})
+    # 同一场再观测：不清。
     interactor._note_live_session("5440", "2026-11-07 21:00:00")
     assert interactor.get_history(5440)
+
+    # 换成新一场：清掉上一场。
+    interactor._note_live_session("5440", "2026-11-08 20:00:00")
+    assert interactor.get_history(5440) == []
+    assert interactor._live_started_at["5440"] == "2026-11-08 20:00:00"
+
+    # 拿不到时间：绝不清历史。
+    interactor._record_history("5440", {"uid": 8, "name": "观众", "text": "本场"})
     interactor._note_live_session("5440", "")
     assert interactor.get_history(5440)
 
 
-async def test_live_status_records_start_time_and_clears_history(tmp_path: Path) -> None:
+def test_live_time_formats_are_normalized(tmp_path: Path) -> None:
+    """WS 的秒级时间戳与接口的字符串必须归一成同一个值，否则会互相判成新场次。"""
+    interactor = BilibiliLiveInteractor(None, data_dir=tmp_path)
+    interactor._record_history("5440", {"uid": 8, "name": "观众", "text": "本场"})
+
+    epoch = int(datetime(2026, 11, 7, 21, 0, 0).timestamp())
+    interactor._note_live_session("5440", epoch)
+    assert interactor.get_history(5440)
+    interactor._note_live_session("5440", "2026-11-07 21:00:00")
+    assert interactor.get_history(5440)
+    assert interactor._live_started_at["5440"] == "2026-11-07 21:00:00"
+
+
+def test_live_event_live_time_from_either_shape() -> None:
+    """LIVE 报文的 live_time 可能出现在顶层或 data 内。"""
+    from neobot_app.bilibili.live_protocol import parse_event
+
+    top = parse_event({"cmd": "LIVE", "live_time": 1762520400}, 5440)
+    assert top is not None and top.kind == "live_start" and top.text == "1762520400"
+    nested = parse_event(
+        {"cmd": "LIVE", "data": {"live_time": "2026-11-07 21:00:00"}}, 5440
+    )
+    assert nested is not None and nested.text == "2026-11-07 21:00:00"
+    empty = parse_event({"cmd": "LIVE", "data": {}}, 5440)
+    assert empty is not None and empty.text == ""
+
+
+async def test_live_status_records_start_time_without_clearing_first_time(
+    tmp_path: Path,
+) -> None:
     client = _FakeClient(
         room_info={
             "room_info": {
@@ -1234,18 +1271,20 @@ async def test_live_status_records_start_time_and_clears_history(tmp_path: Path)
         }
     )
     interactor = BilibiliLiveInteractor(client, data_dir=tmp_path)
-    interactor._record_history("5440", {"uid": 8, "name": "观众", "text": "旧的"})
+    interactor._record_history("5440", {"uid": 8, "name": "观众", "text": "本场已收到"})
 
     assert (await interactor.live_status(5440))["live"] is True
     assert interactor._live_started_at["5440"] == "2026-11-07 21:00:00"
-    assert interactor.get_history(5440) == []
+    # 首次观测不清：这条弹幕就是本场的。
+    assert interactor.get_history(5440)
 
 
 async def test_ws_live_start_event_marks_session(tmp_path: Path) -> None:
     from neobot_app.bilibili.live_protocol import LiveEvent
 
     interactor = BilibiliLiveInteractor(None, data_dir=tmp_path)
-    interactor._record_history("5440", {"uid": 8, "name": "观众", "text": "旧的"})
+    interactor._note_live_session("5440", "2026-11-07 20:00:00")
+    interactor._record_history("5440", {"uid": 8, "name": "观众", "text": "上一场"})
 
     await interactor._handle_event(
         "5440", LiveEvent("live_start", 5440, text="2026-11-07 21:00:00")
