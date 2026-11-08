@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "version": "2.1.0-a5",
-  "created_at": "2026-11-07T13:22:27.182777708Z",
+  "version": "2.1.0-a6",
+  "created_at": "2026-11-08T06:50:38.713169268Z",
   "mode": "pr",
   "channel": "alpha",
-  "fingerprint": "sha256:c85884411e6b269facf44e5d3861b2bf31b755e92b7d5b277d9b85656d312776",
+  "fingerprint": "sha256:a2f9c7692dc43ffafac9c6c793372f42436f941ddce64611bce69745a1af2f85",
   "repo": {
     "host": "github.com",
     "owner": "SuperQuail",
@@ -18,95 +18,95 @@
       "uv run pytest --strict-markers -m \"not browser and not network and not slow and not llm\""
     ],
     "skipped": false,
-    "at": "2026-11-07T13:22:27.182778177Z"
+    "at": "2026-11-08T06:50:38.713169638Z"
   },
   "packages": [
     {
       "name": "python@neobot",
       "path": ".",
       "resolver": "python",
-      "current": "2.1.0-a4",
-      "next": "2.1.0-a5",
+      "current": "2.1.0-a5",
+      "next": "2.1.0-a6",
       "bump": "minor",
-      "tag": "v2.1.0a5",
+      "tag": "v2.1.0a6",
       "publish": false
     },
     {
       "name": "python@neobot-app",
       "path": "app",
       "resolver": "python",
-      "current": "2.1.0-a4",
-      "next": "2.1.0-a5",
+      "current": "2.1.0-a5",
+      "next": "2.1.0-a6",
       "bump": "minor",
-      "tag": "v2.1.0a5",
+      "tag": "v2.1.0a6",
       "publish": true
     },
     {
       "name": "python@neobot-contracts",
       "path": "packages/contracts",
       "resolver": "python",
-      "current": "2.1.0-a4",
-      "next": "2.1.0-a5",
+      "current": "2.1.0-a5",
+      "next": "2.1.0-a6",
       "bump": "minor",
-      "tag": "v2.1.0a5",
+      "tag": "v2.1.0a6",
       "publish": true
     },
     {
       "name": "python@neobot-adapter",
       "path": "packages/adapter",
       "resolver": "python",
-      "current": "2.1.0-a4",
-      "next": "2.1.0-a5",
+      "current": "2.1.0-a5",
+      "next": "2.1.0-a6",
       "bump": "minor",
-      "tag": "v2.1.0a5",
+      "tag": "v2.1.0a6",
       "publish": true
     },
     {
       "name": "python@neobot-chat",
       "path": "packages/chat",
       "resolver": "python",
-      "current": "2.1.0-a4",
-      "next": "2.1.0-a5",
+      "current": "2.1.0-a5",
+      "next": "2.1.0-a6",
       "bump": "minor",
-      "tag": "v2.1.0a5",
+      "tag": "v2.1.0a6",
       "publish": true
     },
     {
       "name": "python@neobot-memory",
       "path": "packages/memory",
       "resolver": "python",
-      "current": "2.1.0-a4",
-      "next": "2.1.0-a5",
+      "current": "2.1.0-a5",
+      "next": "2.1.0-a6",
       "bump": "minor",
-      "tag": "v2.1.0a5",
+      "tag": "v2.1.0a6",
       "publish": true
     },
     {
       "name": "python@neobot-modloader",
       "path": "packages/modloader",
       "resolver": "python",
-      "current": "2.1.0-a4",
-      "next": "2.1.0-a5",
+      "current": "2.1.0-a5",
+      "next": "2.1.0-a6",
       "bump": "minor",
-      "tag": "v2.1.0a5",
+      "tag": "v2.1.0a6",
       "publish": true
     },
     {
       "name": "python@neobot-storage",
       "path": "packages/storage",
       "resolver": "python",
-      "current": "2.1.0-a4",
-      "next": "2.1.0-a5",
+      "current": "2.1.0-a5",
+      "next": "2.1.0-a6",
       "bump": "minor",
-      "tag": "v2.1.0a5",
+      "tag": "v2.1.0a6",
       "publish": true
     }
   ],
   "releases": [
     {
-      "version": "2.1.0-a5",
-      "tag": "v2.1.0a5",
-      "previous_tag": "v2.1.0a4",
+      "version": "2.1.0-a6",
+      "tag": "v2.1.0a6",
+      "previous_tag": "v2.1.0a5",
       "packages": [
         "python@neobot",
         "python@neobot-adapter",
@@ -207,6 +207,90 @@
       "author": "Tang-Tian-dev"
     },
     {
+      "file": ".changes/live-danmaku-uid.md",
+      "type": "fix",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Give the live-reply prompt the current danmaku's uid and only mark the current message as \"@-mentioned\", so the bot stops guessing (and mis-@-ing) a history line.",
+      "commit": "faf960850464f046e3a92e86d07d2dca6c276c63",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/faf960850464f046e3a92e86d07d2dca6c276c63",
+      "pull_number": 296,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/296",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/live-reply-hotpath.md",
+      "type": "perf",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Take the optional reply screenshot after the danmaku is sent (it used to run ffmpeg before sending), and drop a dead mention helper.",
+      "commit": "65bbfef99ca32928d6041b335eda1151e9e8c5c1",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/65bbfef99ca32928d6041b335eda1151e9e8c5c1",
+      "pull_number": 293,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/293",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/live-reply-metrics.md",
+      "type": "perf",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Record live-room model usage, iteration count and per-danmaku latency so the live reply path can be measured and compared with group chat.",
+      "commit": "98bc3af2e0b4599b0de519c2ad9c1b61e79f1331",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/98bc3af2e0b4599b0de519c2ad9c1b61e79f1331",
+      "pull_number": 292,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/292",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/live-role-messages.md",
+      "type": "perf",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Send live-room history as role messages (bot turns as send_reply tool calls) instead of one text blob, so the stable prefix can hit the model cache and the model sees how it talks.",
+      "commit": "0945de8f7e9c0f2dd585b7432eb5628a007d235c",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/0945de8f7e9c0f2dd585b7432eb5628a007d235c",
+      "pull_number": 298,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/298",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/live-tool-loop.md",
+      "type": "refactor",
+      "bump": "minor",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Drive the B站 reply tool loop directly instead of through the generic agent wrapper: prompts are sent verbatim, each model call and the whole turn get their own timeouts, and tool errors go back to the model instead of aborting the turn. Applies to comments, private messages and live replies.",
+      "commit": "f338dba27e31f5d67763cc49a930e69c6fd25757",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/f338dba27e31f5d67763cc49a930e69c6fd25757",
+      "pull_number": 299,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/299",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/live-tools.md",
+      "type": "feat",
+      "bump": "minor",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Give the live reply agent on-demand tools for its room: look at the current frame and transcribe the last few seconds of audio. Tool results carry only the conclusion and text (no paths or URLs), tool time is capped so it cannot eat the whole turn, and tool errors come back to the model.",
+      "commit": "ff8550f3caa7553c437ba9e4c323deace2e38f1d",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/ff8550f3caa7553c437ba9e4c323deace2e38f1d",
+      "pull_number": 300,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/300",
+      "author": "Tang-Tian-dev"
+    },
+    {
       "file": ".changes/log-info-debug.md",
       "type": "fix",
       "scope": "logging",
@@ -219,6 +303,21 @@
       "commit_url": "https://github.com/SuperQuail/NeoBot/commit/6919c44f4232f18c3f646ddadf458a1bd9861991",
       "pull_number": 290,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/290",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/parse-model-fallbacks.md",
+      "type": "perf",
+      "scope": "adapter",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-adapter"
+      ],
+      "body": "Parse each inbound model once when validation fails: the TypeAdapter retry re-ran the same validator, and the tolerant path no longer wraps conversions in no-op try/except blocks.",
+      "commit": "4b36beba80f22fa8de0a4a8a072885e2a06f7de2",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/4b36beba80f22fa8de0a4a8a072885e2a06f7de2",
+      "pull_number": 297,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/297",
       "author": "Tang-Tian-dev"
     },
     {
@@ -340,6 +439,7 @@
     ".changes/dashboard-prompt-folding.md",
     ".changes/drop-legacy-release.md",
     ".changes/gentle-language-xml.md",
+    ".changes/log-info-debug.md",
     ".changes/prompt-assets-cot.md",
     ".changes/prompt-registry-refactor.md",
     ".changes/reply-contract-corrections.md",
