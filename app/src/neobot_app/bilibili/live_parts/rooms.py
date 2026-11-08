@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from neobot_app.bilibili._compat import call_client, get_field
@@ -184,16 +184,27 @@ class _RoomsMixin:
 
     @staticmethod
     def _normalize_live_time(value: Any) -> str:
-        """把开播时间归一成 "YYYY-MM-DD HH:MM:SS"：接口给字符串，WS 可能给秒级时间戳。"""
+        """把开播时间归一成 "YYYY-MM-DD HH:MM:SS"（东八区）。
+
+        B站接口给的字符串就是东八区本地时间；WS 可能给秒级时间戳，还原时必须
+        固定 +08:00，否则非东八区主机会把同一场直播判成两场、误清本场弹幕。
+        """
         text = str(value or "").strip()
         if not text:
             return ""
-        if text.isdigit():
-            try:
-                return datetime.fromtimestamp(int(text)).strftime("%Y-%m-%d %H:%M:%S")
-            except (OverflowError, OSError, ValueError):
-                return ""
-        return text
+        # 纯数字（含负号）按时间戳处理；其它原样当作接口给的字符串。
+        is_timestamp = text.lstrip("-").isdigit()
+        if not is_timestamp:
+            return text
+        seconds = int(text)
+        # 合理时间范围之外的数字（0、负数、毫秒）当无效值，宁可不判定场次。
+        if seconds < 1_000_000_000 or seconds > 4_000_000_000:
+            return ""
+        try:
+            moment = datetime.fromtimestamp(seconds, tz=timezone(timedelta(hours=8)))
+        except (OverflowError, OSError, ValueError):
+            return ""
+        return moment.strftime("%Y-%m-%d %H:%M:%S")
 
     def _note_live_session(self, room_id: Any, live_time: Any) -> None:
         """记录开播时间；第一次只记基线，之后时间变了才清上一场的弹幕。

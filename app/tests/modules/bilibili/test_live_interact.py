@@ -1232,16 +1232,48 @@ def test_new_live_session_clears_history(tmp_path: Path) -> None:
 
 
 def test_live_time_formats_are_normalized(tmp_path: Path) -> None:
-    """WS 的秒级时间戳与接口的字符串必须归一成同一个值，否则会互相判成新场次。"""
+    """WS 的秒级时间戳必须按东八区还原成接口同款字符串，否则会互判新场次。"""
     interactor = BilibiliLiveInteractor(None, data_dir=tmp_path)
     interactor._record_history("5440", {"uid": 8, "name": "观众", "text": "本场"})
 
-    epoch = int(datetime(2026, 11, 7, 21, 0, 0).timestamp())
-    interactor._note_live_session("5440", epoch)
+    # 2026-11-07 21:00:00 +08:00 的秒级时间戳；固定期望值，与主机时区无关。
+    interactor._note_live_session("5440", 1794056400)
+    assert interactor._live_started_at["5440"] == "2026-11-07 21:00:00"
     assert interactor.get_history(5440)
+
     interactor._note_live_session("5440", "2026-11-07 21:00:00")
     assert interactor.get_history(5440)
-    assert interactor._live_started_at["5440"] == "2026-11-07 21:00:00"
+
+
+def test_invalid_live_time_is_ignored(tmp_path: Path) -> None:
+    """0 / 负数 / 明显越界的数字当作拿不到，不影响场次判定。"""
+    interactor = BilibiliLiveInteractor(None, data_dir=tmp_path)
+    for value in (0, "0", -5, 12345, 9_999_999_999_999):
+        assert interactor._normalize_live_time(value) == ""
+    assert interactor._normalize_live_time("2026-11-07 21:00:00") == "2026-11-07 21:00:00"
+
+
+async def test_session_check_runs_before_history_record(tmp_path: Path) -> None:
+    """换场清历史不能在"刚记下这条"之后做，否则这条弹幕自己也被清掉。"""
+    interactor, _client, _ = await _enabled(tmp_path, auto_reply=False)
+    interactor._note_live_session("5440", "2026-11-07 20:00:00")
+    interactor._record_history("5440", {"uid": 8, "name": "观众", "text": "上一场"})
+
+    # 让下一次开播状态读取返回新一场的开播时间。
+    client = interactor._service
+    client.room_info = {
+        "room_info": {
+            "room_id": 21452505,
+            "live_status": 1,
+            "live_time": "2026-11-07 21:00:00",
+        }
+    }
+    interactor._live_cache.clear()
+
+    await interactor._handle_danmu("5440", {"uid": 9, "name": "观众", "text": "本场第一条"})
+
+    texts = [item["text"] for item in interactor.get_history(5440)]
+    assert texts == ["本场第一条"]
 
 
 def test_live_event_live_time_from_either_shape() -> None:
