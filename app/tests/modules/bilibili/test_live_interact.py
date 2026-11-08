@@ -1759,21 +1759,43 @@ async def test_live_tool_error_is_reported_not_raised(tmp_path: Path) -> None:
     assert tool_messages and "ffmpeg 挂了" in tool_messages[0]["content"]
 
 
-async def test_live_reply_can_read_history_tool(tmp_path: Path) -> None:
-    provider = _ToolCallingProvider("read_history", {"count": 5}, "刚才聊过了")
-    interactor, client, _ = await _enabled(tmp_path, provider=provider)
-    interactor._record_history("5440", {"uid": 8, "name": "观众", "text": "上一条弹幕"})
+async def test_live_snapshot_without_description_is_not_ok(tmp_path: Path) -> None:
+    """没配置视觉模型时截帧成功但描述为空：工具要回 ok=false，别让模型编画面。"""
+    provider = _ToolCallingProvider("snapshot", {}, "看不到")
+    interactor, _client, _ = await _enabled(tmp_path, provider=provider)
+    interactor.snapshot = AsyncMock(  # type: ignore[method-assign]
+        return_value={"ok": True, "description": "", "path": "/tmp/frame.jpg"}
+    )
 
-    await interactor._handle_danmu("5440", {"uid": 9, "name": "观众", "text": "刚才聊了什么"})
+    await interactor._handle_danmu("5440", {"uid": 9, "name": "观众", "text": "画面呢"})
 
-    assert client.sent == [(5440, "刚才聊过了")]
     tool_messages = [
         item
         for item in provider.messages[1]
-        if item.get("role") == "tool" and item.get("name") == "read_history"
+        if item.get("role") == "tool" and item.get("name") == "snapshot"
     ]
-    assert tool_messages and "上一条弹幕" in tool_messages[0]["content"]
+    assert tool_messages and '"ok": false' in tool_messages[0]["content"]
 
+
+async def test_live_tool_error_redacts_paths_and_urls(tmp_path: Path) -> None:
+    provider = _ToolCallingProvider("snapshot", {}, "没看到")
+    interactor, _client, _ = await _enabled(tmp_path, provider=provider)
+    interactor.snapshot = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "ok": False,
+            "error": "拉流失败 https://cdn.example.com/live.flv?sign=secret /tmp/live/frame.jpg",
+        }
+    )
+
+    await interactor._handle_danmu("5440", {"uid": 9, "name": "观众", "text": "画面呢"})
+
+    content = [
+        item
+        for item in provider.messages[1]
+        if item.get("role") == "tool" and item.get("name") == "snapshot"
+    ][0]["content"]
+    assert "sign=secret" not in content
+    assert "/tmp/live" not in content
 
 
 async def test_tool_reply_reports_model_iterations() -> None:

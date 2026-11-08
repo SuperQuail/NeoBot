@@ -16,6 +16,9 @@ from neobot_app.reply.postprocess import split_into_sentences_w_remove_punctuati
 _CALL_TIMEOUT_SECONDS = 90.0
 #: 循环上限：一轮正常 1~2 次调用，这里只防止模型持续调工具时死循环。
 _MAX_ITERATIONS = 200
+#: 单个工具的超时上限：截帧/转写可能十几秒，但不能把整轮预算一口吃光，
+#: 否则下一次模型调用必然撞 deadline，整条回复丢掉。
+_TOOL_TIMEOUT_SECONDS = 20.0
 _USAGE_KEYS = ("input_tokens", "output_tokens", "cache_hit_tokens", "cache_miss_tokens")
 
 
@@ -224,8 +227,8 @@ async def run_tool_reply(
             return json.dumps(
                 {"ok": False, "error": f"工具参数解析失败：{exc}"}, ensure_ascii=False
             )
-        # 工具耗时也算进整轮预算：截帧/转写可能十几秒，不能挤掉后面的模型调用。
-        left = max(0.1, deadline - time.monotonic())
+        # 工具耗时也算进整轮预算，但只取一小段：留出余量给后面的模型调用。
+        left = min(_TOOL_TIMEOUT_SECONDS, max(0.1, deadline - time.monotonic()))
 
         async def _run() -> str:
             if name in _TOOL_NAMES:

@@ -4,4 +4,4 @@ packages:
   python@neobot-app: minor
 ---
 
-Give the live reply agent on-demand tools for its room: look at the current frame, transcribe the last few seconds of audio, and read recent danmaku, instead of only through the observation loop. Tool time counts against the turn budget and errors come back to the model.
+Give the live reply agent on-demand tools for its room: look at the current frame and transcribe the last few seconds of audio. Tool results carry only the conclusion and text (no paths or URLs), tool time is capped so it cannot eat the whole turn, and tool errors come back to the model.
