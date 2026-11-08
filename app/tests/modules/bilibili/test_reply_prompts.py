@@ -506,6 +506,16 @@ def test_custom_pending_template_without_attrs_still_renders(tmp_path) -> None:
     assert "<待接弹幕>在吗</待接弹幕>" in user
 
 
+def test_live_prompt_includes_stream_started_at() -> None:
+    from neobot_app.bilibili.prompts import LiveDanmakuContext, build_live_danmaku_prompt
+
+    ctx = LiveDanmakuContext(
+        bot_name="Neo", text="在吗", live_started_at="2026-11-07 21:00:00"
+    )
+    _system, user = build_live_danmaku_prompt(ctx)
+    assert "<开播时间>主播 2026-11-07 21:00:00 开播</开播时间>" in user
+
+
 def test_live_prompt_escapes_danmaku_injection() -> None:
     from neobot_app.bilibili.prompts import (
         LiveDanmakuContext,

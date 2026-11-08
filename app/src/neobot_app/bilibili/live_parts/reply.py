@@ -25,6 +25,8 @@ class _ReplyMixin:
         # 自己发的弹幕会被服务器回显：发送时已经记过一条 self 历史，别再重复记一遍。
         if self._my_uid and _to_int(danmu.get("uid")) == self._my_uid:
             return
+        # 先确认场次（缓存 60s，命中不打网络），否则换场清历史会把刚记的这条一起清掉。
+        await self.is_live(_to_int(room_id))
         self._record_history(room_id, danmu)
         _uid = _to_int(danmu.get("uid"))
         if _uid and _uid not in self._user_archive_seen:
