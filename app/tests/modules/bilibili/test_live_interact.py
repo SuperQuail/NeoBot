@@ -1711,6 +1711,9 @@ async def test_live_reply_can_call_snapshot_tool(
         if item.get("role") == "tool" and item.get("name") == "snapshot"
     ]
     assert tool_messages and "画面是海" in tool_messages[0]["content"]
+    # 原始字节和本地路径不进上下文。
+    assert "bytes" not in tool_messages[0]["content"]
+    assert "frame.jpg" not in tool_messages[0]["content"]
 
 
 async def test_live_reply_can_read_history_tool(tmp_path: Path) -> None:

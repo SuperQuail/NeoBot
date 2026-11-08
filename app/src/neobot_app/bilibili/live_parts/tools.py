@@ -66,11 +66,30 @@ def build_live_executors(interactor: Any, room_id: int) -> dict[str, Any]:
     """把直播间能力绑到一次回复上；模型调用哪个就执行哪个。"""
 
     async def snapshot(_args: dict) -> str:
-        return _dump(await interactor.snapshot(_to_int(room_id)))
+        result = await interactor.snapshot(_to_int(room_id))
+        if not isinstance(result, dict):
+            return _dump({"ok": False, "error": "截帧失败"})
+        # 只回结论与画面描述：原始字节和本地路径对模型没用，还会白占上下文。
+        return _dump(
+            {
+                "ok": bool(result.get("ok")),
+                "description": str(result.get("description") or ""),
+                "error": str(result.get("error") or ""),
+            }
+        )
 
     async def transcribe(args: dict) -> str:
         seconds = max(5, min(30, _to_int(args.get("seconds")) or 10))
-        return _dump(await interactor.transcribe(_to_int(room_id), seconds=seconds))
+        result = await interactor.transcribe(_to_int(room_id), seconds=seconds)
+        if not isinstance(result, dict):
+            return _dump({"ok": False, "error": "转写失败"})
+        return _dump(
+            {
+                "ok": bool(result.get("ok")),
+                "text": str(result.get("text") or ""),
+                "error": str(result.get("error") or ""),
+            }
+        )
 
     async def read_history(args: dict) -> str:
         count = max(1, min(500, _to_int(args.get("count")) or 50))
