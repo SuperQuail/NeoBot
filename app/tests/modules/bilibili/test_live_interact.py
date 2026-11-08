@@ -1625,6 +1625,54 @@ async def test_tool_reply_stops_after_cancel() -> None:
     assert result.text is None
 
 
+class _ToolCallingProvider:
+    """先调一个直播能力工具，再发弹幕收尾。"""
+
+    def __init__(self, tool: str, args: dict, text: str) -> None:
+        self.tool = tool
+        self.tool_args = args
+        self.text = text
+        self.calls = 0
+        self.messages: list[list[dict]] = []
+
+    async def chat(self, messages, tools=None):
+        self.calls += 1
+        self.messages.append(list(messages))
+        if self.calls == 1:
+            return {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_tool",
+                        "type": "function",
+                        "function": {
+                            "name": self.tool,
+                            "arguments": json.dumps(self.tool_args, ensure_ascii=False),
+                        },
+                    }
+                ],
+            }
+        if self.calls == 2:
+            return {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_send",
+                        "type": "function",
+                        "function": {
+                            "name": "send_reply",
+                            "arguments": json.dumps(
+                                {"text": self.text}, ensure_ascii=False
+                            ),
+                        },
+                    }
+                ],
+            }
+        return {"role": "assistant", "content": ""}
+
+
 class _SlowProvider:
     async def chat(self, messages, tools=None):
         await asyncio.sleep(1)
@@ -1643,6 +1691,112 @@ async def test_tool_reply_sends_prompt_verbatim() -> None:
 async def test_tool_reply_has_per_call_timeout() -> None:
     with pytest.raises(asyncio.TimeoutError):
         await run_tool_reply(_SlowProvider(), "s", "u", call_timeout=0.05, timeout=5.0)
+
+
+async def test_live_reply_can_call_snapshot_tool(
+    tmp_path: Path, monkeypatch
+) -> None:
+    provider = _ToolCallingProvider("snapshot", {}, "海真好看")
+    interactor, client, _ = await _enabled(tmp_path, provider=provider)
+    interactor.snapshot = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "ok": True,
+            "description": "画面是海",
+            "path": "/tmp/frame.jpg",
+            "bytes": b"\xff\xd8binary",
+        }
+    )
+
+    await interactor._handle_danmu("5440", {"uid": 9, "name": "观众", "text": "海好看吗"})
+
+    assert client.sent == [(5440, "海真好看")]
+    tool_messages = [
+        item
+        for item in provider.messages[1]
+        if item.get("role") == "tool" and item.get("name") == "snapshot"
+    ]
+    assert tool_messages and "画面是海" in tool_messages[0]["content"]
+    # 原始字节和本地路径不进上下文。
+    assert "bytes" not in tool_messages[0]["content"]
+    assert "frame.jpg" not in tool_messages[0]["content"]
+
+
+async def test_live_reply_can_call_transcribe_tool(tmp_path: Path) -> None:
+    provider = _ToolCallingProvider("transcribe", {"seconds": 5}, "听到了")
+    interactor, client, _ = await _enabled(tmp_path, provider=provider)
+    interactor.transcribe = AsyncMock(  # type: ignore[method-assign]
+        return_value={"ok": True, "text": "主播说晚上好"}
+    )
+
+    await interactor._handle_danmu("5440", {"uid": 9, "name": "观众", "text": "主播刚说啥"})
+
+    assert client.sent == [(5440, "听到了")]
+    tool_messages = [
+        item
+        for item in provider.messages[1]
+        if item.get("role") == "tool" and item.get("name") == "transcribe"
+    ]
+    assert tool_messages and "主播说晚上好" in tool_messages[0]["content"]
+    interactor.transcribe.assert_awaited_once_with(5440, seconds=5)
+
+
+async def test_live_tool_error_is_reported_not_raised(tmp_path: Path) -> None:
+    """工具抛异常时回给模型一句错误，本轮继续。"""
+    provider = _ToolCallingProvider("snapshot", {}, "没看到")
+    interactor, client, _ = await _enabled(tmp_path, provider=provider)
+    interactor.snapshot = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("ffmpeg 挂了")
+    )
+
+    await interactor._handle_danmu("5440", {"uid": 9, "name": "观众", "text": "画面呢"})
+
+    assert client.sent == [(5440, "没看到")]
+    tool_messages = [
+        item
+        for item in provider.messages[1]
+        if item.get("role") == "tool" and item.get("name") == "snapshot"
+    ]
+    assert tool_messages and "ffmpeg 挂了" in tool_messages[0]["content"]
+
+
+async def test_live_snapshot_without_description_is_not_ok(tmp_path: Path) -> None:
+    """没配置视觉模型时截帧成功但描述为空：工具要回 ok=false，别让模型编画面。"""
+    provider = _ToolCallingProvider("snapshot", {}, "看不到")
+    interactor, _client, _ = await _enabled(tmp_path, provider=provider)
+    interactor.snapshot = AsyncMock(  # type: ignore[method-assign]
+        return_value={"ok": True, "description": "", "path": "/tmp/frame.jpg"}
+    )
+
+    await interactor._handle_danmu("5440", {"uid": 9, "name": "观众", "text": "画面呢"})
+
+    tool_messages = [
+        item
+        for item in provider.messages[1]
+        if item.get("role") == "tool" and item.get("name") == "snapshot"
+    ]
+    assert tool_messages and '"ok": false' in tool_messages[0]["content"]
+
+
+async def test_live_tool_error_redacts_paths_and_urls(tmp_path: Path) -> None:
+    provider = _ToolCallingProvider("snapshot", {}, "没看到")
+    interactor, _client, _ = await _enabled(tmp_path, provider=provider)
+    interactor.snapshot = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "ok": False,
+            "error": "拉流失败 https://cdn.example.com/live.flv?sign=secret /tmp/live/frame.jpg",
+        }
+    )
+
+    await interactor._handle_danmu("5440", {"uid": 9, "name": "观众", "text": "画面呢"})
+
+    content = [
+        item
+        for item in provider.messages[1]
+        if item.get("role") == "tool" and item.get("name") == "snapshot"
+    ][0]["content"]
+    assert "sign=secret" not in content
+    assert "/tmp/live" not in content
+
 
 async def test_tool_reply_reports_model_iterations() -> None:
     """ToolReply.iterations 必须等于实际模型调用次数，延迟才能归因。"""

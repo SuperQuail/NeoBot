@@ -16,6 +16,9 @@ from neobot_app.reply.postprocess import split_into_sentences_w_remove_punctuati
 _CALL_TIMEOUT_SECONDS = 90.0
 #: 循环上限：一轮正常 1~2 次调用，这里只防止模型持续调工具时死循环。
 _MAX_ITERATIONS = 200
+#: 单个工具的超时上限：截帧/转写可能十几秒，但不能把整轮预算一口吃光，
+#: 否则下一次模型调用必然撞 deadline，整条回复丢掉。
+_TOOL_TIMEOUT_SECONDS = 20.0
 _USAGE_KEYS = ("input_tokens", "output_tokens", "cache_hit_tokens", "cache_miss_tokens")
 
 
@@ -167,17 +170,23 @@ async def run_tool_reply(
     allow_reply_to: bool = False,
     call_timeout: float = _CALL_TIMEOUT_SECONDS,
     max_iterations: int = _MAX_ITERATIONS,
+    extra_tools: tuple[dict[str, Any], ...] = (),
+    extra_executors: dict[str, Any] | None = None,
 ) -> ToolReply:
     """跑一轮只含 send_reply/cancel 的模型循环，返回工具指定的回复。
 
     自己驱动循环、不用通用 Agent 外壳：system 就是调用方给的文本，单次调用与整轮
-    各有超时，工具面只有发送与取消。messages 给定时按多轮对话发送（system 之外）。
+    各有超时。工具面默认只有发送与取消；extra_tools/extra_executors 用于给直播加
+    按需能力（看画面/听语音/读历史）。messages 给定时按多轮对话发送（system 之外）。
     """
     if provider is None:
         return ToolReply()
     executor = _ReplyExecutor(
         max_chars=max_chars, split=split, allow_reply_to=allow_reply_to
     )
+    tool_defs = (*_TOOL_DEFS, *extra_tools)
+    tool_names = frozenset(item["function"]["name"] for item in tool_defs)
+    executors = dict(extra_executors or {})
     conversation: list[dict[str, Any]] = [{"role": "system", "content": system}]
     conversation.extend(
         list(messages)
@@ -188,10 +197,10 @@ async def run_tool_reply(
     usage: dict[str, int] | None = None
     iterations = 0
 
-    async def _call_provider() -> Any:
+    async def _call_provider(tools: tuple[dict[str, Any], ...]) -> Any:
         """provider 自身的异常统一包成 ProviderError（调用方按可重试处理）。"""
         try:
-            return await provider.chat(conversation, tools=list(_TOOL_DEFS))
+            return await provider.chat(conversation, tools=list(tools))
         except ProviderError:
             raise
         except Exception as exc:
@@ -210,7 +219,7 @@ async def run_tool_reply(
         """单个工具调用：参数/执行异常都回给模型，不打断整轮（与旧 Agent 一致）。"""
         function = call.get("function") or {}
         name = str(function.get("name") or "")
-        if name not in _TOOL_NAMES:
+        if name not in tool_names:
             return '{"ok": false, "error": "未知工具"}'
         try:
             args = _parse_tool_args(function.get("arguments"))
@@ -218,8 +227,21 @@ async def run_tool_reply(
             return json.dumps(
                 {"ok": False, "error": f"工具参数解析失败：{exc}"}, ensure_ascii=False
             )
+        # 工具耗时也算进整轮预算，但只取一小段：留出余量给后面的模型调用。
+        left = min(_TOOL_TIMEOUT_SECONDS, max(0.1, deadline - time.monotonic()))
+
+        async def _run() -> str:
+            if name in _TOOL_NAMES:
+                return await executor.execute(name, args)
+            extra = executors.get(name)
+            if extra is None:
+                return '{"ok": false, "error": "未知工具"}'
+            return str(await extra(args))
+
         try:
-            return await executor.execute(name, args)
+            return await asyncio.wait_for(_run(), timeout=left)
+        except asyncio.TimeoutError:
+            return '{"ok": false, "error": "工具执行超时"}'
         except Exception as exc:
             return json.dumps(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
@@ -231,7 +253,7 @@ async def run_tool_reply(
         if remaining <= 0:
             raise asyncio.TimeoutError("B站回复生成超过整轮时限")
         response = await asyncio.wait_for(
-            _call_provider(),
+            _call_provider(tool_defs),
             timeout=min(remaining, call_timeout),
         )
         iterations += 1
@@ -241,12 +263,17 @@ async def run_tool_reply(
         if not tool_calls:
             break
         for call in tool_calls:
+            if executor.cancelled:
+                # 已经 cancel：剩下的调用不再执行，仍补一条回执保证 tool_calls 配对完整。
+                content = '{"ok": false, "error": "本轮已取消，未执行"}'
+            else:
+                content = await _execute_tool(call)
             conversation.append(
                 {
                     "role": "tool",
                     "tool_call_id": str(call.get("id") or ""),
                     "name": str((call.get("function") or {}).get("name") or ""),
-                    "content": await _execute_tool(call),
+                    "content": content,
                 }
             )
         if executor.cancelled:

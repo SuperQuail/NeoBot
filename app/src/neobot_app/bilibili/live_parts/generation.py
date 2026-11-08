@@ -14,6 +14,7 @@ from neobot_app.bilibili.live_parts.constants import (
     _MAX_HISTORY,
 )
 from neobot_app.bilibili.live_parts.helpers import _to_int
+from neobot_app.bilibili.live_parts.tools import LIVE_TOOL_DEFS, build_live_executors
 from neobot_app.bilibili.prompts import (
     LiveDanmakuContext,
     _text,
@@ -278,6 +279,8 @@ class _GenerationMixin:
                 split=True,
                 timeout=90.0,
                 allow_reply_to=True,
+                extra_tools=LIVE_TOOL_DEFS,
+                extra_executors=build_live_executors(self, room_id),
             )
         except asyncio.CancelledError:
             raise
