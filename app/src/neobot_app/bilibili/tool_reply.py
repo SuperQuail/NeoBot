@@ -224,13 +224,21 @@ async def run_tool_reply(
             return json.dumps(
                 {"ok": False, "error": f"工具参数解析失败：{exc}"}, ensure_ascii=False
             )
-        try:
+        # 工具耗时也算进整轮预算：截帧/转写可能十几秒，不能挤掉后面的模型调用。
+        left = max(0.1, deadline - time.monotonic())
+
+        async def _run() -> str:
             if name in _TOOL_NAMES:
                 return await executor.execute(name, args)
             extra = executors.get(name)
             if extra is None:
                 return '{"ok": false, "error": "未知工具"}'
             return str(await extra(args))
+
+        try:
+            return await asyncio.wait_for(_run(), timeout=left)
+        except asyncio.TimeoutError:
+            return '{"ok": false, "error": "工具执行超时"}'
         except Exception as exc:
             return json.dumps(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
@@ -252,12 +260,17 @@ async def run_tool_reply(
         if not tool_calls:
             break
         for call in tool_calls:
+            if executor.cancelled:
+                # 已经 cancel：剩下的调用不再执行，仍补一条回执保证 tool_calls 配对完整。
+                content = '{"ok": false, "error": "本轮已取消，未执行"}'
+            else:
+                content = await _execute_tool(call)
             conversation.append(
                 {
                     "role": "tool",
                     "tool_call_id": str(call.get("id") or ""),
                     "name": str((call.get("function") or {}).get("name") or ""),
-                    "content": await _execute_tool(call),
+                    "content": content,
                 }
             )
         if executor.cancelled:
