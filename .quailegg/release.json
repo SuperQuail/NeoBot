@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "version": "2.1.0-a6",
-  "created_at": "2026-11-08T06:50:38.713169268Z",
+  "version": "2.1.0-a7",
+  "created_at": "2026-11-08T07:29:40.640267216Z",
   "mode": "pr",
   "channel": "alpha",
-  "fingerprint": "sha256:a2f9c7692dc43ffafac9c6c793372f42436f941ddce64611bce69745a1af2f85",
+  "fingerprint": "sha256:83d6e5345e3c2564a0af04c15728bbf9bb4621a5d65bd6bc90505314e84febd7",
   "repo": {
     "host": "github.com",
     "owner": "SuperQuail",
@@ -18,95 +18,95 @@
       "uv run pytest --strict-markers -m \"not browser and not network and not slow and not llm\""
     ],
     "skipped": false,
-    "at": "2026-11-08T06:50:38.713169638Z"
+    "at": "2026-11-08T07:29:40.640267757Z"
   },
   "packages": [
     {
       "name": "python@neobot",
       "path": ".",
       "resolver": "python",
-      "current": "2.1.0-a5",
-      "next": "2.1.0-a6",
+      "current": "2.1.0-a6",
+      "next": "2.1.0-a7",
       "bump": "minor",
-      "tag": "v2.1.0a6",
+      "tag": "v2.1.0a7",
       "publish": false
     },
     {
       "name": "python@neobot-app",
       "path": "app",
       "resolver": "python",
-      "current": "2.1.0-a5",
-      "next": "2.1.0-a6",
+      "current": "2.1.0-a6",
+      "next": "2.1.0-a7",
       "bump": "minor",
-      "tag": "v2.1.0a6",
+      "tag": "v2.1.0a7",
       "publish": true
     },
     {
       "name": "python@neobot-contracts",
       "path": "packages/contracts",
       "resolver": "python",
-      "current": "2.1.0-a5",
-      "next": "2.1.0-a6",
+      "current": "2.1.0-a6",
+      "next": "2.1.0-a7",
       "bump": "minor",
-      "tag": "v2.1.0a6",
+      "tag": "v2.1.0a7",
       "publish": true
     },
     {
       "name": "python@neobot-adapter",
       "path": "packages/adapter",
       "resolver": "python",
-      "current": "2.1.0-a5",
-      "next": "2.1.0-a6",
+      "current": "2.1.0-a6",
+      "next": "2.1.0-a7",
       "bump": "minor",
-      "tag": "v2.1.0a6",
+      "tag": "v2.1.0a7",
       "publish": true
     },
     {
       "name": "python@neobot-chat",
       "path": "packages/chat",
       "resolver": "python",
-      "current": "2.1.0-a5",
-      "next": "2.1.0-a6",
+      "current": "2.1.0-a6",
+      "next": "2.1.0-a7",
       "bump": "minor",
-      "tag": "v2.1.0a6",
+      "tag": "v2.1.0a7",
       "publish": true
     },
     {
       "name": "python@neobot-memory",
       "path": "packages/memory",
       "resolver": "python",
-      "current": "2.1.0-a5",
-      "next": "2.1.0-a6",
+      "current": "2.1.0-a6",
+      "next": "2.1.0-a7",
       "bump": "minor",
-      "tag": "v2.1.0a6",
+      "tag": "v2.1.0a7",
       "publish": true
     },
     {
       "name": "python@neobot-modloader",
       "path": "packages/modloader",
       "resolver": "python",
-      "current": "2.1.0-a5",
-      "next": "2.1.0-a6",
+      "current": "2.1.0-a6",
+      "next": "2.1.0-a7",
       "bump": "minor",
-      "tag": "v2.1.0a6",
+      "tag": "v2.1.0a7",
       "publish": true
     },
     {
       "name": "python@neobot-storage",
       "path": "packages/storage",
       "resolver": "python",
-      "current": "2.1.0-a5",
-      "next": "2.1.0-a6",
+      "current": "2.1.0-a6",
+      "next": "2.1.0-a7",
       "bump": "minor",
-      "tag": "v2.1.0a6",
+      "tag": "v2.1.0a7",
       "publish": true
     }
   ],
   "releases": [
     {
-      "version": "2.1.0-a6",
-      "tag": "v2.1.0a6",
-      "previous_tag": "v2.1.0a5",
+      "version": "2.1.0-a7",
+      "tag": "v2.1.0a7",
+      "previous_tag": "v2.1.0a6",
       "packages": [
         "python@neobot",
         "python@neobot-adapter",
@@ -260,6 +260,20 @@
       "commit_url": "https://github.com/SuperQuail/NeoBot/commit/0945de8f7e9c0f2dd585b7432eb5628a007d235c",
       "pull_number": 298,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/298",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/live-session-boundary.md",
+      "type": "feat",
+      "bump": "minor",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Start live sessions clean: the open time of the current stream is injected into the reply context, and a new session clears the previous stream's danmaku instead of letting the model answer old messages.",
+      "commit": "ec83ff470ccb5e472a71b94ae4f7abcecedae5c5",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/ec83ff470ccb5e472a71b94ae4f7abcecedae5c5",
+      "pull_number": 301,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/301",
       "author": "Tang-Tian-dev"
     },
     {
@@ -439,7 +453,14 @@
     ".changes/dashboard-prompt-folding.md",
     ".changes/drop-legacy-release.md",
     ".changes/gentle-language-xml.md",
+    ".changes/live-danmaku-uid.md",
+    ".changes/live-reply-hotpath.md",
+    ".changes/live-reply-metrics.md",
+    ".changes/live-role-messages.md",
+    ".changes/live-tool-loop.md",
+    ".changes/live-tools.md",
     ".changes/log-info-debug.md",
+    ".changes/parse-model-fallbacks.md",
     ".changes/prompt-assets-cot.md",
     ".changes/prompt-registry-refactor.md",
     ".changes/reply-contract-corrections.md",
