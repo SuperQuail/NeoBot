@@ -227,6 +227,41 @@ async def test_at_segment_becomes_nickname_text(workdir) -> None:
     assert api.calls[0]["body"]["markdown"] == {"content": "@小明 你好"}
 
 
+async def test_known_at_segment_uses_markdown_mention(workdir) -> None:
+    """群聊 @ 用户用官方 markdown 内嵌格式 <qqbot-at-user id=member_openid />。"""
+    sender, api, identity, _, _ = _sender(workdir)
+    member_id = identity.user_id("member-openid")
+    conversation = _group(identity)
+
+    await sender.send(
+        conversation,
+        [
+            {"type": "at", "data": {"qq": member_id, "name": "小明"}},
+            {"type": "text", "data": {"text": " 你好"}},
+        ],
+    )
+
+    body = api.calls[0]["body"]
+    assert body["msg_type"] == 2
+    assert body["markdown"]["content"] == '<qqbot-at-user id="member-openid" /> 你好'
+
+
+async def test_at_mention_forces_markdown_even_when_markdown_disabled(workdir) -> None:
+    sender, api, identity, _, _ = _sender(workdir, markdown=False)
+    member_id = identity.user_id("member-openid")
+
+    await sender.send(
+        _group(identity),
+        [
+            {"type": "at", "data": {"qq": member_id, "name": "小明"}},
+            {"type": "text", "data": {"text": " 你好"}},
+        ],
+    )
+
+    assert api.calls[0]["body"]["msg_type"] == 2
+    assert "<qqbot-at-user" in api.calls[0]["body"]["markdown"]["content"]
+
+
 async def test_reply_segment_maps_back_to_official_message_id(workdir) -> None:
     sender, api, identity, _, message_ids = _sender(workdir)
     synthetic = message_ids.next("ROBOT1.0_quoted")

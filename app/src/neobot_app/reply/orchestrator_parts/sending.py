@@ -174,12 +174,14 @@ class SendingMixin:
         conversation_kind: str,
         reply_to_message_id: int | None = None,
         mention_user_ids: list[int] | None = None,
+        channel: str | None = None,
     ) -> list[dict]:
         return ReplySender.build_reply_segments(
             text=text,
             conversation_kind=conversation_kind,
             reply_to_message_id=reply_to_message_id,
             mention_user_ids=mention_user_ids,
+            channel=channel,
         )
 
     @staticmethod

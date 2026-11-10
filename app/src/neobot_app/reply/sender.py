@@ -475,6 +475,7 @@ class ReplySender:
                 conversation_kind=conv_ref.kind,
                 reply_to_message_id=reply_to_message_id if index == 0 else None,
                 mention_user_ids=mention_user_ids if index == 0 else None,
+                channel=channel,
             )
             formatted_messages.append(formatted)
             record_delivery(await self.send_with_timeout(conv_ref, formatted, channel=channel))
@@ -759,14 +760,24 @@ class ReplySender:
         conversation_kind: str,
         reply_to_message_id: int | None = None,
         mention_user_ids: list[int] | None = None,
+        channel: str | None = None,
     ) -> list[dict]:
         segments: list[dict] = []
         if mention_user_ids and conversation_kind == "group":
+            from neobot_app.user_identity import synthetic_for_qq
+
             for qq in mention_user_ids:
+                target = str(qq)
+                if channel == "official":
+                    # 官方发送 @ 需要 member_openid；known 的真实 QQ 先反查
+                    # 官方合成 ID，再由适配器映射成 openid。
+                    synthetic = synthetic_for_qq(qq, channel)
+                    if synthetic:
+                        target = str(synthetic)
                 segments.append(
                     {
                         "type": "at",
-                        "data": {"qq": str(qq)},
+                        "data": {"qq": target},
                     }
                 )
 

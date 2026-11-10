@@ -310,6 +310,7 @@ class AgentHandlersMixin:
                 conversation_kind=conv_ref.kind if conv_ref else "",
                 reply_to_message_id=reply_to_message_id,
                 mention_user_ids=mention,
+                channel=channel,
             )
             caption_delivered = await self._send_with_timeout(conv_ref, caption_segs, channel=channel)
             if conv_ref is not None and caption_delivered is not False:

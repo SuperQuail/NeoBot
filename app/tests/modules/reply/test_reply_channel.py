@@ -357,3 +357,21 @@ async def test_role_messages_fall_back_to_config_bot_account():
     await orch._build_role_messages(event, queue=SimpleNamespace(), queue_key="42")
 
     assert orch._prompt_builder.build_group_chat_messages.await_args.kwargs["bot_account"] == 111
+
+
+def test_official_mention_real_qq_resolves_to_synthetic_id(tmp_path) -> None:
+    from neobot_app.user_identity import bind_user_identity, link_user_qq
+
+    synthetic = 9000000000012
+    bind_user_identity(tmp_path)
+    try:
+        assert link_user_qq(synthetic, 3514733681, trusted=True)[0]
+        segments = ReplySender.build_reply_segments(
+            text="你好",
+            conversation_kind="group",
+            mention_user_ids=[3514733681],
+            channel="official",
+        )
+        assert segments[0] == {"type": "at", "data": {"qq": str(synthetic)}}
+    finally:
+        bind_user_identity(None)

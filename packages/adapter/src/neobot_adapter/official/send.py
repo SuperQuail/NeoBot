@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import re
 import time
 from collections import deque
 from typing import Any
@@ -33,6 +34,8 @@ _MESSAGE_ENDPOINTS = {
     "private": "/v2/users/{openid}/messages",
 }
 _MEDIA_SEGMENTS = frozenset({"image", "record", "voice", "video", "file"})
+#: at 段在合并文本里的占位符；保留顺序，发送时再展开成官方 markdown @ 标记。
+_AT_PLACEHOLDER = "\x00AT{}\x00"
 _MARKDOWN_REJECTION_HINTS = ("不允许", "not allowed", "forbidden", "unsupported")
 
 
@@ -255,18 +258,29 @@ class MessageSender:
         if not openid:
             return _failed(f"官方协议无法反查会话 {kind}:{conversation.id} 的 openid（该会话未在官方事件中出现过）")
         try:
-            text, media_items, reply_id = _prepare(message)
+            text, media_items, reply_id, at_entries = _prepare(message)
         except ValueError as exc:
             return _failed(str(exc))
         reply_id = self._resolve_reply(reply_id)
         if not text and not media_items:
             return _failed("消息内容为空")
 
+        force_markdown = False
+        if at_entries:
+            text, force_markdown = self._render_mentions(text, at_entries, kind)
         sent_id: int | None = None
         if text:
             for chunk in _split_text(text):
                 try:
-                    official_id = await self._send_text(kind, openid, conversation.id, chunk, reply_id, timeout)
+                    official_id = await self._send_text(
+                        kind,
+                        openid,
+                        conversation.id,
+                        chunk,
+                        reply_id,
+                        timeout,
+                        force_markdown=force_markdown,
+                    )
                 except OfficialApiError as exc:
                     return _failed(f"官方消息发送失败：{exc}")
                 sent_id = self._track_sent(official_id) or sent_id
@@ -289,6 +303,34 @@ class MessageSender:
 
     # ── 单条发送 ────────────────────────────────────────────────────
 
+    def _render_mentions(
+        self, text: str, at_entries: list[tuple[str, str]], kind: str
+    ) -> tuple[str, bool]:
+        """把 at 占位符换成官方 markdown @ 标记；返回 (文本, 是否包含可用 @)。"""
+        has_embed = False
+        for index, (qq, name) in enumerate(at_entries):
+            tag = self._mention_tag(kind, qq, name)
+            if tag.startswith("<qqbot-at"):
+                has_embed = True
+            text = text.replace(_AT_PLACEHOLDER.format(index), tag)
+        return text, has_embed
+
+    def _mention_tag(self, kind: str, qq: str, name: str) -> str:
+        label = f"@{name}" if name else f"@{qq}"
+        if kind != "group":
+            # 官方只有群聊支持 @ 用户；单聊继续用可读文本。
+            return label
+        if str(qq).strip().casefold() == "all":
+            return "<qqbot-at-everyone />"
+        try:
+            synthetic = int(qq)
+        except (TypeError, ValueError):
+            return label
+        openid = self._identity.openid(synthetic, "user")
+        if not openid:
+            return label
+        return f'<qqbot-at-user id="{openid}" />'
+
     async def _send_text(
         self,
         kind: str,
@@ -297,9 +339,12 @@ class MessageSender:
         text: str,
         reply_id: str | None,
         timeout: float,
+        *,
+        force_markdown: bool = False,
     ) -> str:
         payload = self._message_payload(kind, conversation_id)
-        if self._markdown and text:
+        use_markdown = self._markdown or force_markdown
+        if use_markdown and text:
             payload["msg_type"] = 2
             payload["markdown"] = {"content": text}
         else:
@@ -311,13 +356,14 @@ class MessageSender:
         try:
             body = await self._api.request("POST", endpoint, body=payload, timeout=timeout)
         except OfficialApiError as exc:
-            if not (self._markdown and text and _is_markdown_forbidden(exc)):
+            if not (use_markdown and text and _is_markdown_forbidden(exc)):
                 raise
             self._logger.warning("官方 Markdown 发送被拒绝，降级为纯文本重发", error=str(exc))
             fallback = dict(payload)
             fallback.pop("markdown", None)
             fallback["msg_type"] = 0
-            fallback["content"] = text
+            # 降级为纯文本时 @ 标记不能再留在 content 里
+            fallback["content"] = _strip_mention_tags(text)
             fallback["msg_seq"] = random.randint(1, _MSG_SEQ_MAX)
             body = await self._api.request("POST", endpoint, body=fallback, timeout=timeout)
         return _response_message_id(body)
@@ -397,14 +443,15 @@ class MessageSender:
 
 def _prepare(
     message: str | list[dict[str, Any]],
-) -> tuple[str, list[tuple[str, str, str]], str | None]:
-    """OneBot 消息 → (合并文本, 媒体列表, 引用官方 msg_id)。"""
+) -> tuple[str, list[tuple[str, str, str]], str | None, list[tuple[str, str]]]:
+    """OneBot 消息 → (合并文本, 媒体列表, 引用 msg_id, at 列表)。"""
     if isinstance(message, str):
-        return message, [], None
+        return message, [], None, []
     if not isinstance(message, list):
         raise ValueError("消息必须是字符串或 OneBot 消息段数组")
     text_parts: list[str] = []
     media: list[tuple[str, str, str]] = []
+    at_entries: list[tuple[str, str]] = []
     reply_id: str | None = None
     for segment in message:
         if isinstance(segment, str):
@@ -417,7 +464,11 @@ def _prepare(
         if segment_type == "text":
             text_parts.append(str(data.get("text") or ""))
         elif segment_type == "at":
-            text_parts.append(_at_text(data))
+            index = len(at_entries)
+            at_entries.append(
+                (str(data.get("qq") if data.get("qq") is not None else ""), str(data.get("name") or ""))
+            )
+            text_parts.append(_AT_PLACEHOLDER.format(index))
         elif segment_type == "reply":
             reply_id = _reply_id(data, reply_id)
         elif segment_type in _MEDIA_SEGMENTS:
@@ -430,18 +481,14 @@ def _prepare(
                         str(data.get("name") or ""),
                     )
                 )
-    return "".join(text_parts), media, reply_id
+    return "".join(text_parts), media, reply_id, at_entries
 
 
-def _at_text(data: dict[str, Any]) -> str:
-    """官方接口不收 OneBot at 段：转成 @昵称 文本。"""
-    name = str(data.get("name") or "").strip()
-    qq = data.get("qq")
-    if str(qq) == "all":
-        return "@全体成员"
-    if name:
-        return f"@{name}"
-    return f"@{qq}" if qq not in (None, "") else "@"
+def _strip_mention_tags(text: str) -> str:
+    """Markdown 被拒时的纯文本降级：去掉官方 @ 标记，避免原样露出标签。"""
+    text = re.sub(r'<qqbot-at-user\s+id="[^"]*"\s*/>', "", text)
+    text = text.replace("<qqbot-at-everyone />", "")
+    return text
 
 
 def _reply_id(data: dict[str, Any], current: str | None) -> str | None:
