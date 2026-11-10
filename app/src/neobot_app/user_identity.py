@@ -180,7 +180,9 @@ class UserIdentityMap:
             return True, f"用户 {uid} 本身就是 QQ 号，无需映射"
         key = f"{_USER}:{channel or _infer_channel(uid)}:{uid}"
         previous = self._aliases.get(key)
-        entry = {"qq": qq_number, "trusted": bool(trusted) or bool(previous and previous.get("trusted"))}
+        if previous and previous.get("trusted") and not trusted:
+            return False, "该用户的映射由管理员命令建立，agent 不能修改；请联系管理员用 /linkqq 处理"
+        entry = {"qq": qq_number, "trusted": bool(trusted)}
         self._aliases[key] = entry
         try:
             self._save()
@@ -194,6 +196,8 @@ class UserIdentityMap:
 
     def unlink(self, user_id: Any, channel: str | None = None) -> tuple[bool, str]:
         keys = self._keys(_USER, user_id, channel)
+        if any((self._aliases.get(key) or {}).get("trusted") for key in keys):
+            return False, "该用户的映射由管理员命令建立，agent 不能移除；请联系管理员处理"
         removed = False
         for key in keys:
             if self._aliases.pop(key, None) is not None:

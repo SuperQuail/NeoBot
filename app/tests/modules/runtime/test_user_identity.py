@@ -121,6 +121,19 @@ def test_group_mapping_validates_group_number():
     assert link_group_number(0, REAL_GROUP)[0] is False
 
 
+def test_agent_cannot_tamper_trusted_mapping():
+    config = SimpleNamespace(chat=SimpleNamespace(admin_accounts=[], sub_admin_accounts=[]))
+    permissions = PermissionManager(config)
+    assert link_user_qq(SYNTHETIC, REAL_QQ, trusted=True)[0]
+
+    ok, message = link_user_qq(SYNTHETIC, 555555555)
+    assert ok is False and "管理员命令" in message
+    assert qq_for_user(SYNTHETIC) == REAL_QQ
+    assert unlink_user_qq(SYNTHETIC)[0] is False
+    assert trusted_qq_for_user(SYNTHETIC) == REAL_QQ
+    assert permissions.can(SYNTHETIC, PERM_SUB_ADMIN) is False  # 配置里没有该 QQ
+
+
 def test_permission_manager_uses_trusted_mapping_only():
     config = SimpleNamespace(
         chat=SimpleNamespace(admin_accounts=[REAL_QQ], sub_admin_accounts=[REAL_QQ])
