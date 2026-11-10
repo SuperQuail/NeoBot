@@ -150,6 +150,7 @@ class EventMapper:
         user_id = self._identity.user_id(openid)
         text = _plain_text(data.get("content"))
         _append_quote(message, data)
+        _append_mentions(message, data.get("mentions"), self._identity)
         _append_text(message, text)
         _append_attachments(message, data.get("attachments"))
         event.update(
@@ -187,6 +188,7 @@ class EventMapper:
             # GROUP_AT_MESSAGE_CREATE 必然 @ 了机器人：OneBot 消费方按 at 段判断。
             message.append({"type": "at", "data": {"qq": self.self_id}})
         _append_quote(message, data)
+        _append_mentions(message, data.get("mentions"), self._identity)
         _append_text(message, _plain_text(data.get("content")))
         _append_attachments(message, data.get("attachments"))
         event.update(
@@ -231,6 +233,32 @@ def _plain_text(content: Any) -> str:
 def _append_text(message: list[dict[str, Any]], text: str) -> None:
     if text:
         message.append({"type": "text", "data": {"text": text}})
+
+
+def _append_mentions(
+    message: list[dict[str, Any]], mentions: Any, identity: IdentityMap
+) -> None:
+    """官方 mentions → OneBot at 段。
+
+    官方群@事件把「被 @ 的其他用户」放在 mentions 列表里（不含机器人自身）；
+    不转成 at 段的话，命令层的 at_qqs / 提示词都看不到被 @ 者。
+    """
+    if not isinstance(mentions, list):
+        return
+    for item in mentions:
+        if not isinstance(item, dict) or item.get("bot") is True:
+            continue
+        openid = str(
+            item.get("member_openid")
+            or item.get("id")
+            or item.get("user_openid")
+            or ""
+        ).strip()
+        if not openid:
+            continue
+        user_id = identity.user_id(openid)
+        name = str(item.get("username") or "").strip()
+        message.append({"type": "at", "data": {"qq": str(user_id), "name": name}})
 
 
 def _append_quote(message: list[dict[str, Any]], data: dict[str, Any]) -> None:

@@ -105,14 +105,15 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
         Command(
             name="linkqq",
             description=(
-                "把 @ 到的用户与本通道真实 QQ 号映射：官方合成 ID 之后会显示为 QQ 号，"
-                "管理员/名单也能按真实 QQ 号识别该用户"
+                "把用户与本通道真实 QQ 号映射：只给 QQ 号时映射发送者本人；"
+                "@ 一个用户再给 QQ 号时映射对方。官方合成 ID 之后会显示为 QQ 号，"
+                "管理员/名单也能按真实 QQ 号识别"
             ),
             permission=PERM_SUB_ADMIN,
-            usage="<@用户> <QQ号>",
+            usage="<QQ号> 或 <@用户> <QQ号>",
             params=(
-                ("@用户", "必填。要映射的当前通道用户（官方通道的合成 ID 只能由 agent 工具映射）"),
-                ("QQ号", "必填。真实 QQ 号（5~11 位纯数字）"),
+                ("QQ号", "必填。真实 QQ 号（5~11 位纯数字）；不 @ 人时映射发送者自己"),
+                ("@用户", "可选。要映射的当前通道用户；提供时映射对方"),
             ),
             handler=_handle_link_qq,
         ),
@@ -757,26 +758,33 @@ def _ai_reply_available(ctx: CommandContext) -> bool:
 
 
 async def _handle_link_qq(ctx: CommandContext) -> str:
-    """把命令里 @ 到的用户与真实 QQ 号绑定（管理员级）。"""
+    """把 @ 到的用户（或发送者本人）与真实 QQ 号绑定（管理员级）。
+
+    只有一个参数时映射**发送者本人**：这是官方通道的主路径（官方不能 @ 其他用户，
+    且被 @ 者信息在官方事件里需要 mentions 才能拿到）。
+    """
     message = ctx.message
     bot_account = ctx.service._bot_account(message)
     targets = [qq for qq in ctx.at_qqs if qq != bot_account]
-    if not targets:
-        return (
-            "请 @ 要映射的用户并附上 QQ 号：/linkqq @用户 <QQ号>\n"
-            "（官方通道不能 @ 其他用户，请让 agent 用 user_identity__link_user_qq 工具映射）"
-        )
     if len(targets) > 1:
         return "一次只能 @ 一个用户。"
     qq_args = [arg for arg in ctx.args if arg.isdigit()]
     if len(qq_args) != 1:
-        return "用法：/linkqq @用户 <QQ号>（QQ 号为 5~11 位纯数字）"
+        return (
+            "用法：/linkqq <QQ号>（映射你自己）或 /linkqq @用户 <QQ号>"
+            "（QQ 号为 5~11 位纯数字）"
+        )
     qq_number = int(qq_args[0])
     if not looks_like_real_qq(qq_number):
         return "QQ 号必须是 5~11 位纯数字。"
+    target = targets[0] if targets else int(ctx.user_id or 0)
+    if not target:
+        return "无法确定要映射的用户。"
+    if target == bot_account:
+        return "不能把机器人账号映射成普通用户。"
     channel = str(getattr(message, "neobot_channel", "") or "") or None
     ok, message_text = link_user_qq(
-        targets[0], qq_number, channel=channel, trusted=True
+        target, qq_number, channel=channel, trusted=True
     )
     return message_text if ok else f"映射失败：{message_text}"
 

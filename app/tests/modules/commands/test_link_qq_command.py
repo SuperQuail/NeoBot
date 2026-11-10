@@ -35,11 +35,23 @@ def _message(text: str, *, user_id: int, at_qqs: list[int]):
     return SimpleNamespace(user_id=user_id, message=segments)
 
 
-def _service(sent: list[tuple]):
+SYNTHETIC_ADMIN = 9000000000010
+
+
+def _service(sent: list[tuple], config=None):
     async def send(kind, conv, text, at_user_id):
         sent.append((kind, conv, text, at_user_id))
 
-    return CommandService(config=_config(), send_callback=send)
+    return CommandService(config=config or _config(), send_callback=send)
+
+
+def _synthetic_admin_config():
+    return SimpleNamespace(
+        chat=SimpleNamespace(
+            admin_accounts=[SUPER], sub_admin_accounts=[SYNTHETIC_ADMIN]
+        ),
+        bot=SimpleNamespace(account=BOT),
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -114,18 +126,35 @@ async def test_non_admin_cannot_link():
 
 
 @pytest.mark.asyncio
-async def test_missing_at_target_rejected():
+async def test_one_arg_links_sender_self():
+    """只有一个参数时映射发送者本人（官方通道主路径）。"""
+    sent: list[tuple] = []
+    service = _service(sent, config=_synthetic_admin_config())
+
+    result = await service.handle_message(
+        _message("/linkqq 123456789", user_id=SYNTHETIC_ADMIN, at_qqs=[BOT]),
+        kind="group",
+        queue_key="100",
+    )
+
+    assert result.consumed is True
+    assert trusted_qq_for_user(SYNTHETIC_ADMIN) == REAL_QQ
+    assert qq_for_user(SYNTHETIC_ADMIN) == REAL_QQ
+    assert "已映射" in sent[-1][2]
+
+
+async def test_at_target_without_qq_shows_usage():
     sent: list[tuple] = []
     service = _service(sent)
 
     await service.handle_message(
-        _message("/linkqq 123456789", user_id=SUB, at_qqs=[BOT]),
+        _message("/linkqq", user_id=SUB, at_qqs=[BOT, SYNTHETIC]),
         kind="group",
         queue_key="100",
     )
 
     assert qq_for_user(SYNTHETIC) is None
-    assert "@" in sent[-1][2]
+    assert "用法" in sent[-1][2]
 
 
 @pytest.mark.asyncio

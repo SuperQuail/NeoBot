@@ -103,6 +103,31 @@ def test_group_at_message_puts_at_segment_first(workdir) -> None:
     assert event["message"][1] == {"type": "text", "data": {"text": "在吗"}}
 
 
+def test_group_mentions_become_at_segments(workdir) -> None:
+    """官方 mentions 是「被 @ 的其他用户」；不转 at 段命令层就拿不到被 @ 者。"""
+    mapper = _mapper(workdir)
+
+    event = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_AT_MESSAGE_CREATE",
+            _group_data(
+                content="<@!BOTOPENID> 你们看这个",
+                mentions=[
+                    {"id": "member-openid-2", "username": "小明", "bot": False},
+                    {"id": "bot-openid", "username": "另一个机器人", "bot": True},
+                ],
+            ),
+        )
+    )
+
+    assert event is not None
+    segments = event["message"]
+    assert segments[0] == {"type": "at", "data": {"qq": 1020304}}
+    assert {"type": "at", "data": {"qq": str(mapper._identity.user_id("member-openid-2")), "name": "小明"}} in segments
+    assert all(segment.get("data", {}).get("name") != "另一个机器人" for segment in segments)
+    assert segments[-1] == {"type": "text", "data": {"text": "你们看这个"}}
+
+
 def test_group_plain_message_has_no_at_segment(workdir) -> None:
     mapper = _mapper(workdir)
 
