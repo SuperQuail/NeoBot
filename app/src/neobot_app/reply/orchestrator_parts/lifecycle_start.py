@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING
+from neobot_app.bot_accounts import bot_account_for_message
 from neobot_app.reply.event import ReplyEvent, ReplyState
 from ._runtime import asyncio, monotonic_seconds
 
@@ -65,7 +66,6 @@ class LifecycleStartMixin:
         conversation_ref = self._build_conversation_ref(message, queue_key)
         from neobot_app.agent_tools.invocation import CURRENT_HUMAN_MESSAGE
 
-        self_id = getattr(message, "self_id", 0)
         event = ReplyEvent(
             mode=mode,
             human_request=CURRENT_HUMAN_MESSAGE.get() and background_content is None,
@@ -74,7 +74,7 @@ class LifecycleStartMixin:
             conversation_ref=conversation_ref,
             # 双待模式：事件来自哪个后端、由哪个 bot 账号收到，都随事件走
             neobot_channel=str(getattr(message, "neobot_channel", "") or "") or None,
-            bot_account=int(self_id) if self_id else 0,
+            bot_account=bot_account_for_message(message, self._config),
             pre_reply_message_id=pre_reply_message_id,
             background_content=background_content,
             preactivate=tuple(str(item) for item in (preactivate or ()) if str(item)),

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import time
+from typing import Any
+
 from neobot_adapter.model.message import GroupMessage
 from neobot_adapter.model.message import PrivateMessage
+from neobot_app.bot_accounts import bot_account_for_message
 from neobot_app.message.queue import MessageQueue
 
 from .helpers import _credential_message_text
@@ -74,7 +77,7 @@ class _PipelineCredentialMixin:
         if credential_manager is None:
             return False
         issuer_id = int(getattr(message, "user_id", 0) or 0)
-        bot_account = self._bot_account_id()
+        bot_account = self._bot_account_id(message)
         # bot 自己发送的消息不能触发自我签发(防审批失效)
         if bot_account and issuer_id == bot_account:
             return False
@@ -143,13 +146,9 @@ class _PipelineCredentialMixin:
             )
         return True
 
-    def _bot_account_id(self) -> int:
-        if self._config is None:
-            return 0
-        try:
-            return int(getattr(self._config.bot, "account", 0) or 0)
-        except (TypeError, ValueError):
-            return 0
+    def _bot_account_id(self, message: Any = None) -> int:
+        """机器人自身 QQ 号：统一提供者按消息 self_id / 通道 / 配置解析。"""
+        return bot_account_for_message(message, self._config)
 
     def _maybe_cleanup_credentials(self) -> None:
         """定期清理过期/已用凭据(避免内存无界增长)。"""

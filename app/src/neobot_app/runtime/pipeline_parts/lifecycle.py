@@ -7,7 +7,7 @@ from typing import Any
 from typing import Dict
 from neobot_adapter.model.message import GroupMessage
 from neobot_adapter.model.message import PrivateMessage
-from neobot_app.message.queue import is_bot_message
+from neobot_app.bot_accounts import is_bot_message
 from neobot_app.time_context import epoch_seconds
 
 
@@ -205,18 +205,11 @@ class _PipelineLifecycleMixin:
         return True
 
     def _is_bot_self(self, message) -> bool:
-        """检查消息是否由任一 bot 账号发送：消息级 self_id 优先，其次队列登记的账号。"""
-        bot_accounts: set[int] = set()
+        """检查消息是否由任一 bot 账号发送；账号解析交给统一提供者。"""
+        queue_accounts: set[int] = set()
         for queue in (getattr(self, "_group_queue", None), getattr(self, "_friend_queue", None)):
-            bot_accounts.update(getattr(queue, "bot_accounts", None) or ())
-        if self._config is not None:
-            configured = getattr(getattr(self._config, "bot", None), "account", 0)
-            try:
-                if int(configured or 0):
-                    bot_accounts.add(int(configured))
-            except (TypeError, ValueError):
-                pass
-        return is_bot_message(message, bot_accounts)
+            queue_accounts.update(getattr(queue, "bot_accounts", None) or ())
+        return is_bot_message(message, self._config, queue_accounts)
 
     @staticmethod
     def _is_message_stale(message, timeout_seconds: float) -> bool:

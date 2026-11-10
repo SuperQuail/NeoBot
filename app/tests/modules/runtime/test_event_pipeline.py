@@ -975,3 +975,81 @@ async def test_sleeping_at_mention_game_keyword_skips_wake_delay(monkeypatch):
     assert slept == []
     assert not sleep_service.is_sleeping()
 
+
+# ── 凭据：机器人自身消息按消息级 self_id 识别 ──────────────────────
+
+
+class _CredentialManagerSpy:
+    def __init__(self) -> None:
+        self.try_issue_calls: list[int] = []
+
+    def has_pending_or_active(self, *, chat_flow: str) -> bool:
+        return True
+
+    def try_issue(self, *, chat_flow: str, code: str, issuer_id: int):
+        self.try_issue_calls.append(issuer_id)
+        return SimpleNamespace(ok=False, error="not_found", credential=None)
+
+    def looks_like_code(self, text: str) -> bool:
+        return False
+
+
+def _credential_pipeline(account: int = 0) -> EventPipeline:
+    pipeline = _new_pipeline()
+    pipeline._config = BotConfig(bot=Bot(account=account))
+    pipeline._logger = SimpleNamespace(
+        debug=lambda *args, **kwargs: None,
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+    )
+    pipeline._credential_manager = _CredentialManagerSpy()
+    pipeline._last_credential_cleanup = 0.0
+    return pipeline
+
+
+def _bot_message(message_id: int, account: int, text: str = "123456") -> GroupMessage:
+    return GroupMessage(
+        message_id=message_id,
+        user_id=account,
+        group_id=42,
+        self_id=account,
+        sender=PostMessageMessagesender(user_id=account, nickname="bot"),
+        message=[MessageSegment(type="text", data={"text": text})],
+        raw_message=text,
+    )
+
+
+@pytest.mark.asyncio
+async def test_credential_rejects_bot_self_message_by_self_id():
+    """双通道：config 里是另一个号时，仍按消息 self_id 认出自身消息并拒绝自我签发。"""
+    pipeline = _credential_pipeline(account=111)
+    message = _bot_message(12001, 22222)
+
+    handled = await pipeline._try_issue_credential(
+        message, kind="group", queue_key="42", queue=MessageQueue()
+    )
+
+    assert handled is False
+    assert pipeline._credential_manager.try_issue_calls == []
+
+
+@pytest.mark.asyncio
+async def test_credential_allows_regular_user_message():
+    """普通用户消息照常进入签发查表，不会被自身判定误伤。"""
+    pipeline = _credential_pipeline(account=0)
+    message = _group_message(12002, text="123456")
+
+    await pipeline._try_issue_credential(
+        message, kind="group", queue_key="42", queue=MessageQueue()
+    )
+
+    assert pipeline._credential_manager.try_issue_calls == [7]
+
+
+def test_bot_account_id_falls_back_to_config():
+    """无 self_id 的旧消息回退提供者：单通道未解析时为 config.bot.account。"""
+    pipeline = _credential_pipeline(account=111)
+
+    assert pipeline._bot_account_id(_group_message(12003)) == 111
+
+

@@ -45,8 +45,12 @@ class ObservabilityMixin:
         queue: MessageQueue | None = None,
         queue_key: str = "",
         numbering: Any = None,
+        bot_account: int = 0,
     ) -> bool:
         """成本续用决策:计算缓存命中后的继续成本是否低于重启管线的输入成本。
+
+        bot_account 是本次事件的机器人 QQ 号（双通道下每通道不同），由调用方传入；
+        未传时回退提供者的主账号（旧单通道行为）。
 
         - 继续成本:当前消息列表按缓存命中计价(命中前缀部分按 1/差价)
         - 重启成本:重新构建的 [system + 角色消息] 全量输入按未命中计价
@@ -92,7 +96,7 @@ class ObservabilityMixin:
                     queue,
                     queue_key,
                     numbering=numbering,
-                    bot_account=self._get_bot_account(),
+                    bot_account=bot_account or self._get_bot_account(),
                     include_boundary_markers=self._show_boundary_markers(),
                     prompt_store=getattr(self, "_prompt_store", None),
                 )

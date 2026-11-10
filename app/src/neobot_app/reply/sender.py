@@ -21,6 +21,7 @@ from neobot_app.reply.debug import DebugHelper
 from neobot_app.reply.event import ReplyState
 from neobot_app.reply.output_guard import clean_segments, clean_text, should_drop
 from neobot_app.reply.postprocess import ReplySplitPreview, process_reply_text
+from neobot_app.bot_accounts import primary_bot_account
 from neobot_app.utils.media_sender import prepare_image_segment, send_image
 from neobot_app.time_context import monotonic_seconds
 
@@ -687,16 +688,8 @@ class ReplySender:
         return str(image_id) if image_id else None
 
     def _resolve_bot_account(self, bot_account: int = 0) -> int:
-        """机器人 QQ 号：事件自带的优先（双待模式两个通道不同），否则回退配置。"""
-        if bot_account:
-            return int(bot_account)
-        if self._config is None:
-            return 0
-        bot_cfg = getattr(self._config, "bot", None)
-        if bot_cfg is None:
-            return 0
-        account = getattr(bot_cfg, "account", 0)
-        return int(account) if account else 0
+        """机器人 QQ 号统一从提供者取：调用方不再关心事件/通道/config。"""
+        return int(bot_account) if bot_account else primary_bot_account(self._config)
 
     def _schedule_self_sent_persist(
         self, conv_ref: ConversationRef, text: str, synthetic_msg_id: int, *, bot_account: int = 0

@@ -2,9 +2,8 @@
 from __future__ import annotations
 
 from typing import Any, TYPE_CHECKING
-from neobot_app.message.queue import is_bot_message
+from neobot_app.bot_accounts import is_bot_message, primary_bot_account
 from neobot_app.reply.event import ReplyEvent
-from .settings import _safe_int
 if TYPE_CHECKING:
     from neobot_app.message.queue import MessageQueue
 
@@ -22,24 +21,11 @@ class PromptContextMixin:
         # 只取「最后一条用户消息」的全部文本段作为技能匹配查询文本：
         # - 从队列末尾逆序遍历，避免把 bot 自己发送的消息（语音/图片等会自推入队列）
         #   或更早的旧话题文本算进去，导致旧技能被错误激活
-        # - 优先使用 MessageQueue 注入的 bot_accounts（双通道各一个账号），
-        #   其次回退到 config.bot.account 解析；消息级 self_id 也算 bot
-        bot_accounts = {
-            account_id
-            for account_id in (_safe_int(item) for item in (getattr(queue, "bot_accounts", None) or ()))
-            if account_id
-        }
-        bot_account = _safe_int(getattr(queue, "bot_account", None))
-        if not bot_account and self._config is not None:
-            bot_cfg = getattr(self._config, "bot", None)
-            if bot_cfg is not None:
-                bot_account = _safe_int(getattr(bot_cfg, "account", 0) or 0)
-        if bot_account:
-            bot_accounts.add(bot_account)
+        # - 自身发言判定交给统一提供者（双通道两个号、self_id、config 细节不可见）
         for entry in reversed(queue.entries(queue_key)):
             if entry.kind != _QET.MESSAGE or entry.message is None:
                 continue
-            if is_bot_message(entry.message, bot_accounts):
+            if is_bot_message(entry.message, self._config, getattr(queue, "bot_accounts", None)):
                 continue
             parts: list[str] = []
             segments = getattr(entry.message, "message", None) or []
@@ -122,7 +108,7 @@ class PromptContextMixin:
             queue_copy,
             queue_key,
             numbering=numbering,
-            bot_account=self._get_bot_account(),
+            bot_account=primary_bot_account(self._config),
             include_boundary_markers=self._show_boundary_markers(),
             prompt_store=getattr(self, "_prompt_store", None),
         )

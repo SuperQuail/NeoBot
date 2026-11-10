@@ -9,6 +9,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from neobot_app.bot_accounts import bot_account_for_message, primary_bot_account
 from neobot_app.commands.builtin import build_builtin_commands
 from neobot_app.commands.model import (
     CommandContext,
@@ -228,17 +229,10 @@ class CommandService:
     # ── 消息解析辅助 ──
 
     def _bot_account(self, message: Any = None) -> int:
-        """当前消息对应的 bot 账号：消息级 self_id 优先（双通道各号不同），其次配置值。"""
-        self_id = getattr(message, "self_id", None)
-        if self_id:
-            try:
-                return int(self_id)
-            except (TypeError, ValueError):
-                pass
-        try:
-            return int(getattr(getattr(self._config, "bot", None), "account", 0) or 0)
-        except (TypeError, ValueError):
-            return 0
+        """当前消息对应的 bot 账号：统一由提供者解析（self_id/通道/config 细节不可见）。"""
+        if message is not None:
+            return bot_account_for_message(message, self._config)
+        return primary_bot_account(self._config)
 
     @staticmethod
     def _segment_type(segment: Any) -> str:

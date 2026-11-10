@@ -10,6 +10,7 @@ from typing import Any
 from neobot_adapter.model.message import GroupMessage, MessageSegment, PrivateMessage
 from neobot_contracts.ports.logging import Logger, NullLogger
 
+from neobot_app.bot_accounts import bot_account_for_message, bot_accounts
 from neobot_app.config.schemas.bot import BotConfig
 from neobot_app.core.paths import get_data_dir
 from neobot_app.message.queue import MessageQueue
@@ -127,7 +128,7 @@ class WillingService:
                 else self._base_probability("group")
             ),
             conversation_coefficient=1.0,
-            bot_account=self._bot_account_for(message),
+            bot_account=bot_account_for_message(message, self._config),
             bot_name=self._config.bot.nick_name,
             bot_aliases=tuple(self._config.bot.alias_name or []),
             mentioned_bot=mentioned,
@@ -398,7 +399,7 @@ class WillingService:
             observed_messages_text=tuple(observed_messages),
             base_probability=base_probability,
             conversation_coefficient=conversation_coefficient,
-            bot_account=self._bot_account_for(message),
+            bot_account=bot_account_for_message(message, self._config),
             bot_name=self._config.bot.nick_name,
             bot_aliases=tuple(self._config.bot.alias_name or []),
             mentioned_bot=mentioned_bot,
@@ -521,9 +522,7 @@ class WillingService:
         return getattr(profile, "kind", None) == "official"
 
     def _mentioned_bot(self, message: ChatMessage) -> bool:
-        # 双通道下 @ 的可能是本通道的号：消息级 self_id 优先，其次配置账号
-        self_id = getattr(message, "self_id", None)
-        target = str(self_id or self._config.bot.account)
+        target = str(bot_account_for_message(message, self._config))
         if message.message:
             for segment in message.message:
                 segment_type = getattr(segment, "type", None)
@@ -541,51 +540,10 @@ class WillingService:
         raw_message = str(message.raw_message or "")
         return f"[CQ:at,qq={target}" in raw_message
 
-    def _bot_accounts(self) -> set[int]:
-        """双待下两条通道的 bot QQ 号；配置值仅作单通道兜底。"""
-        accounts: set[int] = set()
-        detector_accounts = getattr(self._bot_detector, "accounts", None) or {}
-        if isinstance(detector_accounts, dict):
-            for value in detector_accounts.values():
-                try:
-                    account = int(value or 0)
-                except (TypeError, ValueError):
-                    continue
-                if account:
-                    accounts.add(account)
-        try:
-            configured = int(self._config.bot.account or 0)
-        except (TypeError, ValueError):
-            configured = 0
-        if configured:
-            accounts.add(configured)
-        return accounts
-
-    def _bot_account_for(self, message: Any) -> int:
-        """当前消息对应的 bot QQ 号：self_id（API 取号）优先，其次通道账号。"""
-        self_id = getattr(message, "self_id", None)
-        if self_id:
-            try:
-                return int(self_id)
-            except (TypeError, ValueError):
-                pass
-        channel = getattr(message, "neobot_channel", None)
-        account_for = getattr(self._bot_detector, "account_for", None)
-        if channel and callable(account_for):
-            try:
-                account = int(account_for(channel) or 0)
-            except (TypeError, ValueError):
-                account = 0
-            if account:
-                return account
-        try:
-            return int(self._config.bot.account or 0)
-        except (TypeError, ValueError):
-            return 0
-
     def _called_bot_name(self, text: str) -> bool:
         names = [self._config.bot.nick_name, *(self._config.bot.alias_name or [])]
-        names.extend(str(account) for account in self._bot_accounts())
+        # 双待下两条通道的号都由统一提供者给出，调用侧不关心单/双通道。
+        names.extend(str(account) for account in bot_accounts(self._config))
         lowered_text = text.casefold()
         return any(name and str(name).casefold() in lowered_text for name in names)
 

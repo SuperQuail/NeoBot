@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 from neobot_contracts.models import ConversationRef
+from neobot_app.bot_accounts import bot_account_for_event
 from neobot_app.prompt.blocks import Stage, blocks_for
 from neobot_app.prompt.context import Scope
 from neobot_app.reply.event import ReplyEvent, ReplyState
@@ -27,24 +28,8 @@ class PromptBuildMixin:
         return getattr(profile, "kind", None) == "official"
 
     def _event_bot_account(self, event: ReplyEvent) -> int:
-        """本次回复的机器人 QQ 号：事件自带优先（双待模式每通道不同）。
-
-        没有消息级 self_id 的事件（定时任务/主动推送）按事件通道查身份服务里
-        由 API 取到的账号；最后才回退配置值（单通道旧行为）。
-        """
-        account = int(getattr(event, "bot_account", 0) or 0)
-        if account:
-            return account
-        channel = str(getattr(event, "neobot_channel", "") or "")
-        account_for = getattr(getattr(self, "_bot_profile", None), "account_for", None)
-        if channel and callable(account_for):
-            try:
-                account = int(account_for(channel) or 0)
-            except (TypeError, ValueError):
-                account = 0
-            if account:
-                return account
-        return self._get_bot_account()
+        """本次回复的机器人 QQ 号统一由提供者解析（事件/通道/config 细节不可见）。"""
+        return bot_account_for_event(event, self._config)
 
     def _append_round_blocks(
         self,
