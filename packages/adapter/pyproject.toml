@@ -1,6 +1,6 @@
 [project]
 name = "neobot-adapter"
-version = "2.1.0-a7"
+version = "2.1.0-a8"
 description = "Add your description here"
 readme = "README.md"
 authors = [
