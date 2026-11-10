@@ -7,6 +7,8 @@ import json
 import sys
 from typing import Any
 
+from neobot_app.bot_accounts import display_user_id
+
 from .constants import (
     AUTO_COMPRESSION_USAGE_KIND,
     DEFAULT_OVERFLOW_COOLDOWN_SECONDS,
@@ -164,7 +166,7 @@ def _format_sender(item: dict[str, str]) -> str:
     if item["sender_name"]:
         sender_bits.append(item["sender_name"])
     if item["sender_id"]:
-        sender_bits.append(f"QQ:{item['sender_id']}")
+        sender_bits.append(display_user_id(item['sender_id']))
     return " / ".join(sender_bits) or "未知发送者"
 
 def _format_counter_message(message: Any) -> str:

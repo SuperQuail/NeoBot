@@ -180,6 +180,19 @@ def is_bot_id(user_id: Any, channel: str | None = None, config: Any = None) -> b
     return _singleton.is_bot_id(user_id, channel, config)
 
 
+def id_label(value: Any) -> str:
+    """用户/群 ID 的展示前缀：真实 QQ 号用 QQ，官方合成 ID 用 ID。"""
+    return "QQ" if looks_like_real_qq(value) else "ID"
+
+
+def display_user_id(value: Any) -> str:
+    """把用户/群 ID 渲染成易读标签（QQ:123 / ID:9000…）。"""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return f"{id_label(text)}:{text}"
+
+
 def looks_like_real_qq(value: Any) -> bool:
     """是否是真实 QQ 号规模的数字。
 
@@ -199,7 +212,9 @@ __all__ = [
     "bot_account_for_event",
     "bot_account_for_message",
     "bot_accounts",
+    "display_user_id",
     "get_bot_accounts",
+    "id_label",
     "is_bot_id",
     "is_bot_message",
     "looks_like_real_qq",

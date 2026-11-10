@@ -12,6 +12,7 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.utils.prompt_text import escape_prompt_text
 
+from neobot_app.bot_accounts import display_user_id, id_label
 from neobot_app.favorability import (
     FAVORABILITY_MAX,
     FAVORABILITY_MIN,
@@ -216,7 +217,7 @@ class UserProfileService:
         name = str(getattr(user, "nick_name", "") or "").strip()
         if not name:
             name = str(getattr(user, "long_nick", "") or "").strip()
-        return name or f"QQ:{user_id}"
+        return name or display_user_id(user_id)
 
     async def render_group_owner_text(
         self,
@@ -251,9 +252,12 @@ class UserProfileService:
                         continue
                     card = getattr(member, "card", None)
                     nickname = getattr(member, "nickname", None)
-                    name = card or nickname or f"QQ:{user_id}"
+                    name = card or nickname or display_user_id(user_id)
                     # 群昵称/昵称是用户可控文本，直接拼进提示词会破坏区块结构
-                    return f"群主：{escape_prompt_text(name)}（QQ：{user_id}）"
+                    return (
+                        f"群主：{escape_prompt_text(name)}"
+                        f"（{id_label(user_id)}：{user_id}）"
+                    )
 
         return ""
 
@@ -763,7 +767,7 @@ class UserProfileService:
         nickname = escape_prompt_text(
             getattr(member, "nickname", None)
             or getattr(profile, "nick_name", None)
-            or f"QQ:{user_id}"
+            or display_user_id(user_id)
         )
         remark = escape_prompt_text(getattr(profile, "remark", None))
         nickname_part = f"昵称:{nickname}"
@@ -814,7 +818,7 @@ class UserProfileService:
         *,
         archive_text: str | None = None,
     ) -> str:
-        nickname = getattr(profile, "nick_name", None) or f"QQ:{user_id}"
+        nickname = getattr(profile, "nick_name", None) or display_user_id(user_id)
         remark = getattr(profile, "remark", None)
         nickname_part = f"昵称:{nickname}"
         if remark:

@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
+from neobot_app.bot_accounts import display_user_id
 from neobot_app.message.process import history_message_to_text
 from neobot_app.skills.base import SkillModule
 
@@ -58,7 +59,7 @@ def _sender_name(item: Any) -> str:
     if name:
         return str(name)
     user_id = getattr(item, "user_id", None)
-    return f"QQ:{user_id}" if user_id else "未知用户"
+    return display_user_id(user_id) if user_id else "未知用户"
 
 
 class ChatHistorySkill(SkillModule):
@@ -173,7 +174,7 @@ async def _handle_read_earlier_messages(self: ChatHistorySkill, args: dict) -> s
         }
 
         async def _lookup(user_id: int) -> Any:
-            name = names.get(user_id) or f"QQ:{user_id}"
+            name = names.get(user_id) or display_user_id(user_id)
             return SimpleNamespace(data=SimpleNamespace(nickname=name))
 
         rendered: list[str] = []

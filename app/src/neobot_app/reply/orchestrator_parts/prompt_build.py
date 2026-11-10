@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 from neobot_contracts.models import ConversationRef
-from neobot_app.bot_accounts import bot_account_for_event
+from neobot_app.bot_accounts import bot_account_for_event, id_label, looks_like_real_qq
 from neobot_app.prompt.blocks import Stage, blocks_for
 from neobot_app.prompt.context import Scope
 from neobot_app.reply.event import ReplyEvent, ReplyState
@@ -268,17 +268,20 @@ class PromptBuildMixin:
             sender_id = str(message.user_id)
 
         msg_type = getattr(message, "message_type", "")
+        # 官方通道的 user/group id 是开放平台 13 位合成 ID，不是 QQ 号；提示词
+        # 里按 ID 规模统一标注，避免模型拿合成 ID 去拼 qlogo/资料链接或加好友。
+        sender_label = id_label(sender_id) if sender_id else "QQ"
         if isinstance(message, GroupMessage) or msg_type == "group":
             group_id = getattr(message, "group_id", None) or queue_key
             lines = [
                 "[当前聊天环境]",
                 "会话类型：群聊",
-                f"群号：{group_id}",
+                f"{'群号' if looks_like_real_qq(group_id) else '群 ID'}：{group_id}",
             ]
             if sender_name and sender_id:
-                lines.append(f"消息发送者：{sender_name}（QQ：{sender_id}）")
+                lines.append(f"消息发送者：{sender_name}（{sender_label}：{sender_id}）")
             elif sender_id:
-                lines.append(f"消息发送者QQ：{sender_id}")
+                lines.append(f"消息发送者{sender_label}：{sender_id}")
             return "\n".join(lines)
 
         lines = [
@@ -286,7 +289,7 @@ class PromptBuildMixin:
             "会话类型：私聊",
         ]
         if sender_name and sender_id:
-            lines.append(f"聊天对象：{sender_name}（QQ：{sender_id}）")
+            lines.append(f"聊天对象：{sender_name}（{sender_label}：{sender_id}）")
         elif sender_id:
-            lines.append(f"聊天对象QQ：{sender_id}")
+            lines.append(f"聊天对象{sender_label}：{sender_id}")
         return "\n".join(lines)

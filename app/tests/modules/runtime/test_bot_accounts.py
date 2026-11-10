@@ -96,6 +96,16 @@ def test_provider_object_is_registered_singleton():
     assert not provider.is_bot_id(90002)
 
 
+def test_display_labels_follow_id_scale():
+    from neobot_app.bot_accounts import display_user_id, id_label
+
+    assert id_label(123456) == "QQ"
+    assert display_user_id(123456) == "QQ:123456"
+    assert id_label(9000000000001) == "ID"
+    assert display_user_id(9000000000001) == "ID:9000000000001"
+    assert display_user_id("") == ""
+
+
 def test_looks_like_real_qq_rejects_synthetic_ids():
     assert looks_like_real_qq(123456789)
     assert looks_like_real_qq("1234567890")
