@@ -7,7 +7,12 @@ import json
 import pytest
 
 from neobot_app.skills.user_identity import UserIdentitySkill
-from neobot_app.user_identity import bind_user_identity, qq_for_user
+from neobot_app.user_identity import (
+    bind_user_identity,
+    group_number_for,
+    qq_for_user,
+    trusted_qq_for_user,
+)
 
 SYNTHETIC = 9000000000001
 REAL_QQ = 123456789
@@ -52,6 +57,42 @@ async def test_skill_rejects_invalid_qq():
 
     assert result["ok"] is False
     assert qq_for_user(SYNTHETIC) is None
+
+
+@pytest.mark.asyncio
+async def test_agent_mapping_is_not_trusted_for_permissions():
+    skill = UserIdentitySkill()
+
+    await skill.execute(
+        "link_user_qq", {"user_id": str(SYNTHETIC), "qq_number": str(REAL_QQ)}
+    )
+
+    assert qq_for_user(SYNTHETIC) == REAL_QQ
+    assert trusted_qq_for_user(SYNTHETIC) is None
+
+
+@pytest.mark.asyncio
+async def test_skill_links_group_number():
+    skill = UserIdentitySkill()
+    group_id = 8000000000002
+
+    linked = _parse(
+        await skill.execute(
+            "link_group_number",
+            {"group_id": str(group_id), "group_number": "987654321"},
+        )
+    )
+    assert linked["ok"] is True
+    assert group_number_for(group_id) == 987654321
+
+    read = _parse(await skill.execute("get_group_number", {"group_id": str(group_id)}))
+    assert read["group_number"] == 987654321
+
+    removed = _parse(
+        await skill.execute("unlink_group_number", {"group_id": str(group_id)})
+    )
+    assert removed["ok"] is True
+    assert group_number_for(group_id) is None
 
 
 @pytest.mark.asyncio

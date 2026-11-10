@@ -7,7 +7,12 @@ from types import SimpleNamespace
 import pytest
 
 from neobot_app.commands.service import CommandService
-from neobot_app.user_identity import bind_user_identity, qq_for_user
+from neobot_app.user_identity import (
+    bind_user_identity,
+    group_number_for,
+    qq_for_user,
+    trusted_qq_for_user,
+)
 
 BOT = 88888
 SUPER = 10000
@@ -57,7 +62,40 @@ async def test_admin_links_at_target_to_qq():
 
     assert result.consumed is True
     assert qq_for_user(SYNTHETIC) == REAL_QQ
+    # 管理员命令写入的映射是 trusted 的，权限判定可用
+    assert trusted_qq_for_user(SYNTHETIC) == REAL_QQ
     assert "已映射" in sent[-1][2]
+
+
+@pytest.mark.asyncio
+async def test_admin_links_current_group_number():
+    sent: list[tuple] = []
+    service = _service(sent)
+
+    result = await service.handle_message(
+        _message("/linkgroup 987654321", user_id=SUB, at_qqs=[BOT]),
+        kind="group",
+        queue_key="8000000000002",
+    )
+
+    assert result.consumed is True
+    assert group_number_for(8000000000002) == 987654321
+    assert "已映射群" in sent[-1][2]
+
+
+@pytest.mark.asyncio
+async def test_non_admin_cannot_link_group():
+    sent: list[tuple] = []
+    service = _service(sent)
+
+    await service.handle_message(
+        _message("/linkgroup 987654321", user_id=999, at_qqs=[BOT]),
+        kind="group",
+        queue_key="8000000000002",
+    )
+
+    assert group_number_for(8000000000002) is None
+    assert "没有权限" in sent[-1][2]
 
 
 @pytest.mark.asyncio

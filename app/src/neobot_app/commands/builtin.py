@@ -21,7 +21,11 @@ from neobot_app.commands.model import (
     permission_name,
 )
 from neobot_app.bot_accounts import looks_like_real_qq
-from neobot_app.user_identity import link_user_qq, qq_for_user
+from neobot_app.user_identity import (
+    link_group_number,
+    link_user_qq,
+    trusted_qq_for_user,
+)
 from neobot_app.panel_auth import (
     MAX_PASSWORD_LENGTH,
     MIN_PASSWORD_LENGTH,
@@ -111,6 +115,17 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
                 ("QQ号", "必填。真实 QQ 号（5~11 位纯数字）"),
             ),
             handler=_handle_link_qq,
+        ),
+        Command(
+            name="linkgroup",
+            description=(
+                "把当前群与真实 QQ 群号映射：官方群的合成 ID 之后会显示为群号，"
+                "群黑白名单也按真实群号识别"
+            ),
+            permission=PERM_SUB_ADMIN,
+            usage="<群号>",
+            params=(("群号", "必填。当前群的真实 QQ 群号（5~12 位纯数字）"),),
+            handler=_handle_link_group,
         ),
         Command(
             name="sleep",
@@ -760,7 +775,23 @@ async def _handle_link_qq(ctx: CommandContext) -> str:
     if not looks_like_real_qq(qq_number):
         return "QQ 号必须是 5~11 位纯数字。"
     channel = str(getattr(message, "neobot_channel", "") or "") or None
-    ok, message_text = link_user_qq(targets[0], qq_number, channel=channel)
+    ok, message_text = link_user_qq(
+        targets[0], qq_number, channel=channel, trusted=True
+    )
+    return message_text if ok else f"映射失败：{message_text}"
+
+
+async def _handle_link_group(ctx: CommandContext) -> str:
+    """把当前群的真实群号映射到本通道群 ID（管理员级）。"""
+    if ctx.kind != "group":
+        return "请在群聊中使用 /linkgroup <群号>。"
+    args = [arg for arg in ctx.args if arg.isdigit()]
+    if len(args) != 1:
+        return "用法：/linkgroup <群号>（群号为 5~12 位纯数字）"
+    channel = str(getattr(ctx.message, "neobot_channel", "") or "") or None
+    ok, message_text = link_group_number(
+        ctx.conv_id, int(args[0]), channel=channel, trusted=True
+    )
     return message_text if ok else f"映射失败：{message_text}"
 
 
@@ -781,7 +812,7 @@ async def _modify_admin(ctx: CommandContext, *, add: bool) -> str:
     target_qq = _extract_target_qq(ctx)
     if target_qq is not None:
         # 官方合成 ID 已人工映射时，管理员名单统一存真实 QQ 号。
-        target_qq = qq_for_user(target_qq) or target_qq
+        target_qq = trusted_qq_for_user(target_qq) or target_qq
     if target_qq is None:
         # 参数缺失：一行提示就够，不上卡片；但仍然**不带任何号码**
         return (

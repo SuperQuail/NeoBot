@@ -66,6 +66,23 @@ def test_mapped_synthetic_id_displays_as_real_qq(tmp_path) -> None:
         bind_user_identity(None)
 
 
+def test_mapped_official_group_shows_real_group_number(tmp_path) -> None:
+    from neobot_app.user_identity import bind_user_identity, link_group_number
+
+    group_id = 8000000000001
+    bind_user_identity(tmp_path)
+    try:
+        assert link_group_number(group_id, 123456789)[0]
+        text = PromptBuildMixin._build_chat_context(
+            _event(channel="official", message=_message(channel="official", group_id=group_id)),
+            str(group_id),
+        )
+        assert "群号：123456789" in text
+        assert "群 ID" not in text
+    finally:
+        bind_user_identity(None)
+
+
 def test_sender_name_fallback_label_follows_channel() -> None:
     official = _message(channel="official")
     official.sender = None

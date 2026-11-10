@@ -11,7 +11,7 @@ from neobot_adapter.model.message import GroupMessage, MessageSegment, PrivateMe
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.bot_accounts import bot_account_for_message, bot_accounts
-from neobot_app.user_identity import qq_for_user
+from neobot_app.user_identity import group_number_for, qq_for_user
 from neobot_app.config.schemas.bot import BotConfig
 from neobot_app.core.paths import get_data_dir
 from neobot_app.message.queue import MessageQueue
@@ -429,12 +429,14 @@ class WillingService:
         if conversation_type == "group":
             if self._config.message.enable_group is False:
                 return False, "group_disabled"
+            mapped_group = group_number_for(queue_key)
             return self._check_list_rule(
                 queue_key,
                 self._config.chat.group_use_black_list,
                 self._config.chat.group_list or [],
                 black_list_reason="group_blacklisted",
                 white_list_reason="group_not_in_whitelist",
+                aliases=(str(mapped_group),) if mapped_group else (),
             )
 
         if self._config.message.enable_private is False:

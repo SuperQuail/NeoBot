@@ -12,7 +12,7 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.utils.prompt_text import escape_prompt_text
 
-from neobot_app.user_identity import display_user_id, id_label
+from neobot_app.user_identity import display_user_id, group_number_for, id_label
 from neobot_app.favorability import (
     FAVORABILITY_MAX,
     FAVORABILITY_MIN,
@@ -204,7 +204,8 @@ class UserProfileService:
         group = await self.get_group(group_id)
         if group is not None and getattr(group, "group_name", None):
             return str(group.group_name)
-        return f"群聊{group_id}"
+        mapped_group = group_number_for(group_id)
+        return f"群聊{mapped_group or group_id}"
 
     async def get_user_name(self, user_id: str | int) -> str:
         """用户可读昵称：nick_name → long_nick → QQ:{id}。
