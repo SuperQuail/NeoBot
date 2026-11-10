@@ -31,9 +31,29 @@ export interface OneBotConnection {
   auto_connect?: { available?: boolean; reason?: string };
 }
 
+export interface OfficialDeploy {
+  /** 当前通道模式：official / dual / onebot */
+  mode: string;
+  app_id: string;
+  secret_set: boolean;
+  account?: number;
+  nickname?: string;
+  bound: boolean;
+  connected: boolean;
+  can_rebind: boolean;
+  done: boolean;
+  bind: {
+    phase: string;
+    url?: string;
+    svg?: string;
+    error?: string;
+    expires_at?: unknown;
+  };
+}
+
 export interface DeployStatus {
   steps?: DeployStep[];
-  onebot?: OneBotConnection;
+  official?: OfficialDeploy;
   values?: {
     bot_account?: string;
     bot_nick_name?: string;

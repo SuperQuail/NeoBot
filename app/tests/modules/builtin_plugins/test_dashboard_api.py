@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import socket
+import tomllib
 from pathlib import Path
 
 import httpx
@@ -1648,12 +1649,8 @@ async def test_shutdown_reports_unavailable_without_signal(tmp_path: Path) -> No
 # ── 快捷部署菜单 ─────────────────────────────────────────────────
 
 
-async def test_deploy_status_reports_steps_and_onebot_defaults(panel) -> None:
-    """部署状态：四项必填逐条判出 done/缺失，并给出 OneBot 的生效监听信息。
-
-    面板要把**真正会监听的**地址与 token 交给 NapCat，所以这里断言的是
-    adapter 包解析后的结果（配置 > 环境变量 > 默认值），不是配置字段原值。
-    """
+async def test_deploy_status_reports_steps_and_official_defaults(panel) -> None:
+    """部署状态：四项必填逐条判出 done/缺失，并给出官方扫码/手动配置状态。"""
     _, _, base, _ = panel
     token, _csrf = await _login(base)
     async with httpx.AsyncClient() as client:
@@ -1662,18 +1659,25 @@ async def test_deploy_status_reports_steps_and_onebot_defaults(panel) -> None:
     assert response.status_code == 200, response.text
     payload = response.json()
     steps = {step["key"]: step for step in payload["steps"]}
-    assert set(steps) == {"bot_identity", "persona", "platform_key", "onebot", "admin"}
+    assert set(steps) == {"bot_identity", "persona", "platform_key", "official", "admin"}
     # 必填 / 选填要能区分开：ready 只由必填项决定
     required = {key for key, step in steps.items() if step["required"]}
-    assert required == {"bot_identity", "persona", "platform_key", "onebot"}
+    assert required == {"bot_identity", "persona", "platform_key", "official"}
     assert steps["admin"]["required"] is False
     # 测试用面板里 .env 已有 DeepSeek_APIKey，所以平台密钥这项应当是完成的
     assert steps["platform_key"]["done"] is True
-    # 一个都没配的项：身份 / 人设 / OneBot
+    # 一个都没配的项：身份 / 人设 / 官方机器人
     assert steps["bot_identity"]["done"] is False
     assert steps["persona"]["done"] is False
-    assert steps["onebot"]["done"] is False
+    assert steps["official"]["done"] is False
     assert payload["ready"] is False
+    official = payload["official"]
+    assert official["mode"] == "official"
+    assert official["app_id"] == ""
+    assert official["secret_set"] is False
+    assert official["bound"] is False
+    assert official["done"] is False
+    assert official["bind"]["phase"] == "idle"
     # 出厂占位不算配好：account 默认就是 '0'，人设默认是示例文案
     assert payload["values"]["bot_account"] in ("", "0")
     assert payload["defaults"]["bot_account"] == "0"
@@ -1742,6 +1746,9 @@ async def test_deploy_status_reads_effective_onebot_settings(tmp_path) -> None:
         ),
         chat=SimpleNamespace(admin_accounts=["10002"], group_chat_chance=0.3),
         adapter=SimpleNamespace(
+            mode="official",
+            qq_appid="100000003",
+            qq_client_secret="secret-value",
             reverse_ws_host="127.0.0.1",
             reverse_ws_port=8091,
             reverse_ws_access_token="fixed-token",
@@ -1759,9 +1766,12 @@ async def test_deploy_status_reads_effective_onebot_settings(tmp_path) -> None:
         assert steps["bot_identity"]["done"] is True
         assert steps["persona"]["done"] is True
         assert steps["admin"]["done"] is True
-        assert steps["onebot"]["done"] is True
+        assert steps["official"]["done"] is True
         # 测试面板的 .env 里有 DeepSeek_APIKey -> 必填项齐全
         assert payload["ready"] is True
+        assert payload["official"]["app_id"] == "100000003"
+        assert payload["official"]["secret_set"] is True
+        assert payload["official"]["mode"] == "official"
         assert payload["values"]["bot_data"].startswith("你是群里的老群友")
         assert payload["values"]["group_chat_chance"] == 0.3
 
@@ -1774,6 +1784,30 @@ async def test_deploy_status_reads_effective_onebot_settings(tmp_path) -> None:
         assert onebot["warning"] is None
     finally:
         await server.stop()
+
+
+async def test_deploy_official_bind_switches_mode(panel) -> None:
+    """扫码按钮：写入官方模式并尝试热重载；测试面板没有宿主重载入口时如实提示需重启。"""
+    _, _, base, config_path = panel
+    token, csrf = await _login(base)
+    async with httpx.AsyncClient() as client:
+        before = await client.get(base + "/api/deploy/status", headers={"X-Token": token})
+        revision = before.json()["revision"]
+        response = await client.post(
+            base + "/api/deploy/official-bind",
+            headers={"X-Token": token, "X-CSRF-Token": csrf},
+            json={"revision": revision},
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["official"]["mode"] == "official"
+    assert payload["applied"] is False
+    assert "重载" in payload["message"] or "重启" in payload["message"]
+
+    written = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert written["adapter"]["mode"] == "official"
 
 
 async def test_deploy_generate_token_requires_manage(tmp_path, monkeypatch) -> None:

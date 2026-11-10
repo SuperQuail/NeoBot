@@ -78,13 +78,19 @@ class DeployMixin:
             self.logger.warning(f"读取 .env 失败: {exc}")
 
         onebot = self._onebot_connection()
+        official = self._official_deploy_state()
         steps = [
             {
                 "key": "bot_identity",
                 "label": "机器人身份",
                 "required": True,
-                "done": bool(account_ready and nick_ready),
-                "hint": "机器人 QQ 号与昵称都是必填：面板「机器人」页、命令与落盘都用它",
+                "done": bool(
+                    nick_ready and (account_ready or official["mode"] == "official")
+                ),
+                "hint": (
+                    "官方通道只需昵称（机器人 QQ 号由 API 自动获取）；"
+                    "OneBot 通道还需要机器人 QQ 号"
+                ),
                 "action": "identity",
             },
             {
@@ -104,12 +110,12 @@ class DeployMixin:
                 "action": "platform_key",
             },
             {
-                "key": "onebot",
-                "label": "OneBot 连接",
+                "key": "official",
+                "label": "官方机器人",
                 "required": True,
-                "done": bool(onebot["port"]) and bool(onebot["token"]),
-                "hint": "配好监听端口与 access token，再把下面两样填进 NapCat",
-                "action": "onebot",
+                "done": bool(official["done"]),
+                "hint": "扫码绑定官方机器人，或手动填写 AppID / AppSecret；官方通道无需 NapCat",
+                "action": "official",
             },
             {
                 "key": "admin",
@@ -123,6 +129,7 @@ class DeployMixin:
         return _json_ok(
             {
                 "steps": steps,
+                "official": official,
                 "onebot": onebot,
                 "values": {
                     "bot_account": account,
@@ -136,6 +143,112 @@ class DeployMixin:
                 "revision": self._config_manager().revision(),
                 "env_revision": env_revision,
                 "ready": all(step["done"] for step in steps if step["required"]),
+            }
+        )
+
+    def _official_deploy_state(self) -> dict[str, Any]:
+        """官方机器人快捷部署状态：模式、AppID/Secret 是否齐全、绑定与扫码信息。"""
+        try:
+            config_obj = self._config_proxy()
+        except Exception:
+            config_obj = None
+        adapter_cfg = getattr(config_obj, "adapter", None)
+        mode = str(getattr(adapter_cfg, "mode", "") or "official").strip().casefold()
+        app_id = _as_text(getattr(adapter_cfg, "qq_appid", ""))
+        secret_set = bool(_as_text(getattr(adapter_cfg, "qq_client_secret", "")))
+        adapter = self._service("adapter")
+        detector = self._service("bot_detector")
+        account = 0
+        nickname = ""
+        profile_for = getattr(detector, "profile_for", None) if detector is not None else None
+        if callable(profile_for):
+            try:
+                profile = profile_for("official")
+            except Exception:
+                profile = None
+            if profile is not None:
+                try:
+                    account = int(getattr(profile, "account", 0) or 0)
+                except (TypeError, ValueError):
+                    account = 0
+                nickname = str(getattr(profile, "nickname", "") or "")
+        connected = "official" in tuple(getattr(adapter, "connected_channels", ()) or ())
+        bind_state = getattr(adapter, "bind_state", None) if adapter is not None else None
+        bind = {
+            "phase": str(getattr(bind_state, "phase", "idle") or "idle"),
+            "url": str(getattr(bind_state, "url", "") or ""),
+            "svg": str(getattr(bind_state, "svg", "") or ""),
+            "error": str(getattr(bind_state, "error", "") or ""),
+            "expires_at": getattr(bind_state, "expires_at", 0) or 0,
+        }
+        bound = bool(account)
+        return {
+            "mode": mode,
+            "app_id": app_id,
+            "secret_set": secret_set,
+            "account": account,
+            "nickname": nickname,
+            "bound": bound,
+            "connected": connected,
+            "can_rebind": adapter is not None
+            and callable(getattr(adapter, "rebind", None)),
+            "bind": bind,
+            "done": mode in ("official", "dual") and (bound or (bool(app_id) and secret_set)),
+        }
+
+    async def deploy_official_bind(self, request: web.Request) -> web.Response:
+        """切换到官方模式并开始扫码绑定（快捷部署的扫码按钮）。"""
+        denied = self._require_manage(request, action="扫码绑定官方机器人")
+        if denied is not None:
+            return denied
+        try:
+            payload = await self._read_json(request)
+        except ValueError as exc:
+            return _json_error(str(exc))
+
+        try:
+            current_mode = str(
+                getattr(getattr(self._config_proxy(), "adapter", None), "mode", "") or "official"
+            ).strip().casefold()
+        except Exception:
+            current_mode = "official"
+        target_mode = "dual" if current_mode == "dual" else "official"
+        manager = self._config_manager()
+        try:
+            manager.update_section(
+                "adapter",
+                {"mode": target_mode},
+                expected_revision=payload.get("revision"),
+            )
+        except ConfigConflictError as exc:
+            return _json_error(str(exc), status=409)
+        except ConfigValidationError as exc:
+            return _json_error(str(exc), status=400, errors=exc.errors)
+        except Exception as exc:
+            return _json_error(f"写入官方通道配置失败: {exc}", status=500)
+
+        reload_result = await self._reload_config(with_changes=True)
+        adapter = self._service("adapter")
+        rebind = getattr(adapter, "rebind", None) if adapter is not None else None
+        if reload_result.get("ok") and callable(rebind):
+            try:
+                await rebind()
+            except Exception as exc:
+                self.logger.warning(f"候选官方扫码绑定失败: {exc}")
+                reload_result = {
+                    **reload_result,
+                    "ok": False,
+                    "message": f"已切换到官方通道，但重新开始绑定失败: {exc}",
+                }
+        applied = bool(reload_result.get("ok"))
+        official = self._official_deploy_state()
+        return _json_ok(
+            {
+                "official": official,
+                "applied": applied,
+                "reload": reload_result,
+                "message": str(reload_result.get("message") or "")
+                or ("已切换官方通道，正在生成二维码…" if applied else "官方通道配置已写入，需重载后生效"),
             }
         )
 

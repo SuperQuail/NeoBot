@@ -6,9 +6,13 @@ export const STEPS = [
     label: '身份',
     title: '机器人身份',
     required: true,
-    description: '填写机器人使用的 QQ 账号，以及你希望大家如何称呼它。',
+    description: '填写昵称与别名；官方通道的机器人 QQ 号由 API 自动获取，OneBot 通道才需要手填。',
     helpTitle: '填写机器人账号',
-    tips: ['QQ 号应与 NapCat 登录的机器人账号一致。', '昵称用于自我介绍；别名帮助机器人识别大家对它的称呼。'],
+    tips: [
+      '官方通道：机器人 QQ 号留空即可，连接成功后自动获取。',
+      'OneBot 通道：QQ 号应与 NapCat 登录的机器人账号一致。',
+      '昵称用于自我介绍；别名帮助机器人识别大家对它的称呼。',
+    ],
   },
   {
     key: 'persona',
@@ -48,16 +52,16 @@ export const STEPS = [
     ],
   },
   {
-    key: 'onebot',
-    label: '连接',
-    title: '连接 NapCat',
+    key: 'official',
+    label: '官方',
+    title: '扫码绑定官方机器人',
     required: true,
-    description: '将生效地址与 Access Token 填入 NapCat 的反向 WebSocket 连接。',
-    helpTitle: '在 NapCat 中操作',
+    description: '用手机 QQ 扫码绑定官方机器人；也可以手动填写 AppID / AppSecret，不使用 NapCat。',
+    helpTitle: '扫码或手填二选一',
     tips: [
-      '新建反向 WebSocket 客户端。',
-      '根据部署位置，复制同机或局域网连接地址。',
-      '填写 Access Token 并启用连接。',
+      '扫码：点「开始扫码绑定」，用手机 QQ 扫码并在手机上确认。',
+      '手填：填写开放平台 AppID 与 AppSecret，保存并应用后自动连接。',
+      '绑定后机器人 QQ 号由官方 API 自动获取，无需再填 NapCat 连接信息。',
     ],
   },
 ] as const;
@@ -69,6 +73,7 @@ export interface DeployDraft {
   persona: string;
   adminQq: string;
   chance: string;
+  qqAppId: string;
 }
 
 export const EMPTY_DRAFT: DeployDraft = {
@@ -78,6 +83,7 @@ export const EMPTY_DRAFT: DeployDraft = {
   persona: '',
   adminQq: '',
   chance: '0.3',
+  qqAppId: '',
 };
 
 export function draftFromDocument(doc: DeployStatus): DeployDraft {
@@ -89,6 +95,7 @@ export function draftFromDocument(doc: DeployStatus): DeployDraft {
     persona: values.bot_data || '',
     adminQq: (values.admin_accounts || [])[0] || '',
     chance: String(values.group_chat_chance ?? 0.3),
+    qqAppId: doc.official?.app_id || '',
   };
 }
 

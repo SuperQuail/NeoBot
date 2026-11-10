@@ -1,34 +1,8 @@
-import { Copy, RefreshCw } from 'lucide-react';
-import { notify } from '../../notifications/infoBar';
+import { RefreshCw } from 'lucide-react';
 import Button from '../../components/ui/Button';
 import InlineAlert from '../../components/ui/InlineAlert';
 import { STEPS } from './deployModel';
 import type { DeployEditor } from './useDeployEditor';
-
-function CopyRow({
-  label,
-  value,
-  hint,
-  onCopy,
-}: {
-  label: string;
-  value: string;
-  hint: string;
-  onCopy: (value: string, label: string) => void;
-}) {
-  return (
-    <div className="deploy-connection-row">
-      <div className="deploy-connection-label">
-        <strong>{label}</strong>
-        <span>{hint}</span>
-      </div>
-      <code className="deploy-connection-value">{value || '—'}</code>
-      <Button size="sm" disabled={!value} onClick={() => onCopy(value, label)}>
-        <Copy size={14} /> 复制
-      </Button>
-    </div>
-  );
-}
 
 export default function DeployStepPanel({
   activeIndex,
@@ -42,26 +16,20 @@ export default function DeployStepPanel({
     draft,
     apiKey,
     setApiKey,
+    qqSecret,
+    setQqSecret,
     disabled,
     chanceError,
     updateDraft,
     dirtySteps,
     busy,
-    generateToken,
+    startOfficialBind,
   } = editor;
   const active = STEPS[activeIndex];
   const activeStatus = doc?.steps?.find((step) => step.key === active.key);
-  const onebot = doc?.onebot;
+  const official = doc?.official;
   const defaults = doc?.defaults || {};
   const TipsList = activeIndex === 4 ? 'ol' : 'ul';
-  const copy = async (value: string, label: string) => {
-    try {
-      await navigator.clipboard.writeText(value);
-      notify(label + '已复制', 'ok');
-    } catch {
-      notify('复制失败，请手动选中复制', 'err');
-    }
-  };
 
   return (
     <section
@@ -79,7 +47,7 @@ export default function DeployStepPanel({
           <div className="deploy-fields deploy-identity-fields">
             <label className="deploy-field" htmlFor="deploy-account">
               <span className="deploy-field-label">
-                机器人 QQ 号 <span>必填</span>
+                机器人 QQ 号 <span>官方可留空</span>
               </span>
               <input
                 id="deploy-account"
@@ -88,7 +56,11 @@ export default function DeployStepPanel({
                 value={draft.account}
                 disabled={disabled}
                 onChange={(event) => updateDraft('account', event.target.value)}
-                placeholder={defaults.bot_account ? '出厂占位：' + defaults.bot_account : '例如 123456789'}
+                placeholder={
+                  defaults.bot_account
+                    ? '官方通道可留空（自动获取）；OneBot 填：' + defaults.bot_account
+                    : '官方通道可留空；OneBot 例如 123456789'
+                }
               />
             </label>
             <label className="deploy-field" htmlFor="deploy-name">
@@ -223,48 +195,92 @@ export default function DeployStepPanel({
           </div>
         )}
         {activeIndex === 4 && (
-          <div className="deploy-connection-fields">
-            {onebot?.warning && (
-              <InlineAlert tone="warning" title="连接提醒">
-                {onebot.warning}
-              </InlineAlert>
-            )}
-            <CopyRow
-              label="同机连接"
-              value={onebot?.url_local || ''}
-              hint="NapCat 与 NeoBot 在同一台机器"
-              onCopy={copy}
-            />
-            <CopyRow
-              label="局域网连接"
-              value={onebot?.url_lan || ''}
-              hint="NapCat 在另一台机器"
-              onCopy={copy}
-            />
-            <CopyRow
-              label="Access Token"
-              value={onebot?.token || ''}
-              hint={onebot?.token_enabled ? '填入 NapCat 的同名字段' : '当前未校验握手，建议生成令牌'}
-              onCopy={copy}
-            />
-            <div className="deploy-token-actions">
-              <Button size="sm" disabled={disabled} onClick={() => void generateToken()}>
-                <RefreshCw size={14} />
-                {busy === 'token' ? '生成中…' : onebot?.token_enabled ? '重新生成 token' : '生成 token'}
-              </Button>
-              <span>生成后立即生效，需要同步更新 NapCat。</span>
+          <div className="deploy-official-fields">
+            <div className="deploy-official-status">
+              <span className="deploy-state-tag">
+                {official?.bound
+                  ? '已绑定'
+                  : official?.bind?.phase === 'pending'
+                    ? '等待扫码'
+                    : '未绑定'}
+              </span>
+              {official?.nickname || official?.account ? (
+                <span>
+                  {official?.nickname || '官方机器人'}
+                  {official?.account ? `（${official.account}）` : ''}
+                </span>
+              ) : null}
+              {official?.mode ? <span>当前模式：{official.mode}</span> : null}
             </div>
-            <details className="deploy-connection-details">
-              <summary>连接参数与自动连接</summary>
-              <p>
-                当前监听 {onebot?.host || '—'}:{onebot?.port || '—'}，可在「配置管理 → adapter」中修改。路径由
-                NapCat 设置，惯例为 <code>{onebot?.path_hint || '/onebot'}</code>，服务端不限制路径。
+            {official?.bound ? (
+              <InlineAlert tone="success" title="官方机器人已绑定">
+                机器人 QQ 号由官方 API 自动获取，无需填写 NapCat 连接信息。
+              </InlineAlert>
+            ) : (
+              <div className="deploy-qr-wrap">
+                {official?.bind?.svg ? (
+                  <div
+                    className="deploy-qr-box"
+                    aria-label="官方机器人绑定二维码"
+                    dangerouslySetInnerHTML={{ __html: official.bind.svg }}
+                  />
+                ) : (
+                  <div className="deploy-qr-box is-empty">
+                    {official?.bind?.error || '点击下方按钮生成二维码'}
+                  </div>
+                )}
+                <div className="deploy-qr-actions">
+                  <Button size="sm" disabled={disabled} onClick={() => void startOfficialBind()}>
+                    <RefreshCw size={14} />
+                    {busy === 'bind' ? '生成中…' : '开始扫码绑定'}
+                  </Button>
+                  {official?.bind?.url ? (
+                    <a href={official.bind.url} target="_blank" rel="noopener noreferrer">
+                      打开绑定链接
+                    </a>
+                  ) : null}
+                </div>
+                {official?.bind?.error ? (
+                  <p className="deploy-field-hint field-error">{official.bind.error}</p>
+                ) : null}
+              </div>
+            )}
+            <div className="deploy-fields deploy-official-manual">
+              <p className="deploy-field-hint">
+                也可以手动填写开放平台信息；AppSecret 只写不读，不会保存到浏览器。
               </p>
-              <p>默认允许所有群聊与私聊回复，需要限定范围时前往「配置管理 → chat」。</p>
-              <Button size="sm" disabled title={onebot?.auto_connect?.reason || '后续版本提供'}>
-                自动连接（待 NapCat Desktop 支持）
-              </Button>
-            </details>
+              <label className="deploy-field" htmlFor="deploy-qq-appid">
+                <span className="deploy-field-label">
+                  AppID <span>选填</span>
+                </span>
+                <input
+                  id="deploy-qq-appid"
+                  className="input"
+                  value={draft.qqAppId}
+                  disabled={disabled}
+                  onChange={(event) => updateDraft('qqAppId', event.target.value)}
+                  placeholder="开放平台机器人 AppID"
+                />
+              </label>
+              <label className="deploy-field" htmlFor="deploy-qq-secret">
+                <span className="deploy-field-label">
+                  AppSecret <span>{official?.secret_set ? '已设置，留空保留' : '选填'}</span>
+                </span>
+                <input
+                  id="deploy-qq-secret"
+                  className="input"
+                  type="password"
+                  autoComplete="new-password"
+                  value={qqSecret}
+                  disabled={disabled}
+                  onChange={(event) => setQqSecret(event.target.value)}
+                  placeholder={official?.secret_set ? '已设置，留空保留' : '填写 AppSecret'}
+                />
+              </label>
+              <span className="deploy-field-hint">
+                填写后点「保存并应用」自动切换到官方通道；扫码绑定则不需要手动填写。
+              </span>
+            </div>
           </div>
         )}
       </div>

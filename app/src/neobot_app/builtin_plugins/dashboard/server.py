@@ -397,6 +397,7 @@ class DashboardServer:
         self._route(app, "POST", "/api/config/billing/preview", self.api.config_billing_preview)
         # 快捷部署菜单：新手引导 + OneBot 连接信息（NapCat 侧要填的地址与 token）
         self._route(app, "GET", "/api/deploy/status", self.api.deploy_status)
+        self._route(app, "POST", "/api/deploy/official-bind", self.api.deploy_official_bind)
         self._route(app, "POST", "/api/deploy/onebot-token", self.api.deploy_generate_token)
         self._route(app, "GET", "/api/logs", self.api.logs)
         self._route(app, "GET", "/api/tasks", self.api.tasks)
