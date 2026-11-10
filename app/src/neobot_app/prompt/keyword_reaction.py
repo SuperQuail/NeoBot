@@ -93,18 +93,36 @@ class KeywordReactionBuilder:
             return []
 
         # 跳过 bot 自己发出的消息(语音/长回复等自推消息也会进队列),
-        # 避免关键词规则因 bot 自己的发言自触发
-        bot_account = getattr(queue, "bot_account", None)
-        if bot_account:
+        # 避免关键词规则因 bot 自己的发言自触发。双待下两条通道各有一个号：
+        # 优先用消息级 self_id（API 取号），其次用队列的 bot_accounts 集合。
+        bot_accounts: set[int] = set()
+        for value in getattr(queue, "bot_accounts", None) or ():
             try:
-                bot_account = int(bot_account)
+                account = int(value)
             except (TypeError, ValueError):
-                bot_account = None
-        if bot_account:
+                continue
+            if account:
+                bot_accounts.add(account)
+        if not bot_accounts:
+            single = getattr(queue, "bot_account", None)
+            try:
+                single_int = int(single) if single else 0
+            except (TypeError, ValueError):
+                single_int = 0
+            if single_int:
+                bot_accounts.add(single_int)
+        if bot_accounts:
+            def _is_bot_self(message: Any) -> bool:
+                sender = _safe_user_id(message)
+                self_id = getattr(message, "self_id", None)
+                try:
+                    self_id_int = int(self_id) if self_id else 0
+                except (TypeError, ValueError):
+                    self_id_int = 0
+                return sender in bot_accounts or (self_id_int != 0 and sender == self_id_int)
+
             recent_messages = [
-                message
-                for message in recent_messages
-                if _safe_user_id(message) != bot_account
+                message for message in recent_messages if not _is_bot_self(message)
             ]
 
         message_texts = [self._render_message_text(message) for message in recent_messages]

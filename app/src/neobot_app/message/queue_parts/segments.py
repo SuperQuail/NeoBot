@@ -38,7 +38,7 @@ class _QueueSegmentMixin:
                         reply_number_resolver=reply_number_resolver,
                     )
                 )
-                if wrap_at_mention and self._is_at_bot_segment(segment):
+                if wrap_at_mention and self._is_at_bot_segment(segment, message):
                     has_at_bot = True
                     parts.append(
                         f"<这是新的可能要回答的内容>{seg_text}</这是新的可能要回答的内容>"
@@ -61,9 +61,8 @@ class _QueueSegmentMixin:
 
         return "[无消息内容]"
 
-    def _is_at_bot_segment(self, segment: object) -> bool:
-        if self.bot_account is None:
-            return False
+    def _is_at_bot_segment(self, segment: object, message: object = None) -> bool:
+        """该 at 段是否指向任一 bot（消息级 self_id 优先，其次队列登记的 bot_accounts）。"""
         seg_type = getattr(segment, "type", None)
         if isinstance(seg_type, Enum):
             seg_type = seg_type.value
@@ -72,12 +71,23 @@ class _QueueSegmentMixin:
         raw_data = getattr(segment, "data", None)
         data = self._segment_data_to_dict(raw_data)
         qq = str(data.get("qq") or "")
-        return qq == str(self.bot_account)
+        if not qq:
+            return False
+        return qq in {str(bot_id) for bot_id in self._bot_ids(message)}
 
-    def _wrap_at_in_raw_message(self, text: str, _message: QueueMessage) -> str:
-        if self.bot_account is None:
+    @staticmethod
+    def _at_mention_pattern(bot_ids: set[int]) -> str:
+        """匹配渲染文本里的 @QQ:xxx / @昵称(QQ:xxx)（含旧格式）的正则。"""
+        ids = [str(bot_id) for bot_id in sorted(bot_ids)]
+        alternatives = [f"@QQ:{qq}" for qq in ids]
+        alternatives.extend(rf"@[^(\n]*\(QQ:{qq}\)" for qq in ids)
+        return "(" + "|".join(alternatives) + ")"
+
+    def _wrap_at_in_raw_message(self, text: str, message: QueueMessage) -> str:
+        bot_ids = self._bot_ids(message)
+        if not bot_ids:
             return f"<这是新的可能要回答的内容>{text}</这是新的可能要回答的内容>"
-        pattern = rf"(@QQ:{self.bot_account}|@[^(\n]*\(QQ:{self.bot_account}\))"
+        pattern = self._at_mention_pattern(bot_ids)
         if re.search(pattern, text):
             return re.sub(
                 pattern,

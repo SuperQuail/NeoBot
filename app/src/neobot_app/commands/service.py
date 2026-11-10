@@ -166,7 +166,7 @@ class CommandService:
         - 私聊:文本为命令形态即可
         - 非命令形态 / 未注册命令:返回 consumed=False(移交正常管线)
         """
-        bot_account = self._bot_account()
+        bot_account = self._bot_account(message)
         at_qqs = self._collect_at_qqs(message)
         text = self._message_text(message)
 
@@ -227,7 +227,14 @@ class CommandService:
 
     # ── 消息解析辅助 ──
 
-    def _bot_account(self) -> int:
+    def _bot_account(self, message: Any = None) -> int:
+        """当前消息对应的 bot 账号：消息级 self_id 优先（双通道各号不同），其次配置值。"""
+        self_id = getattr(message, "self_id", None)
+        if self_id:
+            try:
+                return int(self_id)
+            except (TypeError, ValueError):
+                pass
         try:
             return int(getattr(getattr(self._config, "bot", None), "account", 0) or 0)
         except (TypeError, ValueError):

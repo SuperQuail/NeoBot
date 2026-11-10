@@ -64,10 +64,19 @@ class MessageNumbering:
         输出的格式去模仿（问题报告的根因）。wait 结果、增量注入、文本回退路径
         都必须和聊天记录渲染保持一致，否则同一条管线里一边禁止一边示范。
         """
-        is_self = (
-            self._bot_account is not None
-            and getattr(message, "user_id", None) == self._bot_account
-        )
+        # 双待下每个消息自带 self_id（API 取号），优先按它判自身发言；
+        # 旧单通道事件没有 self_id 时回退队列注入的 bot_account。
+        self_id = getattr(message, "self_id", None)
+        if self_id:
+            try:
+                is_self = getattr(message, "user_id", None) == int(self_id)
+            except (TypeError, ValueError):
+                is_self = False
+        else:
+            is_self = (
+                self._bot_account is not None
+                and getattr(message, "user_id", None) == self._bot_account
+            )
         marker = "[被回复消息] " if replied else ""
         if is_self:
             return f"[msg_id={msg_id}] {marker}{content}"

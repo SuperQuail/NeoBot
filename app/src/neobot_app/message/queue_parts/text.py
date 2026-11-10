@@ -142,11 +142,7 @@ class _QueueTextMixin:
                 elif entry.kind == QueueEntryType.RECALL and entry.recalled_message is not None:
                     messages.append((entry.recalled_message, rendered))
                 for message, by_message in messages:
-                    if (
-                        not include_bot
-                        and self.bot_account is not None
-                        and message.user_id == self.bot_account
-                    ):
+                    if not include_bot and self._is_bot_message(message):
                         continue
                     sender = getattr(message, "sender", None)
                     add(getattr(sender, "nickname", None))

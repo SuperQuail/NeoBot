@@ -121,7 +121,7 @@ async def test_official_channel_is_detected_from_version_info() -> None:
     profile = await detector.resolve_identity()
 
     assert profile.kind == "official"
-    assert profile.channel == "qq-official"
+    assert profile.channel == "official"
     assert profile.source == "auto"
     assert profile.account == 10001
     assert config.bot.account == 10001

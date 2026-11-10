@@ -855,7 +855,7 @@ async def _handle_set_password(ctx: CommandContext) -> str:
 
 def _extract_target_qq(ctx: CommandContext) -> int | None:
     """从参数或 @ 段提取目标 QQ 号(排除 @bot 触发段)。"""
-    bot_account = ctx.service._bot_account()
+    bot_account = ctx.service._bot_account(getattr(ctx, "message", None))
     # 优先 @ 段(排除 bot 自己)
     for qq in sorted(ctx.at_qqs):
         if qq != bot_account:
