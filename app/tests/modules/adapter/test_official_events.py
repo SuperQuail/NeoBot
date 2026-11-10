@@ -111,7 +111,7 @@ def test_group_mentions_become_at_segments(workdir) -> None:
         _dispatch(
             "GROUP_AT_MESSAGE_CREATE",
             _group_data(
-                content="<@!BOTOPENID> 你们看这个",
+                content="<@!BOTOPENID> 你们看这个 <@!member-openid-2>",
                 mentions=[
                     {"id": "member-openid-2", "username": "小明", "bot": False},
                     {"id": "bot-openid", "username": "另一个机器人", "bot": True},
@@ -123,9 +123,13 @@ def test_group_mentions_become_at_segments(workdir) -> None:
     assert event is not None
     segments = event["message"]
     assert segments[0] == {"type": "at", "data": {"qq": 1020304}}
-    assert {"type": "at", "data": {"qq": str(mapper._identity.user_id("member-openid-2")), "name": "小明"}} in segments
+    # 顺序与真实消息一致：@ 在正文后面就排在正文后面
+    assert segments[1] == {"type": "text", "data": {"text": "你们看这个"}}
+    assert segments[2] == {
+        "type": "at",
+        "data": {"qq": str(mapper._identity.user_id("member-openid-2")), "name": "小明"},
+    }
     assert all(segment.get("data", {}).get("name") != "另一个机器人" for segment in segments)
-    assert segments[-1] == {"type": "text", "data": {"text": "你们看这个"}}
 
 
 def test_group_plain_message_has_no_at_segment(workdir) -> None:

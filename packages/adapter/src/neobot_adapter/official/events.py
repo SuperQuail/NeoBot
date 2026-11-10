@@ -26,7 +26,9 @@ _QUOTE_PREFIX = "[引用] "
 _QUOTE_ATTACHMENT = "[附件]"
 _VOICE_PLACEHOLDER = "[语音消息]"
 #: 官方文本里 @ 机器人的标记：<@!openid> 或 <qqbot-at-user id="openid" />。
-_MENTION_MARKUP = re.compile(r'(?:<qqbot-at-user\s+id="[^"]*"\s*/>|<@!?[^>\s]+>)')
+_MENTION_MARKUP = re.compile(
+    r'(?:<qqbot-at-user\s+id="([^"]*)"\s*/>|<@!?([^>\s]+)>)'
+)
 _DEDUPE_TTL_SECONDS = 300.0
 _DEDUPE_MAX_SIZE = 1000
 _VOICE_CONTENT_PREFIXES = ("voice", "audio")
@@ -148,10 +150,10 @@ class EventMapper:
             self._logger.warning("官方私聊事件缺少用户 openid，已跳过")
             return
         user_id = self._identity.user_id(openid)
-        text = _plain_text(data.get("content"))
         _append_quote(message, data)
-        _append_mentions(message, data.get("mentions"), self._identity)
-        _append_text(message, text)
+        _append_content_with_mentions(
+            message, data.get("content"), data.get("mentions"), self._identity
+        )
         _append_attachments(message, data.get("attachments"))
         event.update(
             {
@@ -188,8 +190,9 @@ class EventMapper:
             # GROUP_AT_MESSAGE_CREATE 必然 @ 了机器人：OneBot 消费方按 at 段判断。
             message.append({"type": "at", "data": {"qq": self.self_id}})
         _append_quote(message, data)
-        _append_mentions(message, data.get("mentions"), self._identity)
-        _append_text(message, _plain_text(data.get("content")))
+        _append_content_with_mentions(
+            message, data.get("content"), data.get("mentions"), self._identity
+        )
         _append_attachments(message, data.get("attachments"))
         event.update(
             {
@@ -225,36 +228,62 @@ def _nickname(author: dict[str, Any], user_id: int) -> str:
     return name or f"QQ:{user_id}"
 
 
-def _plain_text(content: Any) -> str:
-    """去掉 @ 机器人标记后的正文；官方标记不能直接展示给模型。"""
-    return _MENTION_MARKUP.sub(" ", str(content or "")).strip()
-
-
 def _append_text(message: list[dict[str, Any]], text: str) -> None:
     if text:
         message.append({"type": "text", "data": {"text": text}})
 
 
-def _append_mentions(
-    message: list[dict[str, Any]], mentions: Any, identity: IdentityMap
-) -> None:
-    """官方 mentions → OneBot at 段。
+def _mention_openid(item: Any) -> str:
+    if not isinstance(item, dict) or item.get("bot") is True:
+        return ""
+    return str(
+        item.get("member_openid")
+        or item.get("id")
+        or item.get("user_openid")
+        or ""
+    ).strip()
 
-    官方群@事件把「被 @ 的其他用户」放在 mentions 列表里（不含机器人自身）；
-    不转成 at 段的话，命令层的 at_qqs / 提示词都看不到被 @ 者。
+
+def _append_content_with_mentions(
+    message: list[dict[str, Any]],
+    content: Any,
+    mentions: Any,
+    identity: IdentityMap,
+) -> None:
+    """按官方 content 里的 @ 标记顺序生成 text/at 段。
+
+    官方 content 已去掉 @机器人前缀，但被 @ 的其他用户仍可能以
+    `<@!openid>` / `<qqbot-at-user id="openid">` 形式留在正文里；mentions 列表
+    是同一批用户的权威信息。按标记位置切分才能保持「命令在前、@ 在后」的真实顺序。
+    没有出现在正文标记里的 mention 追加到末尾（命令层仍能拿到 at_qqs）。
     """
-    if not isinstance(mentions, list):
-        return
-    for item in mentions:
-        if not isinstance(item, dict) or item.get("bot") is True:
-            continue
-        openid = str(
-            item.get("member_openid")
-            or item.get("id")
-            or item.get("user_openid")
-            or ""
-        ).strip()
-        if not openid:
+    text = str(content or "")
+    mention_map: dict[str, dict[str, Any]] = {}
+    if isinstance(mentions, list):
+        for item in mentions:
+            openid = _mention_openid(item)
+            if openid:
+                mention_map[openid] = item
+
+    seen: set[str] = set()
+    cursor = 0
+    for match in _MENTION_MARKUP.finditer(text):
+        if match.start() > cursor:
+            _append_text(message, text[cursor : match.start()].strip())
+        openid = str(match.group(1) or match.group(2) or "").strip()
+        if openid in mention_map:
+            item = mention_map[openid]
+            user_id = identity.user_id(openid)
+            name = str(item.get("username") or "").strip()
+            message.append({"type": "at", "data": {"qq": str(user_id), "name": name}})
+            seen.add(openid)
+        # 未在 mentions 里的标记（例如 @机器人本身）直接丢弃，不制造假用户。
+        cursor = match.end()
+    if cursor < len(text):
+        _append_text(message, text[cursor:].strip())
+
+    for openid, item in mention_map.items():
+        if openid in seen:
             continue
         user_id = identity.user_id(openid)
         name = str(item.get("username") or "").strip()
