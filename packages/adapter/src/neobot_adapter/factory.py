@@ -55,7 +55,7 @@ def create_adapter(
             packet_callback=packet_callback,
             sandbox_data=sandbox_data,
         )
-    if mode in {"onebot", "official"}:
+    if mode in {"onebot", "official", "dual"}:
         # 延迟导入:SwitchableAdapter 反向依赖本模块的 AdapterSettings。
         from neobot_adapter.switchable import SwitchableAdapter
 
@@ -66,7 +66,7 @@ def create_adapter(
             sandbox_data=sandbox_data,
             data_dir=cfg.data_dir or None,
         )
-    raise ValueError(f"未知适配器模式: {cfg.mode}。可选值: onebot, official, local")
+    raise ValueError(f"未知适配器模式: {cfg.mode}。可选值: onebot, official, dual, local")
 
 
 def _coerce_settings(settings: AdapterSettings | Any | None) -> AdapterSettings:

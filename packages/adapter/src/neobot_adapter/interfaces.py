@@ -64,7 +64,10 @@ class RuntimeAdapter(Protocol):
         params: dict[str, Any],
         timeout: float = 5.0,
         wait_response: bool = True,
-    ) -> dict[str, Any] | None: ...
+        channel: str | None = None,
+    ) -> dict[str, Any] | None:
+        """channel 指定通道（onebot / official）；None 表示自动选路。"""
+        ...
 
     async def send(
         self,
@@ -72,7 +75,10 @@ class RuntimeAdapter(Protocol):
         message: str | list[dict[str, Any]],
         timeout: float = 5.0,
         wait_response: bool = True,
-    ) -> SendMsgResponse: ...
+        channel: str | None = None,
+    ) -> SendMsgResponse:
+        """channel 指定回复通道（onebot / official）；None 表示按会话自动选路。"""
+        ...
 
 
 @runtime_checkable

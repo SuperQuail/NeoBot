@@ -204,8 +204,9 @@ class OfficialAdapter:
         if self._started:
             return
         self._started = True
-        # request 子模块通过全局 core 代理调 API（与 OneBot/Local 适配器一致）。
-        bind_core(self._core)
+        # request 子模块全是 OneBot 动作：官方核心绑到 official 通道，双通道运行时
+        # 不会覆盖 request 助手默认使用的 onebot 通道。
+        bind_core(self._core, "official")
         credentials = self._load_credentials()
         if credentials is None:
             self._logger.warning("QQ 官方机器人尚未绑定，已启动扫码绑定流程；绑定成功后将自动连接")
@@ -215,7 +216,7 @@ class OfficialAdapter:
             await self._connect(credentials)
         except BaseException:
             self._started = False
-            unbind_core()
+            unbind_core("official")
             await self._shutdown_runtime()
             raise
 
@@ -227,7 +228,7 @@ class OfficialAdapter:
         self._ready_event.clear()
         await self._cancel_bind_flow()
         await self._shutdown_runtime()
-        unbind_core()
+        unbind_core("official")
 
     def wait_for_connection(self, timeout: float | None = None) -> bool:
         return self._connected_event.wait(timeout)

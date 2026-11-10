@@ -12,7 +12,8 @@ class Adapter:
         metadata={
             "description": (
                 "适配器模式：onebot（反向 WebSocket 接入 OneBot 框架）、"
-                "official（内嵌 QQ 官方机器人协议）或 local（本地内置机器人）"
+                "official（内嵌 QQ 官方机器人协议）、dual（两者同时运行）"
+                "或 local（本地内置机器人）"
             )
         },
     )

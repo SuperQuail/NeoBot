@@ -27,9 +27,10 @@ from neobot_contracts.models import ConversationRef
 class _FakeBackend:
     """按 OneBotAdapter 能力面实现的最小后端替身。"""
 
-    def __init__(self, mode: str, *, fail_start: bool = False) -> None:
+    def __init__(self, mode: str, *, fail_start: bool = False, account: int = 0) -> None:
         self.mode = mode
         self.fail_start = fail_start
+        self.account = account
         self.start_calls = 0
         self.stop_calls = 0
         self.started = False
@@ -67,6 +68,8 @@ class _FakeBackend:
         wait_response: bool = True,
     ) -> dict[str, Any]:
         self.api_calls.append(action)
+        if action == "get_login_info":
+            return {"status": "ok", "retcode": 0, "data": {"user_id": self.account}}
         return {"status": "ok", "retcode": 0, "data": {"mode": self.mode}}
 
     async def send(
@@ -85,14 +88,17 @@ class _FakeBackend:
 
 def _install_fake_backends(
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    accounts: dict[str, int] | None = None,
 ) -> tuple[list[_FakeBackend], set[str]]:
     """把 _build_backend 换成假后端工厂，并记录构造顺序与失败开关。"""
     created: list[_FakeBackend] = []
     failures: set[str] = set()
+    accounts = {"onebot": 10001, "official": 20002} if accounts is None else accounts
 
     def _build(self: SwitchableAdapter, mode: str, settings: AdapterSettings) -> Any:
-        backend = _FakeBackend(mode, fail_start=mode in failures)
-        backend.event_sink = self.publish
+        backend = _FakeBackend(mode, fail_start=mode in failures, account=accounts.get(mode, 0))
+        backend.event_sink = self._event_sink_for(mode)
         if mode == "onebot":
             backend.settings = ReverseWsSettings(
                 host=settings.reverse_ws_host or "0.0.0.0",
@@ -161,7 +167,7 @@ async def test_subscription_survives_switch(monkeypatch: pytest.MonkeyPatch) -> 
     assert adapter.active_mode == "official"
     # 切换后的事件来自新后端的 sink，仍然命中切换前注册的处理器。
     await created[1].event_sink(event)
-    assert seen == [event]
+    assert seen == [{**event, "neobot_channel": "official"}]
 
 
 async def test_event_namespace_decorator_hooked_on_facade(
@@ -186,7 +192,7 @@ async def test_event_namespace_decorator_hooked_on_facade(
     await created[0].event_sink({"post_type": "notice"})
 
 
-async def test_backend_event_sink_is_facade_publish(
+async def test_backend_event_sink_tags_originating_channel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     created, _ = _install_fake_backends(monkeypatch)
@@ -197,9 +203,8 @@ async def test_backend_event_sink_is_facade_publish(
         seen.append(event)
 
     adapter.subscribe("message", handler)
-    assert created[0].event_sink == adapter.publish
     await created[0].event_sink({"post_type": "message"})
-    assert seen == [{"post_type": "message"}]
+    assert seen == [{"post_type": "message", "neobot_channel": "onebot"}]
 
 
 async def test_onebot_adapter_uses_event_sink_when_provided() -> None:
@@ -488,6 +493,14 @@ async def test_apply_channel_config_unchanged_does_not_restart(
 # ── factory 装配 ────────────────────────────────────────────────────
 
 
+def test_single_mode_reports_its_channel(monkeypatch: pytest.MonkeyPatch) -> None:
+    _created, _ = _install_fake_backends(monkeypatch)
+    adapter = SwitchableAdapter(AdapterSettings(mode="onebot"))
+
+    assert adapter.active_channels == ("onebot",)
+    assert adapter.connected_channels == ()
+
+
 def test_factory_onebot_returns_switchable_facade() -> None:
     adapter = create_adapter(AdapterSettings(mode="onebot", reverse_ws_host="127.0.0.1", reverse_ws_port=8091))
 
@@ -496,7 +509,7 @@ def test_factory_onebot_returns_switchable_facade() -> None:
     assert adapter.core.host == "127.0.0.1"
     assert adapter.core.port == 8091
     assert adapter.settings.port == 8091
-    assert adapter._backend._event_sink == adapter.publish
+    assert adapter.active_channels == ("onebot",)
 
 
 def test_factory_local_still_returns_local_adapter() -> None:
