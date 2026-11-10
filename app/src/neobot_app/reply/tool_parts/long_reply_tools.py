@@ -139,7 +139,7 @@ class _LongReplyToolsMixin:
                             "mention_qqs": {
                                 "type": "array",
                                 "items": {"type": "integer"},
-                                "description": "可选，要 @ 的 QQ 号列表。QQ 号见群友列表里的「QQ号:...」。仅在群聊生效。正文里需要表达 @ 时，没有特殊情况应在 @ 后留一个空格；特殊需要可自行不加。",
+                                "description": "可选，要 @ 的 QQ 号列表。QQ 号见群友列表里的「QQ号:...」。仅在群聊生效。系统会发送真正的 @；正文里不要再写「@昵称」或「@ QQ号」，否则会出现两个 @。",
                             },
                             "caption": {
                                 "type": "string",

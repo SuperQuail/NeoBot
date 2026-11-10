@@ -273,6 +273,9 @@ def test_send_reply_tool_schema_exposes_channel_enum():
 
     assert channel["enum"] == ["auto", "onebot", "official"]
     assert channel["default"] == "auto"
+    mention = definition["function"]["parameters"]["properties"]["mention_qqs"]
+    assert "不要再写" in mention["description"]
+    assert "@ 后留一个空格" not in mention["description"]
 
 
 # ── 提示词账号 ─────────────────────────────────────────────────────
@@ -375,3 +378,24 @@ def test_official_mention_real_qq_resolves_to_synthetic_id(tmp_path) -> None:
         assert segments[0] == {"type": "at", "data": {"qq": str(synthetic)}}
     finally:
         bind_user_identity(None)
+
+
+def test_mention_drops_duplicate_leading_at_text() -> None:
+    segments = ReplySender.build_reply_segments(
+        text="@ 唐天 喵",
+        conversation_kind="group",
+        mention_user_ids=[20001],
+    )
+
+    assert segments[0] == {"type": "at", "data": {"qq": "20001"}}
+    assert segments[-1] == {"type": "text", "data": {"text": "喵"}}
+
+
+def test_multiple_duplicate_leading_mentions_are_dropped() -> None:
+    segments = ReplySender.build_reply_segments(
+        text="@ A @ B 正文",
+        conversation_kind="group",
+        mention_user_ids=[20001, 20002],
+    )
+
+    assert segments[-1]["data"]["text"] == "正文"

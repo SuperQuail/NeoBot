@@ -6,6 +6,7 @@ from neobot_contracts.ports.speaking import SpeechBlocked
 
 import asyncio
 import inspect
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,6 +25,12 @@ from neobot_app.reply.postprocess import ReplySplitPreview, process_reply_text
 from neobot_app.bot_accounts import primary_bot_account
 from neobot_app.utils.media_sender import prepare_image_segment, send_image
 from neobot_app.time_context import monotonic_seconds
+
+#: 模型常在正文里再写一遍「@昵称」；已经通过 mention_qqs 发真实 @ 时需要去掉，
+#: 否则客户端会出现「@唐天 @ 唐天 喵」这种重复假 @。
+_LEADING_MENTION_TEXT = re.compile(
+    r"^\s*(?:(?:@\s*[^\s@]+)[\s,，:：]*\s*)+", re.UNICODE
+)
 
 _MARKDOWN_RENDER_TIMEOUT_SECONDS = 60.0
 
@@ -766,6 +773,7 @@ class ReplySender:
         if mention_user_ids and conversation_kind == "group":
             from neobot_app.user_identity import synthetic_for_qq
 
+            text = _LEADING_MENTION_TEXT.sub("", text, count=1)
             for qq in mention_user_ids:
                 target = str(qq)
                 if channel == "official":
