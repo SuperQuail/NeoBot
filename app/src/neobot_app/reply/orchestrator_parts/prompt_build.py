@@ -16,6 +16,45 @@ if TYPE_CHECKING:
 
 
 class PromptBuildMixin:
+    #: 官方通道提示词最前面的身份说明（按需求原文，不改标点）
+    _OFFICIAL_PROMPT_PREFIX = (
+        "当前你是使用官方渠道搭建的QQ机器人,所以你看不到QQ号和群号,只看得到QQ ID和群ID,"
+    )
+    #: 官方通道没有真实 QQ 号/群号，提示词里的「QQ号」「群号」统一改称 ID。
+    _OFFICIAL_PROMPT_REPLACEMENTS = (
+        ("QQ群号", "QQ群 ID"),
+        ("QQ号", "QQ ID"),
+        ("QQ 号", "QQ ID"),
+        ("群号", "群 ID"),
+        ("群 号", "群 ID"),
+    )
+
+    @classmethod
+    def _official_replace_text(cls, text: str) -> str:
+        for old, new in cls._OFFICIAL_PROMPT_REPLACEMENTS:
+            text = text.replace(old, new)
+        return text
+
+    @classmethod
+    def _official_prompt_text(cls, text: str) -> str:
+        # 先替换再加前缀：前缀里的「QQ号」「群号」是需求原文，不能再被替换
+        return f"{cls._OFFICIAL_PROMPT_PREFIX}\n{cls._official_replace_text(text)}"
+
+    def _officialize_prompt(
+        self,
+        event: ReplyEvent,
+        prompt: str,
+        context_blocks: list[dict[str, str]] | None = None,
+    ) -> str:
+        if not self._is_official_platform(event):
+            return prompt
+        if context_blocks:
+            for block in context_blocks:
+                content = block.get("content")
+                if isinstance(content, str):
+                    block["content"] = self._official_replace_text(content)
+        return self._official_prompt_text(prompt)
+
     def _is_official_platform(self, event: ReplyEvent) -> bool:
         """当前事件是否来自官方机器人通道。
 
@@ -92,7 +131,9 @@ class PromptBuildMixin:
             "prompt.build.before", event, queue_key=queue_key
         )
         if before_prompt.consumed:
-            return str(before_prompt.result or before_prompt.payload.get("prompt", ""))
+            return self._officialize_prompt(
+                event, str(before_prompt.result or before_prompt.payload.get("prompt", ""))
+            )
         event.transition(ReplyState.BUILDING_PROMPT)
         if event.conversation_ref is None:
             raise ValueError("ReplyEvent.conversation_ref is None")
@@ -138,7 +179,9 @@ class PromptBuildMixin:
                 after_prompt = await self._emit_runtime_event(
                     "prompt.build.after", event, queue_key=queue_key, prompt=prompt
                 )
-                return str(after_prompt.payload.get("prompt", prompt))
+                return self._officialize_prompt(
+                    event, str(after_prompt.payload.get("prompt", prompt)), context_blocks
+                )
             except asyncio.TimeoutError:
                 self._logger.warning(
                     "群聊提示词构建超时",
@@ -170,7 +213,9 @@ class PromptBuildMixin:
             after_prompt = await self._emit_runtime_event(
                 "prompt.build.after", event, queue_key=queue_key, prompt=prompt
             )
-            return str(after_prompt.payload.get("prompt", prompt))
+            return self._officialize_prompt(
+                event, str(after_prompt.payload.get("prompt", prompt)), context_blocks
+            )
         except asyncio.TimeoutError:
             self._logger.warning(
                 "私聊提示词构建超时",

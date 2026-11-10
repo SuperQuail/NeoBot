@@ -105,7 +105,39 @@ async def test_build_prompt_injects_note_only_for_official_event_channel() -> No
     )
 
     assert "<官方机器人限制>" in prompt
+    # 官方通道提示词最前面追加身份说明
+    assert prompt.startswith(
+        "当前你是使用官方渠道搭建的QQ机器人,所以你看不到QQ号和群号,只看得到QQ ID和群ID,"
+    )
     assert builder.build_group_chat_prompt.await_args.kwargs["bot_account"] == 777
+
+
+async def test_build_prompt_rewrites_qq_and_group_terms_for_official() -> None:
+    orchestrator = _orchestrator()
+    builder = SimpleNamespace(
+        build_group_chat_prompt=AsyncMock(
+            return_value="你的QQ号是123，<群聊>群号:456；不要出现QQ群号。"
+        )
+    )
+    orchestrator._prompt_builder = builder
+    context_blocks = [{"role": "user", "content": "群友的QQ号是789"}]
+
+    prompt = await orchestrator._build_prompt(
+        _event(channel="official", account=777),
+        queue=SimpleNamespace(),
+        queue_key="42",
+        context_blocks=context_blocks,
+    )
+
+    # 系统提示词：最前面保留需求原文，正文里的 QQ号/群号改为 ID
+    prefix, _, body = prompt.partition("\n")
+    assert prefix == "当前你是使用官方渠道搭建的QQ机器人,所以你看不到QQ号和群号,只看得到QQ ID和群ID,"
+    assert "你的QQ ID是123" in body
+    assert "群 ID:456" in body
+    assert "QQ群 ID" in body
+    assert "QQ号" not in body and "群号" not in body
+    # 上下文块只替换术语，不重复加前缀
+    assert context_blocks[0]["content"] == "群友的QQ ID是789"
 
 
 async def test_build_prompt_keeps_note_out_of_other_channels() -> None:
