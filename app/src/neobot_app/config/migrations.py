@@ -521,3 +521,28 @@ def migrate_v9_to_v10(old: dict) -> dict:
     if section is not None:
         new["prompt_optimizations"] = section
     return new
+
+@Config.migration(from_version="0.10.0", to_version="0.11.0")
+def migrate_v10_to_v11(old: dict) -> dict:
+    """迁移 0.10.0 -> 0.11.0：通道模式默认值语义变化。
+
+    老配置升级上来默认保持 onebot（历史只支持 onebot/local）；新部署由 schema
+    默认值 official 决定。显式选择过 official/dual/local 的配置原样保留。
+    """
+    new: dict[str, Any] = dict(old)
+    new["version"] = "0.11.0"
+    adapter = old.get("adapter")
+    migrated = dict(adapter) if isinstance(adapter, dict) else {}
+    if not migrated.get("mode"):
+        migrated["mode"] = "onebot"
+    new["adapter"] = migrated
+    return new
+
+
+def ensure_legacy_adapter_mode(data: dict) -> None:
+    """没有 version 字段的更老配置：按「老配置升级」语义补 onebot mode（就地修改）。"""
+    adapter = data.get("adapter")
+    migrated = dict(adapter) if isinstance(adapter, dict) else {}
+    if not migrated.get("mode"):
+        migrated["mode"] = "onebot"
+    data["adapter"] = migrated

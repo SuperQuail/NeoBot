@@ -8,12 +8,12 @@ class Adapter:
     """适配器配置。"""
 
     mode: str = field(
-        default="onebot",
+        default="official",
         metadata={
             "description": (
-                "适配器模式：onebot（反向 WebSocket 接入 OneBot 框架）、"
-                "official（内嵌 QQ 官方机器人协议）、dual（两者同时运行）"
-                "或 local（本地内置机器人）"
+                "适配器模式：official（内嵌 QQ 官方机器人协议，新部署默认）、"
+                "onebot（反向 WebSocket 接入 OneBot 框架，老配置升级默认保持）、"
+                "dual（两者同时运行）或 local（本地内置机器人）"
             )
         },
     )

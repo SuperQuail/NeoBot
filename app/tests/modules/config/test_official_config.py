@@ -24,7 +24,7 @@ def _field_description(cls: type, name: str) -> str:
 def test_adapter_qq_defaults() -> None:
     adapter = Adapter()
 
-    assert adapter.mode == "onebot"
+    assert adapter.mode == "official"
     assert adapter.qq_appid == ""
     assert adapter.qq_client_secret == ""
     assert adapter.qq_markdown is True

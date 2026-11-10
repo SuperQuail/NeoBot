@@ -20,7 +20,7 @@ class BotConfig:
     """机器人主配置。"""
 
     version: str = field(
-        default="0.10.0",
+        default="0.11.0",
         metadata={"description": "配置文件版本（由程序维护，请勿手动修改）", "readonly": True},
     )
     bot: Bot = field(default_factory=Bot)
