@@ -12,7 +12,7 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.utils.prompt_text import escape_prompt_text
 
-from neobot_app.bot_accounts import display_user_id, id_label
+from neobot_app.user_identity import display_user_id, id_label
 from neobot_app.favorability import (
     FAVORABILITY_MAX,
     FAVORABILITY_MIN,

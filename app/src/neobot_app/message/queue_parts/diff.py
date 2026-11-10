@@ -8,6 +8,8 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
+from neobot_app.user_identity import qq_for_user
+
 from .common import QueueEntry, QueueEntryType, QueueMessage, RecallNotice
 
 
@@ -49,7 +51,11 @@ class _QueueDiffMixin:
                 continue
             message = entry.message
             sender_id = getattr(message, "user_id", None)
-            if sender_id is not None and sender_id in self._reply_blacklist:
+            mapped_sender = qq_for_user(sender_id) if sender_id is not None else None
+            if sender_id is not None and (
+                sender_id in self._reply_blacklist
+                or (mapped_sender is not None and mapped_sender in self._reply_blacklist)
+            ):
                 return False
             # at 目标匹配任一 bot：消息级 self_id 优先，其次队列登记的 bot_accounts
             bot_ids = self._bot_ids(message)

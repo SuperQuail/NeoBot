@@ -47,6 +47,25 @@ def test_onebot_group_context_keeps_qq_label() -> None:
     assert "（QQ：123456）" in text
 
 
+def test_mapped_synthetic_id_displays_as_real_qq(tmp_path) -> None:
+    from neobot_app.user_identity import bind_user_identity, link_user_qq
+
+    synthetic = 9000000000001
+    bind_user_identity(tmp_path)
+    try:
+        assert link_user_qq(synthetic, 123456789)[0]
+        message = _message(channel="official")
+        message.sender = None
+        assert _sender_name(message) == "QQ:123456789"
+        text = PromptBuildMixin._build_chat_context(
+            _event(channel="official", message=message), "8000000000001"
+        )
+        assert "消息发送者QQ：123456789" in text
+        assert "ID：9000000000001" not in text
+    finally:
+        bind_user_identity(None)
+
+
 def test_sender_name_fallback_label_follows_channel() -> None:
     official = _message(channel="official")
     official.sender = None

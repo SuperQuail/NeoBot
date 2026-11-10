@@ -7,7 +7,7 @@ import json
 import sys
 from typing import Any
 
-from neobot_app.bot_accounts import display_user_id
+from neobot_app.user_identity import display_user_id
 
 from .constants import (
     AUTO_COMPRESSION_USAGE_KIND,

@@ -14,6 +14,7 @@ from neobot_app.commands.model import (
     PERM_SUB_ADMIN,
     PERM_SUPER_ADMIN,
 )
+from neobot_app.user_identity import qq_for_user
 
 
 class PermissionManager:
@@ -43,12 +44,21 @@ class PermissionManager:
                 continue
         return result
 
+    @staticmethod
+    def _candidates(user_id: int | str) -> set[int]:
+        """管理员判定同时认通道本地 ID 与人工映射后的真实 QQ 号。"""
+        uid = int(user_id)
+        candidates = {uid}
+        mapped = qq_for_user(uid)
+        if mapped:
+            candidates.add(mapped)
+        return candidates
+
     def is_super_admin(self, user_id: int | str) -> bool:
-        return int(user_id) in self.super_admins
+        return bool(self._candidates(user_id) & self.super_admins)
 
     def is_sub_admin(self, user_id: int | str) -> bool:
-        uid = int(user_id)
-        return uid in self.sub_admins or uid in self.super_admins
+        return bool(self._candidates(user_id) & (self.sub_admins | self.super_admins))
 
     def can(self, user_id: int | str, level: int) -> bool:
         """用户是否具备指定权限等级。"""

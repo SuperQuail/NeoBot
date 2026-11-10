@@ -11,6 +11,7 @@ from neobot_adapter.model.message import GroupMessage, MessageSegment, PrivateMe
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.bot_accounts import bot_account_for_message, bot_accounts
+from neobot_app.user_identity import qq_for_user
 from neobot_app.config.schemas.bot import BotConfig
 from neobot_app.core.paths import get_data_dir
 from neobot_app.message.queue import MessageQueue
@@ -438,12 +439,14 @@ class WillingService:
 
         if self._config.message.enable_private is False:
             return False, "private_disabled"
+        mapped = qq_for_user(queue_key)
         return self._check_list_rule(
             queue_key,
             self._config.chat.friend_use_black_list,
             self._config.chat.friend_list or [],
             black_list_reason="friend_blacklisted",
             white_list_reason="friend_not_in_whitelist",
+            aliases=(str(mapped),) if mapped else (),
         )
 
     @staticmethod
@@ -454,12 +457,13 @@ class WillingService:
         *,
         black_list_reason: str,
         white_list_reason: str,
+        aliases: tuple[str, ...] = (),
     ) -> tuple[bool, str]:
         normalized = {str(item) for item in configured_list if str(item).strip()}
         if not normalized:
             return True, ""
 
-        in_list = queue_key in normalized
+        in_list = queue_key in normalized or any(alias in normalized for alias in aliases)
         if use_black_list and in_list:
             return False, black_list_reason
         if not use_black_list and not in_list:

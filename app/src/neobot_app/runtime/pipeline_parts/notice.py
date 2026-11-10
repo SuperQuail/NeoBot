@@ -12,7 +12,7 @@ from neobot_adapter.model.notice import PrivateMessageDelete
 from neobot_adapter.model.notice import PrivatePoke
 from neobot_adapter.utils.parse import safe_parse_model
 
-from neobot_app.bot_accounts import display_user_id
+from neobot_app.user_identity import display_user_id
 
 from .helpers import _build_poke_action_text
 

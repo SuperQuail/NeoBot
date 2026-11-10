@@ -6,7 +6,7 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
-from neobot_app.bot_accounts import display_user_id
+from neobot_app.user_identity import display_user_id
 from neobot_app.message.process import history_message_to_text
 from neobot_app.skills.base import SkillModule
 

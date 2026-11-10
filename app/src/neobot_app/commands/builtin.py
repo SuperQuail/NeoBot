@@ -20,6 +20,8 @@ from neobot_app.commands.model import (
     CommandContext,
     permission_name,
 )
+from neobot_app.bot_accounts import looks_like_real_qq
+from neobot_app.user_identity import link_user_qq, qq_for_user
 from neobot_app.panel_auth import (
     MAX_PASSWORD_LENGTH,
     MIN_PASSWORD_LENGTH,
@@ -95,6 +97,20 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
                 ("QQ号|@某人", "必填。要移除的次级管理员 QQ 号,或直接 @ 对方"),
             ),
             handler=_handle_del_admin,
+        ),
+        Command(
+            name="linkqq",
+            description=(
+                "把 @ 到的用户与本通道真实 QQ 号映射：官方合成 ID 之后会显示为 QQ 号，"
+                "管理员/名单也能按真实 QQ 号识别该用户"
+            ),
+            permission=PERM_SUB_ADMIN,
+            usage="<@用户> <QQ号>",
+            params=(
+                ("@用户", "必填。要映射的当前通道用户（官方通道的合成 ID 只能由 agent 工具映射）"),
+                ("QQ号", "必填。真实 QQ 号（5~11 位纯数字）"),
+            ),
+            handler=_handle_link_qq,
         ),
         Command(
             name="sleep",
@@ -725,6 +741,29 @@ def _ai_reply_available(ctx: CommandContext) -> bool:
         return False
 
 
+async def _handle_link_qq(ctx: CommandContext) -> str:
+    """把命令里 @ 到的用户与真实 QQ 号绑定（管理员级）。"""
+    message = ctx.message
+    bot_account = ctx.service._bot_account(message)
+    targets = [qq for qq in ctx.at_qqs if qq != bot_account]
+    if not targets:
+        return (
+            "请 @ 要映射的用户并附上 QQ 号：/linkqq @用户 <QQ号>\n"
+            "（官方通道不能 @ 其他用户，请让 agent 用 user_identity__link_user_qq 工具映射）"
+        )
+    if len(targets) > 1:
+        return "一次只能 @ 一个用户。"
+    qq_args = [arg for arg in ctx.args if arg.isdigit()]
+    if len(qq_args) != 1:
+        return "用法：/linkqq @用户 <QQ号>（QQ 号为 5~11 位纯数字）"
+    qq_number = int(qq_args[0])
+    if not looks_like_real_qq(qq_number):
+        return "QQ 号必须是 5~11 位纯数字。"
+    channel = str(getattr(message, "neobot_channel", "") or "") or None
+    ok, message_text = link_user_qq(targets[0], qq_number, channel=channel)
+    return message_text if ok else f"映射失败：{message_text}"
+
+
 async def _handle_add_admin(ctx: CommandContext) -> str:
     return await _modify_admin(ctx, add=True)
 
@@ -740,6 +779,9 @@ async def _modify_admin(ctx: CommandContext, *, add: bool) -> str:
     卡片只画头像 + 人数，纯文本降级也只说人数（issue #85）。
     """
     target_qq = _extract_target_qq(ctx)
+    if target_qq is not None:
+        # 官方合成 ID 已人工映射时，管理员名单统一存真实 QQ 号。
+        target_qq = qq_for_user(target_qq) or target_qq
     if target_qq is None:
         # 参数缺失：一行提示就够，不上卡片；但仍然**不带任何号码**
         return (

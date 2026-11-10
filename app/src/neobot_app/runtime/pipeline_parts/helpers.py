@@ -5,7 +5,7 @@ from __future__ import annotations
 from neobot_adapter.model.message import GroupMessage
 from neobot_adapter.model.message import PrivateMessage
 
-from neobot_app.bot_accounts import display_user_id
+from neobot_app.user_identity import display_user_id
 
 
 def _build_poke_action_text(
@@ -74,7 +74,7 @@ def _sender_name(message: PrivateMessage | GroupMessage) -> str:
             if value:
                 return str(value)
     user_id = getattr(message, "user_id", None)
-    return display_user_id(user_id)
+    return display_user_id(user_id, getattr(message, "neobot_channel", None))
 
 def _credential_message_text(message: PrivateMessage | GroupMessage) -> str:
     """提取消息的纯文本内容(不含"发送者: "前缀,用于凭据匹配)。

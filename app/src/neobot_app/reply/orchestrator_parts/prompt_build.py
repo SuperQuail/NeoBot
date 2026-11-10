@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 from neobot_contracts.models import ConversationRef
-from neobot_app.bot_accounts import bot_account_for_event, id_label, looks_like_real_qq
+from neobot_app.bot_accounts import bot_account_for_event, looks_like_real_qq
+from neobot_app.user_identity import id_label, qq_for_user
 from neobot_app.prompt.blocks import Stage, blocks_for
 from neobot_app.prompt.context import Scope
 from neobot_app.reply.event import ReplyEvent, ReplyState
@@ -270,7 +271,10 @@ class PromptBuildMixin:
         msg_type = getattr(message, "message_type", "")
         # 官方通道的 user/group id 是开放平台 13 位合成 ID，不是 QQ 号；提示词
         # 里按 ID 规模统一标注，避免模型拿合成 ID 去拼 qlogo/资料链接或加好友。
-        sender_label = id_label(sender_id) if sender_id else "QQ"
+        event_channel = str(getattr(event, "neobot_channel", "") or "") or None
+        # 人工映射过的官方合成 ID 在提示词里直接显示真实 QQ 号。
+        sender_value = (qq_for_user(sender_id, event_channel) or sender_id) if sender_id else ""
+        sender_label = id_label(sender_id, event_channel) if sender_id else "QQ"
         if isinstance(message, GroupMessage) or msg_type == "group":
             group_id = getattr(message, "group_id", None) or queue_key
             lines = [
@@ -279,9 +283,9 @@ class PromptBuildMixin:
                 f"{'群号' if looks_like_real_qq(group_id) else '群 ID'}：{group_id}",
             ]
             if sender_name and sender_id:
-                lines.append(f"消息发送者：{sender_name}（{sender_label}：{sender_id}）")
+                lines.append(f"消息发送者：{sender_name}（{sender_label}：{sender_value}）")
             elif sender_id:
-                lines.append(f"消息发送者{sender_label}：{sender_id}")
+                lines.append(f"消息发送者{sender_label}：{sender_value}")
             return "\n".join(lines)
 
         lines = [
@@ -289,7 +293,7 @@ class PromptBuildMixin:
             "会话类型：私聊",
         ]
         if sender_name and sender_id:
-            lines.append(f"聊天对象：{sender_name}（{sender_label}：{sender_id}）")
+            lines.append(f"聊天对象：{sender_name}（{sender_label}：{sender_value}）")
         elif sender_id:
-            lines.append(f"聊天对象{sender_label}：{sender_id}")
+            lines.append(f"聊天对象{sender_label}：{sender_value}")
         return "\n".join(lines)
