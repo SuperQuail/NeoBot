@@ -17,14 +17,20 @@ from neobot_modloader.host import PluginHostFacade
 
 @pytest.fixture
 def subject(tmp_path):
+    from neobot_app.bot_accounts import bind_bot_accounts
+
     host = PluginHostFacade()
     registry = SpeakingPolicyRegistry()
     host.services.register("speaking_policy", registry)
-    host.services.register("config", SimpleNamespace(bot=SimpleNamespace(account="123")))
+    config = SimpleNamespace(bot=SimpleNamespace(account="123"))
+    host.services.register("config", config)
+    # 与 bootstrap 一致：机器人号提供者绑定到同一份运行期配置。
+    bind_bot_accounts(config, None)
     ctx = SimpleNamespace(plugin_host=host, config={}, data_dir=tmp_path, send=AsyncMock())
     runtime = ScheduleRuntime(ctx)
     registry.register("speaking_schedule", runtime.evaluate)
-    return runtime
+    yield runtime
+    bind_bot_accounts(None, None)
 
 
 def command(args, *, user=1, kind="group"):

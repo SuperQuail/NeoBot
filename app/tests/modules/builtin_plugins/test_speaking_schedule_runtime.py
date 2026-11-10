@@ -36,6 +36,7 @@ def test_clock_validation():
 @pytest.fixture
 async def runtime(tmp_path):
     import shutil
+    from neobot_app.bot_accounts import bind_bot_accounts
     from neobot_app.builtin_plugins import builtin_plugin_dirs
     from neobot_app.runtime.speaking_policy import SpeakingPolicyRegistry
     from neobot_app.commands.registry import CommandRegistry
@@ -44,6 +45,8 @@ async def runtime(tmp_path):
     from neobot_modloader.state import PluginStateStore
     from neobot_contracts.ports.logging import NullLogger
 
+    # 与 bootstrap 一致：机器人号提供者绑定到当前配置（单通道回退 config）
+    bind_bot_accounts(SimpleNamespace(bot=SimpleNamespace(account="123")), None)
     root = tmp_path / "official"
     shutil.copytree(builtin_plugin_dirs()[0] / "speaking_schedule", root / "speaking_schedule")
     host = PluginHostFacade()
@@ -67,6 +70,9 @@ async def runtime(tmp_path):
     yield rt, policy, commands
     for name in reversed(rt.manager.names()):
         await rt.unload_plugin(name)
+    from neobot_app.bot_accounts import bind_bot_accounts
+
+    bind_bot_accounts(None, None)
 
 
 async def test_real_lifecycle_consumer_hook(runtime):
@@ -182,3 +188,67 @@ async def test_dashboard_save_applies_consumer_without_reloading(runtime, monkey
     assert policy.evaluate(ConversationRef("group", "42")).allowed
     reload.assert_not_awaited()
     assert saved["config_hot_reload"] is True
+
+
+# ── 双通道：账号来自事件 self_id / 命令消息 ─────────────────────
+
+
+async def test_account_prefers_latest_event_self_id_over_config(runtime):
+    """双通道：最近事件 self_id 与 config.bot.account 不同时，以事件为准。"""
+    rt, _, _ = runtime
+    assert (await rt.set_enabled("speaking_schedule", True)).ok
+    consumer = rt.control.config_consumer("speaking_schedule")
+    assert consumer.account == "123"
+
+    now = int(datetime.now(timezone.utc).timestamp())
+    await rt.hook_bus.dispatch(
+        SimpleNamespace(
+            raw_event={"post_type": "message", "self_id": 456, "time": now},
+            consumed=False,
+        )
+    )
+
+    assert consumer.account == "456"
+    assert "正常" in consumer.clock.status()
+
+
+def test_account_for_command_uses_message_self_id_then_runtime_fallback():
+    """命令侧优先 ctx.message 的 self_id；无消息时回退运行时账号。"""
+    from neobot_app.builtin_plugins.speaking_schedule.commands import account_for_command
+
+    runtime = SimpleNamespace(account="123")
+    assert account_for_command(runtime, SimpleNamespace(message=SimpleNamespace(self_id=456))) == "456"
+    assert account_for_command(runtime, SimpleNamespace(message=None)) == "123"
+
+
+async def test_command_mute_is_recorded_under_message_self_id(runtime):
+    """双通道：/作息 静默 记到消息所属机器人号上，不落到 config.bot.account。"""
+    from neobot_app.builtin_plugins.speaking_schedule.commands import run_command
+
+    rt, _, _ = runtime
+    assert (await rt.set_enabled("speaking_schedule", True)).ok
+    consumer = rt.control.config_consumer("speaking_schedule")
+    sent = []
+
+    class _FakeCtx:
+        service = SimpleNamespace(permissions=SimpleNamespace(can=lambda *args: True))
+        kind = "group"
+        conv_id = "42"
+        user_id = 1
+        args = ["静默", "默认", "60m"]
+        message = SimpleNamespace(self_id=456, user_id=1)
+
+        async def send(self, conversation, text):
+            sent.append((conversation, text))
+
+    fake_runtime = SimpleNamespace(
+        account="123",
+        mutes=consumer.mutes,
+        registry=consumer.registry,
+        ctx=_FakeCtx(),
+    )
+    await run_command(fake_runtime, _FakeCtx())
+
+    assert consumer.mutes.remaining("456", "default") > 0
+    assert consumer.mutes.remaining("123", "default") == 0
+    assert len(sent) == 1

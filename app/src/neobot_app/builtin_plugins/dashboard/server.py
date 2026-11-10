@@ -274,6 +274,10 @@ class DashboardServer:
 
     async def start(self) -> str | None:
         # 机器人通道页是面板自己的自包含页面（不经 React 构建），随面板启动挂载。
+        # 测试会用 object.__new__ 造只带少量属性的 server 直接验证端口逻辑，
+        # 这里补一次空扩展表，避免与启动地址测试的构造方式耦合。
+        if not hasattr(self, "_extensions"):
+            self._extensions = {}
         self.register_extension("qqbot", QQBotPageExtension())
         app = self._make_app()
         runner = web.AppRunner(app, access_log=None, shutdown_timeout=5)

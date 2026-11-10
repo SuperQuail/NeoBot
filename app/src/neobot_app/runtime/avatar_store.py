@@ -44,6 +44,7 @@ from typing import Any, Awaitable, Callable
 from neobot_contracts.ports.logging import Logger
 from neobot_contracts.time_context import to_utc
 
+from neobot_app.bot_accounts import looks_like_real_qq
 from neobot_app.core.constants import AVATAR_DIR
 from neobot_app.time_context import monotonic_seconds, now_utc
 from neobot_app.utils.logger import get_module_logger
@@ -391,7 +392,13 @@ class AvatarStore:
         return await self._fetch_from_qq(key)
 
     async def _fetch_from_qq(self, key: str) -> bytes:
-        """按既有约定从 qlogo 取 640px 头像（唯一的联网点）。"""
+        """按既有约定从 qlogo 取 640px 头像（唯一的联网点）。
+
+        官方通道的用户 ID 是 13 位合成号，qlogo 认不出；只有看起来像真实 QQ 号
+        的 key 才发请求，合成号直接失败（由调用方计入失败/冷却），不产生网络调用。
+        """
+        if not looks_like_real_qq(key):
+            raise ValueError(f"不是真实 QQ 号，跳过 qlogo 头像请求: {key}")
         from neobot_app.utils.http import image_http_client
 
         url = QQ_AVATAR_URL_TEMPLATE.format(user_id=key)

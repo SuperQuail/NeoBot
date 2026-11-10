@@ -1,6 +1,7 @@
 """Permission-gated /作息 management with narrowly scoped reply bypass."""
 
 import re
+from neobot_app.bot_accounts import bot_account_for_message
 from neobot_contracts.models import ConversationRef
 from .config import Window
 
@@ -9,6 +10,13 @@ HELP = (
     "/作息 静默 默认|本群|本私聊 30m；/作息 恢复 默认|本群|本私聊。"
     "星期1–7为周一至周日；时长单位s/m/h/d；设置将替换该范围时段。"
 )
+
+
+def account_for_command(runtime, ctx):
+    """命令侧机器人账号：优先消息级 self_id，缺失时回退运行时账号（其内部回退主账号）。"""
+    message = getattr(ctx, "message", None)
+    account = bot_account_for_message(message) if message is not None else 0
+    return str(account or runtime.account or "")
 
 
 def scope_for(label, conversation):
@@ -27,25 +35,26 @@ async def run_command(runtime, ctx):
     if permissions is None or not permissions.can(ctx.user_id, 1):
         return None
     conversation = ConversationRef(ctx.kind, str(ctx.conv_id))
+    account = account_for_command(runtime, ctx)
     args = list(ctx.args)
     try:
         if args == ["状态"]:
             text = runtime.status(conversation)
         elif len(args) == 2 and args[0] == "恢复":
             scope = scope_for(args[1], conversation)
-            if not runtime.account:
+            if not account:
                 raise ValueError("宿主未配置机器人账号")
-            runtime.mutes.clear(runtime.account, scope)
+            runtime.mutes.clear(account, scope)
             text = "已解除该范围临时静默；日程和睡眠状态仍然生效。"
         elif len(args) == 3 and args[0] == "静默":
             scope = scope_for(args[1], conversation)
             duration = re.fullmatch(r"([1-9]\d{0,8})([smhd])", args[2])
             if duration is None:
                 raise ValueError("时长格式错误")
-            if not runtime.account:
+            if not account:
                 raise ValueError("宿主未配置机器人账号")
             seconds = int(duration[1]) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[duration[2]]
-            runtime.mutes.set(runtime.account, scope, seconds)
+            runtime.mutes.set(account, scope, seconds)
             text = "已设置临时静默。"
         elif len(args) in (4, 5) and args[0] == "设置":
             scope = scope_for(args[1], conversation)
