@@ -157,6 +157,30 @@ def test_mention_inside_command_keeps_token_spaces(workdir) -> None:
     assert text.split() == ["/linkqq", "3514733681"]
 
 
+def test_full_group_message_with_bot_marker_gets_bot_at(workdir) -> None:
+    """群全量消息 content 里的 @bot 标记也要转成 at 段，否则命令管线无法触发。"""
+    mapper = _mapper(workdir)
+
+    event = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_MESSAGE_CREATE",
+            _group_data(
+                content="<@!BOTOPENID> /linkqq <@!member-openid-2> 3514733681",
+                mentions=[{"id": "member-openid-2", "username": "枫", "bot": False}],
+            ),
+        )
+    )
+
+    assert event is not None
+    assert {"type": "at", "data": {"qq": 1020304}} in event["message"]
+    text = "".join(
+        str(segment.get("data", {}).get("text") or "")
+        for segment in event["message"]
+        if segment["type"] == "text"
+    )
+    assert text.split() == ["/linkqq", "3514733681"]
+
+
 def test_group_plain_message_has_no_at_segment(workdir) -> None:
     mapper = _mapper(workdir)
 

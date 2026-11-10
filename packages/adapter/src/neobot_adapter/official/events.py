@@ -191,7 +191,12 @@ class EventMapper:
             message.append({"type": "at", "data": {"qq": self.self_id}})
         _append_quote(message, data)
         _append_content_with_mentions(
-            message, data.get("content"), data.get("mentions"), self._identity
+            message,
+            data.get("content"),
+            data.get("mentions"),
+            self._identity,
+            bot_self_id=self.self_id,
+            unknown_is_bot=True,
         )
         _append_attachments(message, data.get("attachments"))
         event.update(
@@ -249,6 +254,9 @@ def _append_content_with_mentions(
     content: Any,
     mentions: Any,
     identity: IdentityMap,
+    *,
+    bot_self_id: int = 0,
+    unknown_is_bot: bool = False,
 ) -> None:
     """按官方 content 里的 @ 标记顺序生成 text/at 段。
 
@@ -279,7 +287,17 @@ def _append_content_with_mentions(
             name = str(item.get("username") or "").strip()
             message.append({"type": "at", "data": {"qq": str(user_id), "name": name}})
             seen.add(openid)
-        # 未在 mentions 里的标记（例如 @机器人本身）直接丢弃，不制造假用户。
+        elif unknown_is_bot and bot_self_id:
+            # 群全量消息（GROUP_MESSAGE_CREATE）的 content 仍带 @机器人 标记，
+            # 但 mentions 明确不含机器人；未知标记就是机器人自己，补成 at 段，
+            # 否则群命令触发条件「被 @bot」无法满足。
+            if not any(
+                segment.get("type") == "at"
+                and str(segment.get("data", {}).get("qq")) == str(bot_self_id)
+                for segment in message
+            ):
+                message.append({"type": "at", "data": {"qq": bot_self_id}})
+        # 其余未知标记（非机器人）无法解析出用户，丢弃，不制造假用户。
         cursor = match.end()
     if cursor < len(text):
         _append_text(message, text[cursor:])
