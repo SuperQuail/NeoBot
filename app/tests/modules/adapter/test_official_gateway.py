@@ -372,3 +372,17 @@ async def test_gateway_wait_connected_times_out_and_stop_is_idempotent(
     await gateway.stop()
     await gateway.stop()
     assert not gateway.connected
+
+
+async def test_gateway_clears_connected_when_connection_ends(tmp_path: Path) -> None:
+    """连接结束后立即不可用，重连退避期间不能继续按 connected 选路。"""
+    gateway, ws, _http, _urls = _make_gateway(tmp_path)
+    await gateway.start()
+    ws.incoming.put_nowait(_frame(10, {"heartbeat_interval": 60_000}))
+    ws.incoming.put_nowait(_frame(0, {"session_id": "sess-1"}, event_type="READY"))
+    assert await gateway.wait_connected(2.0)
+    assert gateway.connected
+
+    ws.incoming.put_nowait(_STOP)
+    assert await _wait_for(lambda: not gateway.connected)
+    await gateway.stop()

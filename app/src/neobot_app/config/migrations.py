@@ -539,6 +539,26 @@ def migrate_v10_to_v11(old: dict) -> dict:
     return new
 
 
+@Config.migration(from_version="0.11.0", to_version="0.11.1")
+def migrate_v110_to_v111(old: dict) -> dict:
+    """迁移 0.11.0 -> 0.11.1：官方开放平台默认开发者写入超管配置默认值。
+
+    第一个真实用户就是创建机器人时的号主；不再把 9000000000001 硬编码在权限
+    判定里，而是作为 chat.admin_accounts 的默认值写进配置，便于部署者查看/修改。
+    """
+    new: dict[str, Any] = dict(old)
+    new["version"] = "0.11.1"
+    chat = old.get("chat")
+    migrated = dict(chat) if isinstance(chat, dict) else {}
+    admins = migrated.get("admin_accounts")
+    admins = [str(item) for item in admins] if isinstance(admins, list) else []
+    if "9000000000001" not in admins:
+        admins.insert(0, "9000000000001")
+    migrated["admin_accounts"] = admins
+    new["chat"] = migrated
+    return new
+
+
 def ensure_legacy_adapter_mode(data: dict) -> None:
     """没有 version 字段的更老配置：按「老配置升级」语义补 onebot mode（就地修改）。"""
     adapter = data.get("adapter")

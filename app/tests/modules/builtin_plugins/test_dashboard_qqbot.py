@@ -90,11 +90,15 @@ class _Adapter:
 
     def __init__(self, **fields: object) -> None:
         self.rebind_calls = 0
+        self.unbind_calls = 0
         self.ensure_calls = 0
         self.__dict__.update(fields)
 
     async def rebind(self) -> None:
         self.rebind_calls += 1
+
+    async def unbind(self) -> None:
+        self.unbind_calls += 1
 
     async def ensure_accounts(self) -> None:
         self.ensure_calls += 1
@@ -457,6 +461,25 @@ async def test_rebind_returns_503_when_adapter_lacks_capability() -> None:
     api, _, _ = _make_api(adapter=object())
 
     response = await api.qqbot_rebind(_Request())
+
+    assert response.status == 503
+    assert "不支持" in json.loads(response.text)["error"]
+
+
+async def test_unbind_calls_adapter_when_supported() -> None:
+    adapter = _adapter()
+    api, _, _ = _make_api(adapter=adapter)
+
+    response = await api.qqbot_unbind(_Request())
+
+    assert response.status == 200
+    assert adapter.unbind_calls == 1
+
+
+async def test_unbind_returns_503_when_adapter_lacks_capability() -> None:
+    api, _, _ = _make_api(adapter=object())
+
+    response = await api.qqbot_unbind(_Request())
 
     assert response.status == 503
     assert "不支持" in json.loads(response.text)["error"]

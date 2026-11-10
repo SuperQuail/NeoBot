@@ -295,3 +295,17 @@ async def test_api_error_returns_failed_response(workdir) -> None:
 
     assert result.status == "failed"
     assert "官方接口炸了" in (result.message or "")
+
+
+async def test_auth_error_is_reported_as_failed_response(workdir) -> None:
+    """token 获取失败不能从 send() 抛出，必须返回 failed 响应。"""
+    from neobot_adapter.official.auth import OfficialAuthError
+
+    sender, _api, identity, _, _ = _sender(
+        workdir, api=_FakeApi(failure=OfficialAuthError("token boom"))
+    )
+
+    result = await sender.send(_private(identity), "你好")
+
+    assert result.status == "failed"
+    assert "token boom" in result.message

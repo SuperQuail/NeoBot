@@ -406,3 +406,35 @@ async def test_send_before_start_returns_failed(workdir, monkeypatch) -> None:
 
     assert result.status == "failed"
     assert "尚未连接" in (result.message or "")
+
+
+def test_config_credentials_take_priority_over_stored(workdir) -> None:
+    from neobot_adapter.official.auth import CredentialStore
+
+    CredentialStore(workdir).save("stored-app", "stored-secret")
+    adapter = adapter_module.OfficialAdapter(
+        OfficialSettings(app_id="config-app", client_secret="config-secret", data_dir=workdir),
+        data_dir=workdir,
+    )
+
+    credentials = adapter._load_credentials()
+    assert credentials is not None
+    assert credentials.app_id == "config-app"
+    assert credentials.client_secret == "config-secret"
+
+
+async def test_unbind_removes_stored_credentials(workdir) -> None:
+    from neobot_adapter.official.auth import CredentialStore
+
+    store = CredentialStore(workdir)
+    store.save("stored-app", "stored-secret")
+    adapter = adapter_module.OfficialAdapter(
+        OfficialSettings(app_id="", client_secret="", data_dir=workdir),
+        data_dir=workdir,
+    )
+    assert adapter.bound is True
+
+    await adapter.unbind()
+
+    assert not store.path.exists()
+    assert adapter.bound is False

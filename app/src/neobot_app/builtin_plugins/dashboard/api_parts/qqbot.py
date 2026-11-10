@@ -288,6 +288,24 @@ class QqbotMixin:
             )
         return _json_ok({"mode": mode, **result})
 
+    async def qqbot_unbind(self, request: web.Request) -> web.Response:
+        """删除扫码落盘的官方凭据并断开，之后可用配置凭据或重新扫码。"""
+        denied = self._require_manage(request, action="解绑官方机器人")
+        if denied is not None:
+            return denied
+        adapter = self._service("adapter")
+        unbind = getattr(adapter, "unbind", None) if adapter is not None else None
+        if not callable(unbind):
+            return _json_error(
+                "当前适配器不支持解绑官方机器人（请先把模式切到官方或双通道）", status=503
+            )
+        try:
+            await unbind()
+        except Exception as exc:
+            self.logger.exception(f"解绑官方机器人失败: {exc}")
+            return _json_error(f"解绑官方机器人失败: {exc}", status=500)
+        return _json_ok({"message": "已解绑官方机器人，可重新扫码或用配置中的 AppID/AppSecret 启动"})
+
     async def qqbot_rebind(self, request: web.Request) -> web.Response:
         """让官方适配器重新发起扫码绑定（当前没有官方后端时返回 503）。"""
         denied = self._require_manage(request, action="重新扫码绑定官方机器人")

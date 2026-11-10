@@ -761,8 +761,12 @@ class SwitchableAdapter:
             reverse_ws_access_token=str(
                 getattr(adapter_cfg, "reverse_ws_access_token", base.reverse_ws_access_token) or ""
             ),
-            qq_appid=str(getattr(adapter_cfg, "qq_appid", base.qq_appid) or ""),
-            qq_client_secret=str(getattr(adapter_cfg, "qq_client_secret", base.qq_client_secret) or ""),
+            # 官方凭据可只放在环境变量（装配阶段已合入 base）；配置里留空时保留
+            # 装配值，避免热重载把 env-only 的机器人打回扫码绑定。
+            qq_appid=str(getattr(adapter_cfg, "qq_appid", "") or base.qq_appid),
+            qq_client_secret=str(
+                getattr(adapter_cfg, "qq_client_secret", "") or base.qq_client_secret
+            ),
             qq_markdown=bool(getattr(adapter_cfg, "qq_markdown", base.qq_markdown)),
             qq_base_url=str(getattr(adapter_cfg, "qq_base_url", base.qq_base_url) or base.qq_base_url),
             qq_token_url=str(getattr(adapter_cfg, "qq_token_url", base.qq_token_url) or base.qq_token_url),

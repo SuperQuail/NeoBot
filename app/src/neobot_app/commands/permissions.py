@@ -17,19 +17,14 @@ from neobot_app.commands.model import (
 from neobot_app.user_identity import trusted_qq_for_user
 
 
-#: 开放平台默认的开发者的合成 ID（官方通道首个 identity），默认拥有超级管理员权限。
-#: 放在代码里而不是配置文件，保证老配置升级/新部署都生效；可在以后按需改成配置项。
-RESERVED_SUPER_ADMIN_IDS = frozenset({9000000000001})
-
-
 class PermissionManager:
     def __init__(self, config: Any) -> None:
         self._config = config  # ConfigProxy,动态读取
 
     @property
     def super_admins(self) -> set[int]:
-        """超级管理员 QQ 号集合(配置不可被命令修改；含保留的官方开发者 ID)。"""
-        return self._admin_set("admin_accounts") | set(RESERVED_SUPER_ADMIN_IDS)
+        """超级管理员 QQ 号集合(配置不可被命令修改)。"""
+        return self._admin_set("admin_accounts")
 
     @property
     def sub_admins(self) -> set[int]:

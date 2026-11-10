@@ -87,6 +87,8 @@ class EventMapper:
         self._dedupe = _EventDedupe()
         #: 机器人自己的合成号；登录后由适配器写入（/users/@me 的 robot_uin）。
         self.self_id = int(self_id or 0)
+        #: 机器人自己的 openid；READY 由适配器写入，用于从 mentions 里认出 @bot。
+        self.bot_openid = ""
 
     def from_dispatch(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         """完整 op0 载荷 → OneBot 事件；非消息事件/重复投递返回 None。"""
@@ -152,7 +154,12 @@ class EventMapper:
         user_id = self._identity.user_id(openid)
         _append_quote(message, data)
         _append_content_with_mentions(
-            message, data.get("content"), data.get("mentions"), self._identity
+            message,
+            data.get("content"),
+            data.get("mentions"),
+            self._identity,
+            bot_self_id=self.self_id,
+            bot_openid=self.bot_openid,
         )
         _append_attachments(message, data.get("attachments"))
         event.update(
@@ -196,6 +203,7 @@ class EventMapper:
             data.get("mentions"),
             self._identity,
             bot_self_id=self.self_id,
+            bot_openid=self.bot_openid,
             unknown_is_bot=True,
         )
         _append_attachments(message, data.get("attachments"))
@@ -239,7 +247,7 @@ def _append_text(message: list[dict[str, Any]], text: str) -> None:
 
 
 def _mention_openid(item: Any) -> str:
-    if not isinstance(item, dict) or item.get("bot") is True:
+    if not isinstance(item, dict):
         return ""
     return str(
         item.get("member_openid")
@@ -249,6 +257,18 @@ def _mention_openid(item: Any) -> str:
     ).strip()
 
 
+def _append_bot_at(message: list[dict[str, Any]], bot_self_id: int) -> None:
+    if not bot_self_id:
+        return
+    if any(
+        segment.get("type") == "at"
+        and str(segment.get("data", {}).get("qq")) == str(bot_self_id)
+        for segment in message
+    ):
+        return
+    message.append({"type": "at", "data": {"qq": bot_self_id}})
+
+
 def _append_content_with_mentions(
     message: list[dict[str, Any]],
     content: Any,
@@ -256,6 +276,7 @@ def _append_content_with_mentions(
     identity: IdentityMap,
     *,
     bot_self_id: int = 0,
+    bot_openid: str = "",
     unknown_is_bot: bool = False,
 ) -> None:
     """按官方 content 里的 @ 标记顺序生成 text/at 段。
@@ -266,6 +287,7 @@ def _append_content_with_mentions(
     没有出现在正文标记里的 mention 追加到末尾（命令层仍能拿到 at_qqs）。
     """
     text = str(content or "")
+    bot_openid = str(bot_openid or "").strip()
     mention_map: dict[str, dict[str, Any]] = {}
     if isinstance(mentions, list):
         for item in mentions:
@@ -281,22 +303,25 @@ def _append_content_with_mentions(
             # 把「/linkqq @用户 123」变成「/linkqq123」而无法匹配命令。
             _append_text(message, text[cursor : match.start()])
         openid = str(match.group(1) or match.group(2) or "").strip()
-        if openid in mention_map:
-            item = mention_map[openid]
+        item = mention_map.get(openid)
+        if item is not None and item.get("bot") is True:
+            # mentions 不含机器人自己，但全量消息可能仍把它列在 mentions；
+            # 只有命中自身 openid 才补 bot at，别的机器人不能冒充。
+            if bot_openid and openid == bot_openid:
+                _append_bot_at(message, bot_self_id)
+            seen.add(openid)
+        elif item is not None:
             user_id = identity.user_id(openid)
             name = str(item.get("username") or "").strip()
             message.append({"type": "at", "data": {"qq": str(user_id), "name": name}})
             seen.add(openid)
-        elif unknown_is_bot and bot_self_id:
+        elif bot_openid and openid == bot_openid:
+            _append_bot_at(message, bot_self_id)
+        elif unknown_is_bot and bot_self_id and not bot_openid:
             # 群全量消息（GROUP_MESSAGE_CREATE）的 content 仍带 @机器人 标记，
             # 但 mentions 明确不含机器人；未知标记就是机器人自己，补成 at 段，
             # 否则群命令触发条件「被 @bot」无法满足。
-            if not any(
-                segment.get("type") == "at"
-                and str(segment.get("data", {}).get("qq")) == str(bot_self_id)
-                for segment in message
-            ):
-                message.append({"type": "at", "data": {"qq": bot_self_id}})
+            _append_bot_at(message, bot_self_id)
         # 其余未知标记（非机器人）无法解析出用户，丢弃，不制造假用户。
         cursor = match.end()
     if cursor < len(text):
@@ -304,6 +329,10 @@ def _append_content_with_mentions(
 
     for openid, item in mention_map.items():
         if openid in seen:
+            continue
+        if item.get("bot") is True:
+            if bot_openid and openid == bot_openid:
+                _append_bot_at(message, bot_self_id)
             continue
         user_id = identity.user_id(openid)
         name = str(item.get("username") or "").strip()

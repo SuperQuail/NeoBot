@@ -6,7 +6,7 @@ covers:
   - app/src/neobot_app/runtime/gateway.py
   - app/src/neobot_app/runtime/inbound_pipeline.py
 verified_against: d525a5b
-verified_hash: 8071ba9d924c
+verified_hash: 56142613ab64
 ---
 
 # 02 适配器入站：反向 WS -> 事件网关 -> 队列 -> 事件管道

@@ -263,6 +263,13 @@ class OfficialAdapter:
         self._bind_state = BindState()
         self._start_bind_flow()
 
+    async def unbind(self) -> None:
+        """删除扫码落盘的凭据并断开；下次启动可重新扫码或改用配置凭据。"""
+        self._credentials.delete()
+        self._bound = False
+        self._bind_state = BindState()
+        await self.stop()
+
     async def ensure_robot_identity(self) -> None:
         """缓存机器人自身 uin/昵称（get_login_info 与群聊 at 段都要用）。"""
         if self._robot_uin or self._api is None:
@@ -475,15 +482,13 @@ class OfficialAdapter:
                 self._logger.warning("官方 HTTP 会话关闭失败", error=str(exc))
 
     def _load_credentials(self) -> Credentials | None:
-        stored = self._credentials.load()
-        if stored is not None:
-            return stored
+        # 显式配置优先于扫码落盘的凭据：否则面板/配置里换了 AppID 会被旧凭据静默覆盖。
         if self._settings.app_id and self._settings.client_secret:
             return Credentials(
                 app_id=self._settings.app_id,
                 client_secret=self._settings.client_secret,
             )
-        return None
+        return self._credentials.load()
 
     async def _generate_robot_uin(self) -> int:
         if self._api is None:
@@ -551,7 +556,10 @@ class OfficialAdapter:
     def _remember_bot_openid(self, data: dict[str, Any]) -> None:
         user = data.get("user") if isinstance(data.get("user"), dict) else {}
         openid = str(user.get("id") or user.get("user_openid") or "").strip()
-        if not openid or self._robot_uin:
+        if not openid:
+            return
+        self._mapper.bot_openid = openid
+        if self._robot_uin:
             return
         # READY 只带机器人 openid；在拿到 /users/@me 的 uin 前，先用它的合成号
         # 当 self_id，保证 at 段有个稳定值。
@@ -659,6 +667,14 @@ class OfficialAdapter:
 
     async def _restart_with_new_credentials(self) -> None:
         was_started = self._started
+        # 扫码得到的新凭据要覆盖运行期 settings，否则 start() 仍会拿旧配置
+        stored = self._credentials.load()
+        if stored is not None:
+            self._settings = replace(
+                self._settings,
+                app_id=stored.app_id,
+                client_secret=stored.client_secret,
+            )
         await self._shutdown_runtime()
         self._started = False
         if was_started:

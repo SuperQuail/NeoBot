@@ -782,6 +782,9 @@ async def _handle_link_qq(ctx: CommandContext) -> str:
         return "无法确定要映射的用户。"
     if target == bot_account:
         return "不能把机器人账号映射成普通用户。"
+    permissions = ctx.service.permissions
+    if qq_number in permissions.super_admins and not permissions.is_super_admin(ctx.user_id):
+        return "超级管理员 QQ 的映射只允许超级管理员操作。"
     channel = str(getattr(message, "neobot_channel", "") or "") or None
     ok, message_text = link_user_qq(
         target, qq_number, channel=channel, trusted=True

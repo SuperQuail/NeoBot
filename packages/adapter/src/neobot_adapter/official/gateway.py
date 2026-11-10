@@ -212,6 +212,10 @@ class OfficialGateway:
             ) from exc
         finally:
             self._ws = None
+            # 连接结束（正常关闭/异常/重连）立即视为不可用，避免重连退避期间
+            # 面板与双通道路由继续按 connected 选路。
+            self._connected.clear()
+            self._ready = False
             # 每次连接结束都要停掉本轮心跳，否则旧心跳会跟随旧 ws 残留。
             await self._cancel_heartbeat()
             with suppress(Exception):

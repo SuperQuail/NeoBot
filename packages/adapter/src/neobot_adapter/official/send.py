@@ -18,6 +18,7 @@ from neobot_contracts.models import ConversationRef
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_adapter.model import response
+from neobot_adapter.official.auth import OfficialAuthError
 from neobot_adapter.official.identity import IdentityMap, MessageIdMap
 from neobot_adapter.official.media import MediaFile, MediaUploader, api_data
 from neobot_adapter.official.settings import OfficialSettings
@@ -281,7 +282,7 @@ class MessageSender:
                         timeout,
                         force_markdown=force_markdown,
                     )
-                except OfficialApiError as exc:
+                except (OfficialApiError, OfficialAuthError) as exc:
                     return _failed(f"官方消息发送失败：{exc}")
                 sent_id = self._track_sent(official_id) or sent_id
         for segment_type, source, file_name in media_items:

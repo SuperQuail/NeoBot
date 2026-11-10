@@ -8,10 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from neobot_app.commands.model import PERM_SUB_ADMIN
-from neobot_app.commands.permissions import (
-    RESERVED_SUPER_ADMIN_IDS,
-    PermissionManager,
-)
+from neobot_app.commands.permissions import PermissionManager
 from neobot_app.user_identity import (
     bind_user_identity,
     display_group_id,
@@ -148,13 +145,16 @@ def test_permission_manager_uses_trusted_mapping_only():
     assert permissions.is_super_admin(SYNTHETIC) is True
 
 
-def test_reserved_developer_id_is_super_admin():
-    config = SimpleNamespace(
-        chat=SimpleNamespace(admin_accounts=[], sub_admin_accounts=[])
+def test_developer_id_is_super_admin_only_when_in_config():
+    """9000000000001 是 chat.admin_accounts 的默认值，不再由权限代码硬编码。"""
+    without = PermissionManager(
+        SimpleNamespace(chat=SimpleNamespace(admin_accounts=[], sub_admin_accounts=[]))
     )
-    permissions = PermissionManager(config)
+    assert without.is_super_admin(RESERVED) is False
 
-    assert RESERVED_SUPER_ADMIN_IDS == {RESERVED}
-    assert permissions.is_super_admin(RESERVED) is True
-    assert permissions.can(RESERVED, PERM_SUB_ADMIN) is True
-    assert permissions.is_super_admin(9000000000009) is False
+    configured = PermissionManager(
+        SimpleNamespace(chat=SimpleNamespace(admin_accounts=[RESERVED], sub_admin_accounts=[]))
+    )
+    assert configured.is_super_admin(RESERVED) is True
+    assert configured.can(RESERVED, PERM_SUB_ADMIN) is True
+    assert configured.is_super_admin(9000000000009) is False

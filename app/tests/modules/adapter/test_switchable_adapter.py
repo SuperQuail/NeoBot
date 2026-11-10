@@ -559,3 +559,19 @@ async def test_adapter_supervisor_raises_when_channel_switch_fails() -> None:
 
     with pytest.raises(RuntimeError, match="official 适配器启动失败"):
         await AdapterSupervisor(_Adapter()).apply_config(object())
+
+
+def test_settings_from_config_keeps_env_credentials() -> None:
+    """env-only 官方凭据在热重载时不能被 config 空串覆盖。"""
+    adapter = SwitchableAdapter(
+        AdapterSettings(mode="official", qq_appid="env-id", qq_client_secret="env-secret")
+    )
+    config = SimpleNamespace(
+        adapter=SimpleNamespace(mode="official", qq_appid="", qq_client_secret="")
+    )
+
+    settings = adapter._settings_from_config(config)
+
+    assert settings is not None
+    assert settings.qq_appid == "env-id"
+    assert settings.qq_client_secret == "env-secret"

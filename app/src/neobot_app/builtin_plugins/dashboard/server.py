@@ -480,6 +480,7 @@ class DashboardServer:
         self._route(app, "GET", "/api/qqbot/status", self.api.qqbot_status)
         self._route(app, "POST", "/api/qqbot/switch", self.api.qqbot_switch)
         self._route(app, "POST", "/api/qqbot/bind/rebind", self.api.qqbot_rebind)
+        self._route(app, "POST", "/api/qqbot/bind/unbind", self.api.qqbot_unbind)
 
         self._route(app, "GET", "/favicon.ico", self._favicon)
         self._route(app, "GET", "/image/{name}", self._image)

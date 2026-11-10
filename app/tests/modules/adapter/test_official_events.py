@@ -287,3 +287,26 @@ def test_message_without_author_is_skipped(workdir) -> None:
     event = mapper.from_dispatch(_dispatch("C2C_MESSAGE_CREATE", _c2c_data(author={})))
 
     assert event is None
+
+
+def test_bot_mention_in_mentions_adds_bot_at_without_content_marker(workdir) -> None:
+    """全量消息若剥掉了 content 里的 @bot，仍可从 mentions 的 bot=true 认出。"""
+    mapper = _mapper(workdir)
+    mapper.bot_openid = "bot-openid"
+
+    event = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_MESSAGE_CREATE",
+            _group_data(
+                content="/linkqq 3514733681",
+                mentions=[
+                    {"id": "bot-openid", "username": "机器人", "bot": True},
+                    {"id": "other-bot-openid", "username": "别的机器人", "bot": True},
+                ],
+            ),
+        )
+    )
+
+    assert event is not None
+    assert {"type": "at", "data": {"qq": 1020304}} in event["message"]
+    assert all(segment.get("data", {}).get("name") != "别的机器人" for segment in event["message"])

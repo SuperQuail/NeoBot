@@ -143,6 +143,21 @@ async def test_one_arg_links_sender_self():
     assert "已映射" in sent[-1][2]
 
 
+async def test_sub_admin_cannot_map_to_super_admin_qq():
+    """超管 QQ 的映射只允许超管操作，防止次级管理员自提权。"""
+    sent: list[tuple] = []
+    service = _service(sent)
+
+    await service.handle_message(
+        _message("/linkqq 10000", user_id=SUB, at_qqs=[BOT]),
+        kind="group",
+        queue_key="100",
+    )
+
+    assert trusted_qq_for_user(SUB) is None
+    assert "只允许超级管理员" in sent[-1][2]
+
+
 async def test_at_segment_separates_command_and_argument():
     """没有显式空格的「/linkqq@用户 123」也要能按 at 段分隔出命令参数。"""
     sent: list[tuple] = []
