@@ -397,7 +397,13 @@ class SwitchableAdapter:
         await self._dispatcher.publish(event)
 
     def channels_for_conversation(self, conversation: ConversationRef) -> tuple[str, ...]:
-        """该会话出现过消息的通道（固定顺序）；从未出现过返回 ()。"""
+        """该会话出现过消息的通道（固定顺序）；从未出现过返回 ()。
+
+        官方不提供 group_openid ↔ QQ 群号映射（群信息接口只返回 openid/群名等，
+        不同 AppID 的 openid 也不同），同一个真实群在两条通道就是两个会话 id；
+        这里只按「本进程见过的会话 id」判断通道，不做跨通道猜测关联。
+        """
+
         channels = self._conversation_channels.get((conversation.kind, str(conversation.id)), ())
         return tuple(channel for channel in _CHANNELS if channel in channels)
 
