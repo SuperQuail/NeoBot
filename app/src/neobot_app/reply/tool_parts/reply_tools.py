@@ -402,7 +402,13 @@ class _ReplyToolsMixin:
                 "[msg_id=...]、[被回复消息] 这类系统标注（它们是系统给你读的，不是输出格式），"
                 "也不要把思考过程、草稿、计划或 <think> 标签写进去。"
                 "例如要回一句「你好呀」，text 就写 \"你好呀\"，不要写 \"12: 某群友: 你好呀\"；"
-                "要引用某条消息时用 reply_to_number 传编号，正文里不要再写一遍编号和名字。",
+                "要引用某条消息时用 reply_to_number 传编号，正文里不要再写一遍编号和名字。"
+                + (
+                    "官方通道注意：发图片用 emoji_numbers（或 send_long_reply 发 Markdown 图），"
+                    "发语音用 speak；官方协议不支持拍一拍、QQ 表情回应与 QQ 内置表情搜索。"
+                    if self._official_platform
+                    else ""
+                ),
                 {
                     "properties": {
                         "text": {

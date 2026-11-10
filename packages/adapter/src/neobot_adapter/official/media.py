@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import ipaddress
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -98,12 +99,21 @@ class MediaUploader:
             return cached
 
         if source.startswith(("http://", "https://")):
-            result = await self._upload_url(api, kind, openid, file_type, source, file_name, timeout)
-            if result is None:
+            if _is_private_media_url(source):
+                # 官方平台访问不到本机/内网 FileServer：本地下载后走分片上传。
                 data = await _download_url(source)
                 result = await self._upload_bytes(
                     api, kind, openid, file_type, data, file_name or _name_of(source), timeout
                 )
+            else:
+                result = await self._upload_url(
+                    api, kind, openid, file_type, source, file_name, timeout
+                )
+                if result is None:
+                    data = await _download_url(source)
+                    result = await self._upload_bytes(
+                        api, kind, openid, file_type, data, file_name or _name_of(source), timeout
+                    )
         else:
             data, name = _read_source(source, file_name)
             result = await self._upload_bytes(api, kind, openid, file_type, data, name, timeout)
@@ -358,6 +368,25 @@ def _read_local(path: Path, file_name: str) -> bytes:
         return path.read_bytes()
     except OSError as exc:
         raise MediaUploadError(f"读取本地富媒体失败: {path}: {exc}") from exc
+
+
+def _is_private_media_url(url: str) -> bool:
+    """URL 指向本机/内网/本地主机名时，官方平台无法拉取，必须本地下载后上传。"""
+    host = str(urlparse(url).hostname or "").strip().casefold()
+    if not host:
+        return True
+    if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return bool(
+        address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or address.is_unspecified
+    )
 
 
 def _name_of(url: str) -> str:

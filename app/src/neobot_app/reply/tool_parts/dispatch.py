@@ -10,6 +10,19 @@ from neobot_chat.schema.types import ToolDefinition
 
 from neobot_app.reply.tool_parts.common import _SKILL_GUARD_BASE_TOOLS, _SKILL_INTERNAL_KEYS
 
+#: 官方 QQ 机器人协议没有等价能力的工具：官方通道下不暴露、也不允许执行。
+_OFFICIAL_HIDDEN_TOOLS = frozenset({"react_emoji", "search_qq_emoji", "poke_user"})
+#: 这些技能整包依赖 OneBot/NapCat 专属能力（群管理、好友管理、合并转发、任意 API 调用）。
+_OFFICIAL_HIDDEN_SKILLS = frozenset(
+    {"onebot", "group_management", "friend_management", "forward_message"}
+)
+
+
+def _official_tool_supported(name: str) -> bool:
+    if name in _OFFICIAL_HIDDEN_TOOLS:
+        return False
+    return not any(name.startswith(skill + "__") for skill in _OFFICIAL_HIDDEN_SKILLS)
+
 
 class _DispatchMixin:
     def _shared_agent_tools(self) -> Any:
@@ -34,6 +47,8 @@ class _DispatchMixin:
         任务工具模式只决定「任务型 Agent(解题/子 Agent)如何编排」;
         主回复管线始终直接调用业务工具,不因切到 PTC 而把工具换成单个 run_code。
         """
+        if self._official_platform and not _official_tool_supported(name):
+            return False
         if not self._policy_authorized(name):
             return False
         shared = self._shared_agent_tools()
@@ -61,6 +76,8 @@ class _DispatchMixin:
         )
 
     def authorization_error(self, name: str) -> str:
+        if self._official_platform and not _official_tool_supported(name):
+            return f"Error: QQ 官方机器人通道不支持工具 {name}（官方协议没有等价能力）"
         if self._allowed_tools and name not in (_SKILL_GUARD_BASE_TOOLS | self._allowed_tools):
             return f"Error: 工具 {name} 不在当前技能允许的工具列表内"
         shared = self._shared_agent_tools()

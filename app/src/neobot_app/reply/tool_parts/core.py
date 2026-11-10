@@ -36,6 +36,7 @@ class _CoreMixin:
         skill_manager: Any = None,
         skills_registry: Any = None,
         allowed_tools: set[str] | None = None,
+        official_platform: bool = False,
         chat_context: str | None = None,
         conv_kind: str = "",
         conv_id: str = "",
@@ -83,6 +84,7 @@ class _CoreMixin:
         self._skill_manager = skill_manager
         self._skills_registry = skills_registry
         self._allowed_tools = allowed_tools
+        self._official_platform = bool(official_platform)
         self._chat_context = chat_context
         self._conv_kind = conv_kind
         self._conv_id = conv_id

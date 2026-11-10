@@ -73,6 +73,42 @@ def _prepare_payload(*, block_size: int = 4, indexes=(0, 1)) -> dict:
     }
 
 
+
+async def test_private_file_server_url_downloads_and_uploads_bytes(workdir, monkeypatch) -> None:
+    """官方平台拉不到 127.0.0.1/内网 FileServer；本地下载后走分片上传。"""
+    api = _FakeApi()
+    api.on("/files", _OK_FILE)
+    api.on("/upload_prepare", _prepare_payload())
+    api.on("/upload_part_finish", {"code": 0, "data": {}})
+    puts: list[tuple[str, bytes]] = []
+
+    async def fake_download(url: str) -> bytes:
+        assert url == "http://127.0.0.1:8099/files/a.png"
+        return b"abcdefgh"
+
+    async def fake_put(url: str, data: bytes) -> None:
+        puts.append((url, data))
+
+    monkeypatch.setattr(media_module, "_download_url", fake_download)
+    monkeypatch.setattr(media_module, "_put_part", fake_put)
+    uploader = MediaUploader(NullLogger())
+
+    result = await uploader.upload(
+        api,
+        kind="group",
+        openid="group-openid",
+        segment_type="image",
+        source="http://127.0.0.1:8099/files/a.png",
+    )
+
+    assert result.file_info == "FILE-INFO"
+    assert puts == [("https://cos.example/0", b"abcd"), ("https://cos.example/1", b"efgh")]
+    # 不走 URL 直传的 /files body，而是分片完成后的 /files 合并请求
+    assert api.calls[0]["body"]["file_type"] == 1
+    assert "url" not in api.calls[0]["body"]
+    assert api.calls[0]["path"].endswith("upload_prepare")
+
+
 async def test_url_source_uploads_by_url(workdir) -> None:
     api = _FakeApi()
     api.on("/files", _OK_FILE)
