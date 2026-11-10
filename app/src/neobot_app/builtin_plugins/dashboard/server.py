@@ -616,6 +616,9 @@ class DashboardServer:
             "worker-src 'self' blob:; base-uri 'none'; form-action 'none'"
         )
         path = self._strip_base(request.path)
+        if path == "/qqbot" or path.startswith("/qqbot/"):
+            # 机器人通道页嵌在面板内容区（同源 iframe）里，保留侧栏；只允许同源嵌套。
+            response.headers["X-Frame-Options"] = "SAMEORIGIN"
         if path.startswith(_API_PREFIX) or self._extension_requires_auth(path):
             response.headers["Cache-Control"] = "no-store"
         from .api_parts.plugin_views import apply_plugin_view_headers

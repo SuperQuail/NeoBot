@@ -473,17 +473,14 @@ async def test_channel_page_metadata_and_self_contained_response() -> None:
     assert extension.name == "qqbot"
     assert extension.prefixes == ("/qqbot",)
     assert extension.auth_prefixes == ("/qqbot",)
-    assert extension.panel_entry() == {
-        "title": "机器人通道",
-        "path": "/qqbot/",
-        "icon": "message",
-        "description": "查看 OneBot 与官方机器人通道并扫码绑定",
-    }
+    # 通道页现在是面板内嵌页面，不再注册成扩展侧栏入口（避免整页覆盖左侧工具栏）
+    assert not hasattr(extension, "panel_entry")
 
     page = await extension.handle_request(SimpleNamespace(path="/qqbot/"), "/qqbot/")
     assert page.status == 200
     assert page.content_type == "text/html"
     assert "机器人通道" in page.text
+    assert "is-embedded" in page.text
     # 三选一模式 + 两张卡同时存在，不再要求二选一
     assert 'data-mode="onebot"' in page.text
     assert 'data-mode="official"' in page.text

@@ -31,14 +31,6 @@ class QQBotPageExtension:
         # 通道、账号与扫码状态只给已登录面板的人看（页面和脚本一起挡在会话后面）
         return (PATH,)
 
-    def panel_entry(self) -> dict[str, str]:
-        return {
-            "title": "机器人通道",
-            "path": f"{PATH}/",
-            "icon": "message",
-            "description": "查看 OneBot 与官方机器人通道并扫码绑定",
-        }
-
     async def handle_request(self, request: web.Request, path: str) -> web.StreamResponse | None:
         if path == PATH:
             # 目录形式访问，保证页面里的相对路径以 /qqbot/ 为基准
@@ -138,6 +130,10 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--brand); outline
 @media (max-width: 640px) { body { padding: 24px 14px; } .card { padding: 18px; }
   dl > div { grid-template-columns: 84px 1fr; } .mode-bar button { flex: 1; } }
 @media (prefers-reduced-motion: reduce) { button { transition: none; } }
+/* 嵌在面板内容区（React 路由里的 iframe）时去掉自己的页头和留白，避免双层导航 */
+html.is-embedded body { padding: 2px; background: transparent; }
+html.is-embedded .page-nav, html.is-embedded h1 { display: none; }
+html.is-embedded main { width: 100%; max-width: none; }
 </style>
 </head>
 <body>
@@ -205,6 +201,9 @@ PAGE_SCRIPT = """(function () {
       document.documentElement.setAttribute("data-theme", theme);
     }
   } catch (error) { /* 浏览器禁用存储时跟随系统主题。 */ }
+  if (/(?:^|[?&])embed=1(?:&|$)/.test(window.location.search)) {
+    document.documentElement.classList.add("is-embedded");
+  }
 
   var API = "../api/qqbot/";
   var MODES = { onebot: "仅 OneBot", official: "仅官方机器人", dual: "双通道并行", local: "本地适配器" };

@@ -35,7 +35,7 @@ class QqbotMixin:
         detector = self._service("bot_detector")
         values = self._qqbot_adapter_config()
         mode = str(
-            self._qqbot_field(adapter, "active_mode", "") or values.get("mode") or "onebot"
+            self._qqbot_field(adapter, "active_mode", "") or values.get("mode") or "official"
         ).strip().casefold()
         active = self._qqbot_active_channels(adapter, mode)
         connected = self._qqbot_connected_channels(adapter, active)
