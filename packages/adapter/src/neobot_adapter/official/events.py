@@ -269,7 +269,9 @@ def _append_content_with_mentions(
     cursor = 0
     for match in _MENTION_MARKUP.finditer(text):
         if match.start() > cursor:
-            _append_text(message, text[cursor : match.start()].strip())
+            # 保留原文空格：text 段会被命令解析按空字符串拼接，strip 掉会
+            # 把「/linkqq @用户 123」变成「/linkqq123」而无法匹配命令。
+            _append_text(message, text[cursor : match.start()])
         openid = str(match.group(1) or match.group(2) or "").strip()
         if openid in mention_map:
             item = mention_map[openid]
@@ -280,7 +282,7 @@ def _append_content_with_mentions(
         # 未在 mentions 里的标记（例如 @机器人本身）直接丢弃，不制造假用户。
         cursor = match.end()
     if cursor < len(text):
-        _append_text(message, text[cursor:].strip())
+        _append_text(message, text[cursor:])
 
     for openid, item in mention_map.items():
         if openid in seen:

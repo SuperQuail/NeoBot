@@ -100,7 +100,7 @@ def test_group_at_message_puts_at_segment_first(workdir) -> None:
     assert event["user_id"] == mapper._identity.user_id("member-openid-1")
     assert event["sender"]["role"] == "member"
     assert event["message"][0] == {"type": "at", "data": {"qq": 1020304}}
-    assert event["message"][1] == {"type": "text", "data": {"text": "在吗"}}
+    assert event["message"][1] == {"type": "text", "data": {"text": " 在吗"}}
 
 
 def test_group_mentions_become_at_segments(workdir) -> None:
@@ -124,12 +124,37 @@ def test_group_mentions_become_at_segments(workdir) -> None:
     segments = event["message"]
     assert segments[0] == {"type": "at", "data": {"qq": 1020304}}
     # 顺序与真实消息一致：@ 在正文后面就排在正文后面
-    assert segments[1] == {"type": "text", "data": {"text": "你们看这个"}}
+    assert segments[1] == {"type": "text", "data": {"text": " 你们看这个 "}}
     assert segments[2] == {
         "type": "at",
         "data": {"qq": str(mapper._identity.user_id("member-openid-2")), "name": "小明"},
     }
     assert all(segment.get("data", {}).get("name") != "另一个机器人" for segment in segments)
+
+
+def test_mention_inside_command_keeps_token_spaces(workdir) -> None:
+    """中文 @ 标记夹在命令参数之间时，text 段拼接后必须仍能 split 出命令和参数。"""
+    mapper = _mapper(workdir)
+
+    event = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_AT_MESSAGE_CREATE",
+            _group_data(
+                content="<@!BOTOPENID> /linkqq <@!member-openid-2> 3514733681",
+                mentions=[{"id": "member-openid-2", "username": "枫", "bot": False}],
+            ),
+        )
+    )
+
+    assert event is not None
+    types = [segment["type"] for segment in event["message"]]
+    assert types == ["at", "text", "at", "text"]
+    text = "".join(
+        str(segment.get("data", {}).get("text") or "")
+        for segment in event["message"]
+        if segment["type"] == "text"
+    )
+    assert text.split() == ["/linkqq", "3514733681"]
 
 
 def test_group_plain_message_has_no_at_segment(workdir) -> None:
