@@ -16,6 +16,7 @@ from neobot_app.audio import TTSService, VolcengineTTSService
 from neobot_app.bot_detect import BotDetector
 from neobot_app.config.schemas.env import EnvConfig
 from neobot_app.config.schemas.bot import BotConfig as BotConfigSchema
+from neobot_app.bot_accounts import primary_bot_account
 from neobot_app.core import DATA_DIR
 from neobot_app.database.chatstream import ChatStreamManager
 from neobot_app.emoji.service import EmojiService
@@ -96,7 +97,7 @@ def build_message_queues(*, config: BotConfigSchema) -> tuple[Any, Any]:
     self_sent_weight = getattr(config.chat, "self_sent_message_weight", 0.1)
     if self_sent_weight is None:
         self_sent_weight = 0.1
-    bot_account = config.bot.account
+    bot_account = primary_bot_account(config)
     reply_blacklist = set(config.chat.reply_blacklist or [])
 
     group_queue = MessageQueue(

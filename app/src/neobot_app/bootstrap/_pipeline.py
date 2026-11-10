@@ -384,6 +384,11 @@ def build_pipelines_and_app(
             group_queue=group_message_queue,
             friend_queue=friend_message_queue,
         )
+    # 统一机器人 QQ 号提供者：业务侧只调 bot_accounts 的函数，不再各自拼
+    # self_id/channel/config 回退；软重启每次构建都重新绑定。
+    from neobot_app.bot_accounts import bind_bot_accounts
+
+    bind_bot_accounts(config=config, detector=bot_detector)
     lifecycle_handler = LifecycleHandler(
         logger=logger_factory.get_logger("app.lifecycle"),
         on_connect=getattr(bot_detector, "resolve_identity", None),
