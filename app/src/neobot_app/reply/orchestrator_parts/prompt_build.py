@@ -14,10 +14,37 @@ if TYPE_CHECKING:
 
 
 class PromptBuildMixin:
-    def _is_official_platform(self) -> bool:
-        """当前是否官方机器人通道；身份解析完成前 profile 为空，按非官方处理。"""
+    def _is_official_platform(self, event: ReplyEvent) -> bool:
+        """当前事件是否来自官方机器人通道。
+
+        双待模式下事件自带 neobot_channel，直接看它；旧路径（单通道/未标注）没有
+        这个字段，回退到身份判定（profile 未解析时按非官方处理）。
+        """
+        channel = str(getattr(event, "neobot_channel", "") or "")
+        if channel:
+            return channel == "official"
         profile = getattr(getattr(self, "_bot_profile", None), "profile", None)
         return getattr(profile, "kind", None) == "official"
+
+    def _event_bot_account(self, event: ReplyEvent) -> int:
+        """本次回复的机器人 QQ 号：事件自带优先（双待模式每通道不同）。
+
+        没有消息级 self_id 的事件（定时任务/主动推送）按事件通道查身份服务里
+        由 API 取到的账号；最后才回退配置值（单通道旧行为）。
+        """
+        account = int(getattr(event, "bot_account", 0) or 0)
+        if account:
+            return account
+        channel = str(getattr(event, "neobot_channel", "") or "")
+        account_for = getattr(getattr(self, "_bot_profile", None), "account_for", None)
+        if channel and callable(account_for):
+            try:
+                account = int(account_for(channel) or 0)
+            except (TypeError, ValueError):
+                account = 0
+            if account:
+                return account
+        return self._get_bot_account()
 
     def _append_round_blocks(
         self,
@@ -85,9 +112,10 @@ class PromptBuildMixin:
             raise ValueError("ReplyEvent.conversation_ref is None")
 
         round_dynamic = dict(dynamic or {})
+        bot_account = self._event_bot_account(event)
         round_features = {
             "agent_mode": agent_mode,
-            "official_platform": self._is_official_platform(),
+            "official_platform": self._is_official_platform(event),
             **dict(features or {}),
         }
 
@@ -101,6 +129,7 @@ class PromptBuildMixin:
                         last_reply_message_id=last_reply_message_id,
                         all_new=all_new,
                         context_blocks=context_blocks,
+                        bot_account=bot_account,
                     ),
                     timeout=self._get_prompt_timeout_seconds(),
                 )
@@ -142,6 +171,7 @@ class PromptBuildMixin:
                     last_reply_message_id=last_reply_message_id,
                     all_new=all_new,
                     context_blocks=context_blocks,
+                    bot_account=bot_account,
                 ),
                 timeout=self._get_prompt_timeout_seconds(),
             )
@@ -180,6 +210,7 @@ class PromptBuildMixin:
         """
         if self._prompt_builder is None:
             return []
+        bot_account = self._event_bot_account(event)
         if event.conversation_ref is not None and event.conversation_ref.kind == "group":
             return await self._prompt_builder.build_group_chat_messages(
                 group_id=int(queue_key),
@@ -187,6 +218,7 @@ class PromptBuildMixin:
                 numbering=numbering,
                 last_reply_message_id=last_reply_message_id,
                 all_new=all_new,
+                bot_account=bot_account,
             )
         return await self._prompt_builder.build_friend_chat_messages(
             user_id=int(queue_key),
@@ -194,6 +226,7 @@ class PromptBuildMixin:
             numbering=numbering,
             last_reply_message_id=last_reply_message_id,
             all_new=all_new,
+            bot_account=bot_account,
         )
     def _resolve_last_reply(
         self,

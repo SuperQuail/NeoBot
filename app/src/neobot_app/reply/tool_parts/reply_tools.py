@@ -160,6 +160,12 @@ class _ReplyToolsMixin:
                     expanded_raw.append(False)
             send_segments = expanded_bodies
 
+        # 双待模式：auto（默认）跟随事件自己的通道；显式值用于「这条改用另一边发」
+        raw_channel = str(args.get("channel") or "auto").strip().casefold()
+        if raw_channel not in {"auto", "onebot", "official"}:
+            return f"错误：channel 必须为 auto/onebot/official 之一，收到 {args.get('channel')}"
+        channel = None if raw_channel == "auto" else raw_channel
+
         delivered = await self._send_reply(
             text=text,
             reply_to=reply_to,
@@ -167,6 +173,7 @@ class _ReplyToolsMixin:
             segments=send_segments,
             images=images,
             **({"split_preview": split_preview} if split_preview is not None else {}),
+            **({"channel": channel} if channel else {}),
         )
         if delivered is False:
             # sender 侧兜底判定「清洗后什么都不剩」：绝不能不吭声地当成发过，
@@ -441,6 +448,12 @@ class _ReplyToolsMixin:
                             "type": "array",
                             "items": {"type": "integer"},
                             "description": "可选，要发送的自定义表情包编号列表（统一入口，原 send_emoji 已并入）。编号来自 list_emojis 或 search_custom_emoji；每张图片单独作为一条消息发送，文字另外单独发送，不会合并到同一条消息；编号不存在会直接报错。",
+                        },
+                        "channel": {
+                            "type": "string",
+                            "enum": ["auto", "onebot", "official"],
+                            "default": "auto",
+                            "description": "可选，指定用哪个机器人通道发送：auto（默认，跟随本条消息进来的通道）/ onebot / official。只有双通道同时运行且确有需要时才指定，一般留空。",
                         },
                     },
                     "required": [],

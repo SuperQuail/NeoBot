@@ -65,12 +65,16 @@ class LifecycleStartMixin:
         conversation_ref = self._build_conversation_ref(message, queue_key)
         from neobot_app.agent_tools.invocation import CURRENT_HUMAN_MESSAGE
 
+        self_id = getattr(message, "self_id", 0)
         event = ReplyEvent(
             mode=mode,
             human_request=CURRENT_HUMAN_MESSAGE.get() and background_content is None,
             message=message,
             willing_decision=decision,
             conversation_ref=conversation_ref,
+            # 双待模式：事件来自哪个后端、由哪个 bot 账号收到，都随事件走
+            neobot_channel=str(getattr(message, "neobot_channel", "") or "") or None,
+            bot_account=int(self_id) if self_id else 0,
             pre_reply_message_id=pre_reply_message_id,
             background_content=background_content,
             preactivate=tuple(str(item) for item in (preactivate or ()) if str(item)),

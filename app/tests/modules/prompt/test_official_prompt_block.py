@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+from neobot_contracts.models import ConversationRef
 
 from neobot_app.prompt.blocks import BLOCKS, Stage, block_by_id, blocks_for
 from neobot_app.prompt.composer import PromptComposer, make_context
 from neobot_app.prompt.context import Scope
+from neobot_app.reply.event import ReplyEvent
 from neobot_app.reply.orchestrator import ReplyOrchestrator
 
 _BLOCK_ID = "official_platform_note"
@@ -52,12 +56,66 @@ def test_block_renders_capability_boundaries_when_feature_enabled() -> None:
         assert phrase in text
 
 
-def test_orchestrator_detects_official_platform_from_profile() -> None:
-    orchestrator = ReplyOrchestrator.__new__(ReplyOrchestrator)
-    for kind, expected in (("official", True), ("unofficial", False), (None, False)):
-        profile = None if kind is None else SimpleNamespace(kind=kind)
-        orchestrator._bot_profile = SimpleNamespace(profile=profile)
-        assert orchestrator._is_official_platform() is expected
+def _orchestrator() -> ReplyOrchestrator:
+    """只挂构建提示词需要的最小属性（沿用 test_at_mention_wait_hint 的做法）。"""
+    orch = ReplyOrchestrator.__new__(ReplyOrchestrator)
+    orch._config = None
+    orch._prompt_store = None
+    orch._bot_profile = None
+    orch._willing_service = None
+    orch._image_parse_service = None
+    orch._debug_helper = SimpleNamespace(
+        record=lambda *_args, **_kwargs: None,
+        emit_runtime_event=AsyncMock(return_value=SimpleNamespace(consumed=False, payload={}, result=None)),
+    )
+    return orch
 
+
+def _event(*, channel: str | None = None, account: int = 0) -> ReplyEvent:
+    event = ReplyEvent(neobot_channel=channel, bot_account=account)
+    event.conversation_ref = ConversationRef(kind="group", id="42")
+    event.message = SimpleNamespace(
+        message_id=1,
+        message=[{"type": "text", "data": {"text": "在吗"}}],
+    )
+    return event
+
+
+def test_orchestrator_detects_official_platform_from_event_channel() -> None:
+    orchestrator = ReplyOrchestrator.__new__(ReplyOrchestrator)
+    orchestrator._bot_profile = SimpleNamespace(profile=SimpleNamespace(kind="official"))
+
+    # 双待模式：事件自带通道优先，另一通道的回复不该被当成官方通道
+    assert orchestrator._is_official_platform(_event(channel="official")) is True
+    assert orchestrator._is_official_platform(_event(channel="onebot")) is False
+
+    # 旧路径没有 neobot_channel 时才回退身份判定
+    assert orchestrator._is_official_platform(_event()) is True
     orchestrator._bot_profile = None
-    assert orchestrator._is_official_platform() is False
+    assert orchestrator._is_official_platform(_event()) is False
+
+
+async def test_build_prompt_injects_note_only_for_official_event_channel() -> None:
+    orchestrator = _orchestrator()
+    builder = SimpleNamespace(build_group_chat_prompt=AsyncMock(return_value="系统提示词"))
+    orchestrator._prompt_builder = builder
+
+    prompt = await orchestrator._build_prompt(
+        _event(channel="official", account=777), queue=SimpleNamespace(), queue_key="42"
+    )
+
+    assert "<官方机器人限制>" in prompt
+    assert builder.build_group_chat_prompt.await_args.kwargs["bot_account"] == 777
+
+
+async def test_build_prompt_keeps_note_out_of_other_channels() -> None:
+    orchestrator = _orchestrator()
+    builder = SimpleNamespace(build_group_chat_prompt=AsyncMock(return_value="系统提示词"))
+    orchestrator._prompt_builder = builder
+
+    prompt = await orchestrator._build_prompt(
+        _event(channel="onebot", account=111), queue=SimpleNamespace(), queue_key="42"
+    )
+
+    assert "<官方机器人限制>" not in prompt
+    assert builder.build_group_chat_prompt.await_args.kwargs["bot_account"] == 111

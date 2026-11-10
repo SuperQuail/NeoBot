@@ -43,6 +43,10 @@ class ReplyEvent:
     mode: str = "common"
     message: PrivateMessage | GroupMessage | None = None
     conversation_ref: ConversationRef | None = None
+    #: 产生该事件的后端通道（onebot / official）；None 表示旧路径或单通道未标注
+    neobot_channel: str | None = None
+    #: 产生该事件的机器人 QQ 号（双待模式下每个通道不同；0 表示未知，回退配置）
+    bot_account: int = 0
     willing_decision: WillingDecision | None = None
     generated_text: str = ""
     send_response: object | None = None

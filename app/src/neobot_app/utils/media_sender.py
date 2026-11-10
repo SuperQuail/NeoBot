@@ -73,10 +73,18 @@ async def send_image(
     file_path: Path,
     *,
     wait_response: bool = True,
+    channel: str | None = None,
 ) -> SendMsgResponse:
-    """发送图片消息；wait_response=False 时不等上游 echo 回执。"""
+    """发送图片消息；wait_response=False 时不等上游 echo 回执。
+
+    channel 为空时按适配器默认选路（双待下 OneBot 优先）；指定通道用于
+    「这条回复走官方/OneBot」的显式覆盖。
+    """
     segment = prepare_image_segment(file_server, file_path)
-    return await adapter.send(conversation, [segment], wait_response=wait_response)
+    channel_kwargs: Dict[str, Any] = {"channel": channel} if channel else {}
+    return await adapter.send(
+        conversation, [segment], wait_response=wait_response, **channel_kwargs
+    )
 
 
 async def send_audio(
@@ -86,7 +94,11 @@ async def send_audio(
     file_path: Path,
     *,
     wait_response: bool = True,
+    channel: str | None = None,
 ) -> SendMsgResponse:
     """发送语音消息；wait_response=False 时不等上游 echo 回执。"""
     segment = prepare_audio_segment(file_server, file_path)
-    return await adapter.send(conversation, [segment], wait_response=wait_response)
+    channel_kwargs: Dict[str, Any] = {"channel": channel} if channel else {}
+    return await adapter.send(
+        conversation, [segment], wait_response=wait_response, **channel_kwargs
+    )

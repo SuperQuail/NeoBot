@@ -188,7 +188,9 @@ class ReplySender:
 
     # ── public API (also used by engine) ────────────────────────
 
-    async def send_with_timeout(self, conversation_ref: ConversationRef, payload: object) -> Any:
+    async def send_with_timeout(
+        self, conversation_ref: ConversationRef, payload: object, channel: str | None = None
+    ) -> Any:
         envelope = RuntimeEnvelope(
             kind="reply_lifecycle",
             stage="message.send.before",
@@ -203,10 +205,13 @@ class ReplySender:
         if envelope.consumed:
             return envelope.result
         send_payload = envelope.payload.get("message", payload)
+        # 只有指定了通道才带 channel：单通道/旧适配器的 send 没有这个参数，
+        # 传 None 会让它们 TypeError；None 本来就表示「交给适配器默认通道」。
+        channel_kwargs: dict[str, Any] = {"channel": channel} if channel else {}
         # 不等 echo 回执：请求写上线即视为发送成功。等待回执会把 agent 循环
         # 卡在上游往返上，而实测发送几乎不会失败（失败由连接状态与心跳发现）。
         result = await asyncio.wait_for(
-            self._adapter.send(conversation_ref, send_payload, wait_response=False),
+            self._adapter.send(conversation_ref, send_payload, wait_response=False, **channel_kwargs),
             timeout=self._io_timeout_seconds,
         )
         after = RuntimeEnvelope(
@@ -242,13 +247,20 @@ class ReplySender:
         self_sent: SelfSentSink | None = None,
         sender_names: list[str] | None = None,
         split_preview: ReplySplitPreview | None = None,
+        channel: str | None = None,
     ) -> bool:
         """发送一段回复；返回是否真的发出了内容。
 
         清洗后没有正文（含裸 cancel）且没有可用图片时返回 False，不发空消息。
         send_original 只跳过分句，不跳过安全清洗；图片不因附带文字被清空而丢弃。
         调用方（工具层）据此提示未发送，而不是误报「已发送」。
+
+        channel 为空时跟随事件来自的通道（双待模式下每个事件自带 neobot_channel）；
+        显式传值优先，用于「这条回复指定用另一个框架发」。
         """
+        channel = channel or getattr(event, "neobot_channel", None) or None
+        # 双待模式两个 bot 的 QQ 号不同：self-sent 历史优先记事件自己的账号
+        bot_account = int(getattr(event, "bot_account", 0) or 0)
         before_postprocess = await self._debug_helper.emit_runtime_event(
             "reply.postprocess.before",
             event,
@@ -351,11 +363,12 @@ class ReplySender:
                         conv_ref,
                         entry.file_path,
                         wait_response=False,
+                        channel=channel,
                     )
                 )
                 if index == len(image_entries) - 1 and not text.strip() and not segments:
                     event.send_incomplete = False
-                await self._emit_self_sent_image(self_sent, conv_ref, entry.file_path)
+                await self._emit_self_sent_image(self_sent, conv_ref, entry.file_path, bot_account=bot_account)
                 await self._emoji_service.record_usage(image_number)
 
         # long reply → markdown image
@@ -367,7 +380,7 @@ class ReplySender:
                         timeout=_MARKDOWN_RENDER_TIMEOUT_SECONDS,
                     )
                     formatted_messages.append([prepare_image_segment(self._file_server, image_path)])
-                    record_delivery(await self.send_with_timeout(conv_ref, formatted_messages[-1]))
+                    record_delivery(await self.send_with_timeout(conv_ref, formatted_messages[-1], channel=channel))
                     event.send_incomplete = False
                     await self._emit_self_sent_image(
                         self_sent,
@@ -375,6 +388,7 @@ class ReplySender:
                         image_path,
                         kind="markdown",
                         source_note=text,
+                        bot_account=bot_account,
                     )
                     event.send_response = send_results[0]
                     self._leave_sending(event, conv_ref.kind)
@@ -462,9 +476,9 @@ class ReplySender:
                 mention_user_ids=mention_user_ids if index == 0 else None,
             )
             formatted_messages.append(formatted)
-            record_delivery(await self.send_with_timeout(conv_ref, formatted))
+            record_delivery(await self.send_with_timeout(conv_ref, formatted, channel=channel))
             # 逐条按「真正发到 QQ 的那句文本」入队：重建后模型知道自己分几句说了什么
-            self._emit_self_sent_text(self_sent, conv_ref, message_text)
+            self._emit_self_sent_text(self_sent, conv_ref, message_text, bot_account=bot_account)
             self._last_sentence_time[pipeline_key] = monotonic_seconds()
 
         event.send_response = send_results[0] if len(send_results) == 1 else send_results
@@ -522,6 +536,7 @@ class ReplySender:
         *,
         kind: str = "image",
         source_note: str = "",
+        bot_account: int = 0,
     ) -> asyncio.Task[None] | None:
         """把一张真实发出的图片按「索引」入队（产物进 temp 图库，队列只留引用）。
 
@@ -531,7 +546,7 @@ class ReplySender:
         if sink is None or not sink.usable:
             return None
         index_text = await self._build_image_index_text(file_path, kind=kind, source_note=source_note)
-        return self._emit_self_sent(sink, conv_ref, index_text)
+        return self._emit_self_sent(sink, conv_ref, index_text, bot_account=bot_account)
 
     async def record_self_sent_voice(
         self,
@@ -559,7 +574,9 @@ class ReplySender:
         self._last_self_sent_id = candidate
         return candidate
 
-    def _build_self_sent_message(self, conv_ref: ConversationRef, text: str, synthetic_msg_id: int) -> Any:
+    def _build_self_sent_message(
+        self, conv_ref: ConversationRef, text: str, synthetic_msg_id: int, bot_account: int = 0
+    ) -> Any:
         """把一段 Bot 自身发言构造为可入队的消息对象。"""
         from neobot_adapter.model.basic import PostMessageMessagesender
         from neobot_adapter.model.message import (
@@ -569,7 +586,7 @@ class ReplySender:
             PrivateMessage,
         )
 
-        bot_qq = self._resolve_bot_account()
+        bot_qq = self._resolve_bot_account(bot_account)
         message_segments = [MessageSegment(type="text", data={"text": text})]
         sender = PostMessageMessagesender(user_id=bot_qq, nickname=self._bot_name)
 
@@ -593,14 +610,14 @@ class ReplySender:
         )
 
     def _emit_self_sent(
-        self, sink: SelfSentSink | None, conv_ref: ConversationRef, text: str
+        self, sink: SelfSentSink | None, conv_ref: ConversationRef, text: str, *, bot_account: int = 0
     ) -> asyncio.Task[None] | None:
         """唯一入队点：写回源队列 + 管线快照，并异步落盘一份（无独立历史上限）。"""
         if sink is None or not sink.usable or not str(text or "").strip():
             return None
         synthetic_msg_id = self._next_self_sent_message_id()
         try:
-            message = self._build_self_sent_message(conv_ref, text, synthetic_msg_id)
+            message = self._build_self_sent_message(conv_ref, text, synthetic_msg_id, bot_account=bot_account)
             sink.queue.push(sink.queue_key, message)
             if sink.snapshot is not None and sink.snapshot is not sink.queue:
                 sink.snapshot.push(sink.queue_key, message)
@@ -615,12 +632,12 @@ class ReplySender:
                 error=str(exc),
             )
             return None
-        return self._schedule_self_sent_persist(conv_ref, text, synthetic_msg_id)
+        return self._schedule_self_sent_persist(conv_ref, text, synthetic_msg_id, bot_account=bot_account)
 
     def _emit_self_sent_text(
-        self, sink: SelfSentSink | None, conv_ref: ConversationRef, text: str
+        self, sink: SelfSentSink | None, conv_ref: ConversationRef, text: str, *, bot_account: int = 0
     ) -> asyncio.Task[None] | None:
-        return self._emit_self_sent(sink, conv_ref, text)
+        return self._emit_self_sent(sink, conv_ref, text, bot_account=bot_account)
 
     async def _emit_self_sent_image(
         self,
@@ -630,8 +647,11 @@ class ReplySender:
         *,
         kind: str = "image",
         source_note: str = "",
+        bot_account: int = 0,
     ) -> asyncio.Task[None] | None:
-        return await self.record_self_sent_image(sink, conv_ref, file_path, kind=kind, source_note=source_note)
+        return await self.record_self_sent_image(
+            sink, conv_ref, file_path, kind=kind, source_note=source_note, bot_account=bot_account
+        )
 
     async def _build_image_index_text(self, file_path: Any, *, kind: str, source_note: str) -> str:
         label = "Markdown图片" if kind == "markdown" else "图片"
@@ -666,8 +686,10 @@ class ReplySender:
             image_id = result
         return str(image_id) if image_id else None
 
-    def _resolve_bot_account(self) -> int:
-        """读取配置里的机器人 QQ 号（缺失时返回 0）。"""
+    def _resolve_bot_account(self, bot_account: int = 0) -> int:
+        """机器人 QQ 号：事件自带的优先（双待模式两个通道不同），否则回退配置。"""
+        if bot_account:
+            return int(bot_account)
         if self._config is None:
             return 0
         bot_cfg = getattr(self._config, "bot", None)
@@ -677,14 +699,16 @@ class ReplySender:
         return int(account) if account else 0
 
     def _schedule_self_sent_persist(
-        self, conv_ref: ConversationRef, text: str, synthetic_msg_id: int
+        self, conv_ref: ConversationRef, text: str, synthetic_msg_id: int, *, bot_account: int = 0
     ) -> asyncio.Task[None] | None:
         """把落盘调度成后台任务：发送路径绝不等数据库。"""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return None
-        task = loop.create_task(self.persist_self_sent_message(conv_ref, text, synthetic_msg_id=synthetic_msg_id))
+        task = loop.create_task(
+            self.persist_self_sent_message(conv_ref, text, synthetic_msg_id=synthetic_msg_id, bot_account=bot_account)
+        )
         self._self_sent_persist_tasks.add(task)
         task.add_done_callback(self._self_sent_persist_tasks.discard)
         return task
@@ -696,6 +720,7 @@ class ReplySender:
         *,
         synthetic_msg_id: int | None = None,
         occurred_at: datetime | None = None,
+        bot_account: int = 0,
     ) -> None:
         """把 Bot 自己发出的消息写入 MessageData（软重启后据此补齐 assistant 块）。
 
@@ -715,7 +740,7 @@ class ReplySender:
                     IncomingMessage(
                         event_id=self_sent_event_id(message_id),
                         conversation=conv_ref,
-                        sender_id=str(self._resolve_bot_account()),
+                        sender_id=str(self._resolve_bot_account(bot_account)),
                         sender_name=self._bot_name,
                         text=text,
                         occurred_at=occurred_at or now_utc(),

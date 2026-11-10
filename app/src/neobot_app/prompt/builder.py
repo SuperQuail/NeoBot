@@ -149,6 +149,10 @@ class PromptBuilder:
 
     # ── 群聊 ──
 
+    def _bot_account_value(self, override: int | None) -> int:
+        """提示词里的机器人 QQ 号：事件账号优先（双待模式每通道不同），否则配置值。"""
+        return int(override) if override else int(getattr(self._config.bot, "account", 0) or 0)
+
     async def _group_context_values(
         self,
         group_id: int,
@@ -156,9 +160,11 @@ class PromptBuilder:
         *,
         key_word_reaction_list: str = "",
         memory_list: str = "",
+        bot_account: int | None = None,
     ) -> dict[str, Any]:
         """计算群聊 system / 上下文块共用的占位符取值。"""
         group_id_str = str(group_id)
+        account = self._bot_account_value(bot_account)
         group_name = await self._profile_service.get_group_name(group_id_str)
         group_description_map = self._config.chat.group_description or {}
         group_description = group_description_map.get(group_id_str, "")
@@ -174,7 +180,7 @@ class PromptBuilder:
             member_list = f"{member_list}\n{self.member_archive_hint()}"
         bot_group_admin_status = await self._profile_service.render_bot_group_admin_status(
             group_id,
-            self._config.bot.account,
+            account,
             message_queue,
         )
         group_admin = await self._profile_service.render_group_owner_text(
@@ -204,7 +210,7 @@ class PromptBuilder:
             "key_word_reaction_list": merged_keyword_reaction_list,
             "memory_list": memory_list or "",
             "bot_name": self._config.bot.nick_name,
-            "bot_account": self._config.bot.account,
+            "bot_account": account,
             "other_name": _build_bot_other_name(self._config),
             "bot_data": self._config.bot.bot_data,
         }
@@ -220,6 +226,7 @@ class PromptBuilder:
         last_reply_message_id: int | None = None,
         all_new: bool = False,
         context_blocks: list[dict[str, str]] | None = None,
+        bot_account: int | None = None,
     ) -> str:
         """构建群聊 system 提示词。
 
@@ -233,6 +240,7 @@ class PromptBuilder:
             message_queue,
             key_word_reaction_list=key_word_reaction_list,
             memory_list=memory_list,
+            bot_account=bot_account,
         )
         values.update(self._time_values())
         values["numbering_guide"] = _build_numbering_guide(numbering)
@@ -256,8 +264,10 @@ class PromptBuilder:
         *,
         key_word_reaction_list: str = "",
         memory_list: str = "",
+        bot_account: int | None = None,
     ) -> dict[str, Any]:
         user_id_str = str(user_id)
+        account = self._bot_account_value(bot_account)
         profile = await self._profile_service.ensure_user_profile(user_id_str)
         friend_name = getattr(profile, "nick_name", None) or f"QQ:{user_id_str}"
         remark = getattr(profile, "remark", None) or ""
@@ -281,7 +291,7 @@ class PromptBuilder:
             ),
             "memory_list": memory_list or "",
             "bot_name": self._config.bot.nick_name,
-            "bot_account": self._config.bot.account,
+            "bot_account": account,
             "other_name": _build_bot_other_name(self._config),
             "bot_data": self._config.bot.bot_data,
         }
@@ -297,6 +307,7 @@ class PromptBuilder:
         last_reply_message_id: int | None = None,
         all_new: bool = False,
         context_blocks: list[dict[str, str]] | None = None,
+        bot_account: int | None = None,
     ) -> str:
         """构建私聊 system 提示词;context_blocks 语义同群聊。"""
         values = await self._friend_context_values(
@@ -304,6 +315,7 @@ class PromptBuilder:
             message_queue,
             key_word_reaction_list=key_word_reaction_list,
             memory_list=memory_list,
+            bot_account=bot_account,
         )
         values.update(self._time_values())
         values["numbering_guide"] = _build_numbering_guide(numbering)
@@ -328,13 +340,14 @@ class PromptBuilder:
         numbering: MessageNumbering | None = None,
         last_reply_message_id: int | None = None,
         all_new: bool = False,
+        bot_account: int | None = None,
     ) -> list[dict[str, str]]:
         """群聊聊天记录 -> 角色消息列表(user/assistant)。"""
         return build_role_messages(
             message_queue,
             str(group_id),
             numbering=numbering,
-            bot_account=self._config.bot.account or 0,
+            bot_account=self._bot_account_value(bot_account),
             include_boundary_markers=self._show_boundary_markers(),
             last_reply_message_id=last_reply_message_id,
             all_new=all_new,
@@ -349,13 +362,14 @@ class PromptBuilder:
         numbering: MessageNumbering | None = None,
         last_reply_message_id: int | None = None,
         all_new: bool = False,
+        bot_account: int | None = None,
     ) -> list[dict[str, str]]:
         """私聊聊天记录 -> 角色消息列表(user/assistant)。"""
         return build_role_messages(
             message_queue,
             str(user_id),
             numbering=numbering,
-            bot_account=self._config.bot.account or 0,
+            bot_account=self._bot_account_value(bot_account),
             include_boundary_markers=self._show_boundary_markers(),
             last_reply_message_id=last_reply_message_id,
             all_new=all_new,
