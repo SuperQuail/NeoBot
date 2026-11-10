@@ -28,6 +28,7 @@ from .common import (
     ReactionEntry,
     RecallNotice,
 )
+from .helpers import _safe_int
 
 
 class _QueuePushMixin:
@@ -123,10 +124,30 @@ class _QueuePushMixin:
             )
         )
 
+    def _bot_ids(self, message: object = None) -> set[int]:
+        """判定/匹配用的 bot 账号集合：消息级 self_id 优先，其次队列登记的 bot_accounts。"""
+        ids = set(self.bot_accounts)
+        if self.bot_account:
+            ids.add(int(self.bot_account))
+        self_id = _safe_int(getattr(message, "self_id", None))
+        if self_id:
+            ids.add(self_id)
+        return ids
+
+    def _is_bot_message(self, message: object) -> bool:
+        """消息是否由任一 bot 账号发出（双通道时另一个 bot 的发言同样算 bot 发言）。"""
+        user_id = _safe_int(getattr(message, "user_id", None))
+        if not user_id:
+            return False
+        self_id = _safe_int(getattr(message, "self_id", None))
+        if self_id and user_id == self_id:
+            return True
+        return user_id in self._bot_ids()
+
     def _compute_message_weight(self, message: QueueMessage) -> float:
         # Bot 自身发言（无论来自实时入队还是后端/本地历史灌入）统一按
         # self_sent_weight 计权：既不挤占用户消息的观测窗口，也不撑大上下文窗口。
-        if self.bot_account and message.user_id == self.bot_account:
+        if self._is_bot_message(message):
             return float(self.self_sent_weight)
         if message.message:
             for segment in message.message:

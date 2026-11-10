@@ -263,6 +263,7 @@ def build_reply_orchestrator(
     config_update_callback: Any = None,
     sleep_service: Any = None,
     standby_service: Any = None,
+    bot_profile: Any = None,
 ) -> ReplyOrchestrator:
     bind_send = getattr(emoji_service, "bind_send_dependencies", None)
     if callable(bind_send):
@@ -301,6 +302,7 @@ def build_reply_orchestrator(
         config_update_callback=config_update_callback,
         sleep_service=sleep_service,
         standby_service=standby_service,
+        bot_profile=bot_profile,
     )
 
 
@@ -375,8 +377,21 @@ def build_pipelines_and_app(
     request_handler = OneBotRequestHandler(
         logger=logger_factory.get_logger("app.onebot_request")
     )
+    # 连接事件驱动身份判定；application.start 对「启动后才连上」的情形另有等待任务兜底
+    if bot_detector is not None:
+        bot_detector.bind(
+            config,
+            group_queue=group_message_queue,
+            friend_queue=friend_message_queue,
+        )
+    # 统一机器人 QQ 号提供者：业务侧只调 bot_accounts 的函数，不再各自拼
+    # self_id/channel/config 回退；软重启每次构建都重新绑定。
+    from neobot_app.bot_accounts import bind_bot_accounts
+
+    bind_bot_accounts(config=config, detector=bot_detector)
     lifecycle_handler = LifecycleHandler(
-        logger=logger_factory.get_logger("app.lifecycle")
+        logger=logger_factory.get_logger("app.lifecycle"),
+        on_connect=getattr(bot_detector, "resolve_identity", None),
     )
 
     event_gateway = EventGateway(

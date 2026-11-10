@@ -18,6 +18,7 @@ export type {
 export type {
   DeployStep,
   OneBotConnection,
+  OfficialDeploy,
   DeployStatus,
   FieldKind,
   FieldDescriptor,

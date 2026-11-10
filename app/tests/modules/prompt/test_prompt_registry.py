@@ -158,6 +158,7 @@ def test_orders_are_unique_within_stage_and_scope(stage: Stage):
                 "available_skills",
                 "tool_restriction",
                 "native_vision",
+                "official_platform_note",
             ),
         ),
         (
@@ -175,6 +176,7 @@ def test_orders_are_unique_within_stage_and_scope(stage: Stage):
                 "available_skills",
                 "tool_restriction",
                 "native_vision",
+                "official_platform_note",
             ),
         ),
         # 本轮上下文 user 块

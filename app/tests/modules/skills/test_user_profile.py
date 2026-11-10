@@ -201,7 +201,23 @@ async def test_analyze_avatar_non_numeric_user_id_rejected():
     result = _parse(await skill.execute("analyze_user_avatar", {"user_id": "abc"}))
 
     assert result["ok"] is False
-    assert "无法获取用户" in result["error"]
+    assert "不是真实 QQ 号" in result["error"]
+
+
+async def test_analyze_avatar_official_synthetic_id_rejected() -> None:
+    """官方通道的 13 位合成 ID 不是 QQ 号，不应调用 get_qq_avatar。"""
+    service = FakeProfileService()
+    adapter = FakeAdapter(avatar_result={"data": {"url": "http://x/y.png"}})
+    skill = UserProfileSkill(
+        profile_service=service, adapter=adapter, image_parse_provider=FakeVisionProvider()
+    )
+
+    result = _parse(await skill.execute("analyze_user_avatar", {"user_id": "9000000000001"}))
+
+    assert result["ok"] is False
+    assert "不是真实 QQ 号" in result["error"]
+    assert adapter.calls == []
+    assert service.update_calls == []
 
 
 async def test_analyze_avatar_empty_analysis_rejected():

@@ -121,6 +121,7 @@ class AgentToolsetMixin:
             agent_history=messages,
             skills_registry=self._markdown_skills,
             allowed_tools=allowed_tools,
+            official_platform=self._is_official_platform(event),
             wait_cooldown_seconds=self._get_wait_cooldown_seconds(),
             ai_reply_check=self._get_ai_reply_check(),            ai_reply_check_lightweight=self._get_ai_reply_check_lightweight(),
             bot_name=self._get_bot_name(),

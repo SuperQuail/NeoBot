@@ -21,6 +21,14 @@ class _LongReplyToolsMixin:
         sender_names = self._sender_names()
         markdown = clean_text(raw_markdown, known_sender_names=sender_names)
         pre_rendered = str(args.get("image_path") or "").strip()
+        # 双待模式：auto 跟随事件通道；显式值用于「这条改用另一边发」。
+        raw_channel = str(args.get("channel") or "auto").strip().casefold()
+        if raw_channel not in {"auto", "onebot", "official"}:
+            return json.dumps(
+                {"ok": False, "error": f"channel 必须为 auto/onebot/official 之一，收到 {args.get('channel')}"},
+                ensure_ascii=False,
+            )
+        channel = None if raw_channel == "auto" else raw_channel
 
         if raw_markdown and not markdown.strip() and not pre_rendered:
             return json.dumps(
@@ -72,15 +80,19 @@ class _LongReplyToolsMixin:
                     {"ok": False, "error": "Markdown 转图片失败"}, ensure_ascii=False
                 )
 
-        # 调用 orchestrator 提供的 handler 实际发送图片
+        # 调用 orchestrator 提供的 handler 实际发送图片；未显式选路时不传
+        # channel，兼容旧 handler 与既有测试的精确调用断言。
         if self._send_long_reply is not None:
-            await self._send_long_reply(
-                image_path=image_path,
-                caption=caption,
-                reply_to=reply_to,
-                mention=mention,
-                markdown=markdown,
-            )
+            handler_kwargs = {
+                "image_path": image_path,
+                "caption": caption,
+                "reply_to": reply_to,
+                "mention": mention,
+                "markdown": markdown,
+            }
+            if channel:
+                handler_kwargs["channel"] = channel
+            await self._send_long_reply(**handler_kwargs)
             self._ai_check_pending = False
         return json.dumps(
             {
@@ -127,11 +139,16 @@ class _LongReplyToolsMixin:
                             "mention_qqs": {
                                 "type": "array",
                                 "items": {"type": "integer"},
-                                "description": "可选，要 @ 的 QQ 号列表。QQ 号见群友列表里的「QQ号:...」。仅在群聊生效。正文里需要表达 @ 时，没有特殊情况应在 @ 后留一个空格；特殊需要可自行不加。",
+                                "description": "可选，要 @ 的 QQ 号列表。QQ 号见群友列表里的「QQ号:...」。仅在群聊生效。系统会发送真正的 @；正文里不要再写「@昵称」或「@ QQ号」，否则会出现两个 @。",
                             },
                             "caption": {
                                 "type": "string",
                                 "description": "可选，发送图片前单独发送的说明文字（不是图片说明；reply_to_number/mention_qqs 只作用于这段文字，未提供时二者不生效）。",
+                            },
+                            "channel": {
+                                "type": "string",
+                                "enum": ["auto", "onebot", "official"],
+                                "description": "可选，指定这条回复用哪个通道发送：auto（默认，跟随本事件通道）、onebot、official。仅在双通道同时运行时有意义。",
                             },
                         },
                         "anyOf": [

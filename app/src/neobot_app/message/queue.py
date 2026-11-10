@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections import deque
 import copy
-from typing import Deque
+from typing import Any, Deque
 from typing import Dict
+from typing import Iterable
 from typing import List
 from typing import Optional
 
@@ -43,7 +44,23 @@ __all__ = [
     "RecallNotice",
     "SegmentFormatter",
     "create_message_queue",
+    "is_bot_message",
 ]
+
+
+def is_bot_message(message: Any, bot_accounts: Iterable[Any] = ()) -> bool:
+    """消息是否来自某个 bot 账号：消息级 self_id 优先（自身回显 user_id==self_id），其次已知账号集合。"""
+    user_id = _safe_int(getattr(message, "user_id", None))
+    if not user_id:
+        return False
+    self_id = _safe_int(getattr(message, "self_id", None))
+    if self_id and user_id == self_id:
+        return True
+    for account in bot_accounts:
+        account_id = _safe_int(account)
+        if account_id and user_id == account_id:
+            return True
+    return False
 
 
 class MessageQueue(
@@ -66,6 +83,7 @@ class MessageQueue(
         forward_weight: int = 2,
         self_sent_weight: float = 0.1,
         bot_account: int | None = None,
+        bot_accounts: set[int] | None = None,
         reply_blacklist: set[int] | None = None,
     ) -> None:
         if max_size <= 0:
@@ -85,7 +103,16 @@ class MessageQueue(
         #: 与 poke/reaction 同档：自身发言几乎不挤占用户消息的观测窗口，
         #: 也不撑大上下文窗口；两个来源共用同一权重，避免口径分裂。
         self.self_sent_weight = max(0.0, min(1.0, self_sent_weight))
+        #: 主账号（单通道时即唯一账号）；保留给提示词/自身发言等按「当前 bot」读取的旧代码。
         self.bot_account = bot_account
+        #: 本会话识别到的所有 bot 账号（双通道各一个）：消息级 self_id 缺失时的兜底来源。
+        self.bot_accounts: set[int] = {
+            account_id
+            for account_id in (_safe_int(item) for item in (bot_accounts or ()))
+            if account_id
+        }
+        if bot_account:
+            self.bot_accounts.add(int(bot_account))
         self._reply_blacklist = reply_blacklist or set()
         self._queues: Dict[str, Deque[QueueEntry]] = {}
         self._stats: Dict[str, QueueStats] = {}
@@ -108,6 +135,7 @@ class MessageQueue(
             forward_weight=self.forward_weight,
             self_sent_weight=self.self_sent_weight,
             bot_account=self.bot_account,
+            bot_accounts=set(self.bot_accounts),
             reply_blacklist=self._reply_blacklist,
         )
 

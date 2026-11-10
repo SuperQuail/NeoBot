@@ -12,6 +12,8 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.utils.prompt_text import escape_prompt_text
 
+from neobot_app.bot_accounts import looks_like_real_qq
+from neobot_app.user_identity import display_user_id, group_number_for, qq_for_user
 from neobot_app.favorability import (
     FAVORABILITY_MAX,
     FAVORABILITY_MIN,
@@ -23,6 +25,17 @@ from neobot_storage._retry import _is_locked_error
 
 
 _FAVORABILITY_UPDATE_ATTEMPTS = 12
+
+
+def _profile_identity(user_id: object) -> str:
+    """用户档案里的身份展示：映射后同时给真实 QQ 号和官方合成 QQ ID。"""
+    text = str(user_id or "").strip()
+    if not text:
+        return ""
+    mapped = qq_for_user(text)
+    if mapped:
+        return f"QQ:{mapped}（QQ ID:{text}）"
+    return f"QQ号:{text}" if looks_like_real_qq(text) else f"QQ ID:{text}"
 
 
 def _sex_to_text(value: object) -> str | None:
@@ -203,7 +216,8 @@ class UserProfileService:
         group = await self.get_group(group_id)
         if group is not None and getattr(group, "group_name", None):
             return str(group.group_name)
-        return f"群聊{group_id}"
+        mapped_group = group_number_for(group_id)
+        return f"群聊{mapped_group or group_id}"
 
     async def get_user_name(self, user_id: str | int) -> str:
         """用户可读昵称：nick_name → long_nick → QQ:{id}。
@@ -216,7 +230,7 @@ class UserProfileService:
         name = str(getattr(user, "nick_name", "") or "").strip()
         if not name:
             name = str(getattr(user, "long_nick", "") or "").strip()
-        return name or f"QQ:{user_id}"
+        return name or display_user_id(user_id)
 
     async def render_group_owner_text(
         self,
@@ -251,9 +265,12 @@ class UserProfileService:
                         continue
                     card = getattr(member, "card", None)
                     nickname = getattr(member, "nickname", None)
-                    name = card or nickname or f"QQ:{user_id}"
+                    name = card or nickname or display_user_id(user_id)
                     # 群昵称/昵称是用户可控文本，直接拼进提示词会破坏区块结构
-                    return f"群主：{escape_prompt_text(name)}（QQ：{user_id}）"
+                    return (
+                        f"群主：{escape_prompt_text(name)}"
+                        f"（{_profile_identity(user_id)}）"
+                    )
 
         return ""
 
@@ -763,7 +780,7 @@ class UserProfileService:
         nickname = escape_prompt_text(
             getattr(member, "nickname", None)
             or getattr(profile, "nick_name", None)
-            or f"QQ:{user_id}"
+            or display_user_id(user_id)
         )
         remark = escape_prompt_text(getattr(profile, "remark", None))
         nickname_part = f"昵称:{nickname}"
@@ -774,7 +791,7 @@ class UserProfileService:
         card = escape_prompt_text(getattr(member, "card", None))
         if card:
             segments.append(f"群昵称:{card}")
-        segments.append(f"QQ号:{user_id}")
+        segments.append(_profile_identity(user_id))
 
         qq_gender = _sex_to_text(getattr(member, "sex", None)) or _sex_to_text(getattr(profile, "sex", None))
         if qq_gender:
@@ -814,13 +831,13 @@ class UserProfileService:
         *,
         archive_text: str | None = None,
     ) -> str:
-        nickname = getattr(profile, "nick_name", None) or f"QQ:{user_id}"
+        nickname = getattr(profile, "nick_name", None) or display_user_id(user_id)
         remark = getattr(profile, "remark", None)
         nickname_part = f"昵称:{nickname}"
         if remark:
             nickname_part += f"(你对Ta的备注:{remark})"
 
-        segments = [nickname_part, f"QQ号:{user_id}"]
+        segments = [nickname_part, _profile_identity(user_id)]
 
         qq_gender = _sex_to_text(getattr(profile, "sex", None))
         if qq_gender:

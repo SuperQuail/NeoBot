@@ -66,6 +66,16 @@ def _stringified(document: dict) -> dict:
     return {**config, "chat": chat, "models": {**config["models"], "registry": registry}}
 
 
+def test_update_section_adapter_mode_is_persisted(tmp_path: Path) -> None:
+    """通道页切换模式必须写进 config.toml（重启后读回），而不是只改内存。"""
+    manager, config_path = _manager(tmp_path)
+
+    manager.update_section("adapter", {"mode": "official"})
+
+    raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert raw["adapter"]["mode"] == "official"
+
+
 def test_save_coerces_stringified_values(tmp_path: Path) -> None:
     manager, config_path = _manager(tmp_path)
 

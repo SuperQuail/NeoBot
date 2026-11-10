@@ -208,7 +208,8 @@ class CrossChatSkill(SkillModule):
                         },
                         "target_id": {
                             "type": "string",
-                            "description": "目标群号/QQ号；B站通道为 private:<UID> 或 "
+                            "description": "目标会话 ID（OneBot 为群号/QQ 号；官方通道为合成 ID）；"
+                            "B站通道为 private:<UID> 或 "
                             "comment:<oid>:<root>:<parent>（dynamic/opus/article 前缀同理）",
                         },
                         "task": {
@@ -242,7 +243,8 @@ class CrossChatSkill(SkillModule):
                         },
                         "target_id": {
                             "type": "string",
-                            "description": "目标群号/QQ号；B站通道为 private:<UID> 或 "
+                            "description": "目标会话 ID（OneBot 为群号/QQ 号；官方通道为合成 ID）；"
+                            "B站通道为 private:<UID> 或 "
                             "comment:<oid>:<root>:<parent>（dynamic/opus/article 前缀同理）",
                         },
                         "query": {"type": "string", "description": "要查询的信息描述"},

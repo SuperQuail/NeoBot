@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from neobot_app.message.queue import QueueEntryType
+from neobot_app.message.queue import QueueEntryType, is_bot_message
 from neobot_app.prompt.assets import text
 
 if TYPE_CHECKING:
@@ -50,8 +50,9 @@ def _user_message(content: str) -> dict[str, Any]:
     return {"role": "user", "content": content}
 
 
-def _role_for_message(message: Any, bot_account: int) -> str:
-    if bot_account and getattr(message, "user_id", None) == bot_account:
+def _role_for_message(message: Any, bot_accounts: set[int]) -> str:
+    # 双通道下两个 bot 的发言都算助手；消息级 self_id（自身回显）优先
+    if is_bot_message(message, bot_accounts):
         return "assistant"
     return "user"
 
@@ -250,6 +251,10 @@ def _build_from_entries(
     prompt_store: Any = None,
 ) -> list[dict[str, Any]]:
     messages: list[dict[str, str]] = []
+    # bot 账号来源：队列登记的全部通道账号 + 调用方传入的当前账号
+    bot_accounts = {int(account) for account in (getattr(queue, "bot_accounts", None) or ())}
+    if bot_account:
+        bot_accounts.add(int(bot_account))
     # 发送者标签基于全量上下文计算,保证同一发送者在同一对话中身份恒定
     label_context = entries if label_context_entries is None else label_context_entries
     sender_labels, sender_labels_by_user = queue._build_sender_labels(label_context)
@@ -300,7 +305,7 @@ def _build_from_entries(
                 content = queue._render_message_content(replied)
                 messages.append(
                     _render_role_message(
-                        role=_role_for_message(replied, bot_account),
+                        role=_role_for_message(replied, bot_accounts),
                         msg_id=replied_id,
                         number=number,
                         sender=sender,
@@ -333,7 +338,7 @@ def _build_from_entries(
             )
             messages.append(
                 _render_role_message(
-                    role=_role_for_message(msg, bot_account),
+                    role=_role_for_message(msg, bot_accounts),
                     msg_id=msg_id,
                     number=number,
                     sender=sender,

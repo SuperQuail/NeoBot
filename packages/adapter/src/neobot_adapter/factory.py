@@ -8,7 +8,6 @@ from neobot_contracts.ports.sandbox import SandboxDataPort
 
 from neobot_adapter.interfaces import RuntimeAdapter
 from neobot_adapter.local import LocalAdapter
-from neobot_adapter.onebot import OneBotAdapter
 
 
 @dataclass(frozen=True)
@@ -24,6 +23,15 @@ class AdapterSettings:
     reverse_ws_port: int = 0
     # 反向 WebSocket 握手鉴权的 access token(OneBot 11 规范;留空表示不校验)
     reverse_ws_access_token: str = ""
+    # QQ 官方机器人协议(adapter.mode = "official")配置
+    qq_appid: str = ""
+    qq_client_secret: str = ""
+    qq_markdown: bool = True
+    qq_base_url: str = "https://api.bot.qq.com"
+    qq_token_url: str = "https://api.bot.qq.com/app/getAppAccessToken"
+    qq_portal_host: str = "q.qq.com"
+    # 官方协议的凭据/身份持久化根目录(由本体传入 DATA_DIR)
+    data_dir: str = ""
 
 
 def create_adapter(
@@ -36,14 +44,6 @@ def create_adapter(
     cfg = _coerce_settings(settings)
     adapter_logger = logger or NullLogger()
     mode = cfg.mode.strip().casefold()
-    if mode == "onebot":
-        return OneBotAdapter(
-            logger=adapter_logger,
-            packet_callback=packet_callback,
-            host=cfg.reverse_ws_host or None,
-            port=cfg.reverse_ws_port if cfg.reverse_ws_port else None,
-            access_token=cfg.reverse_ws_access_token,
-        )
     if mode == "local":
         return LocalAdapter(
             host=cfg.local_host,
@@ -55,7 +55,18 @@ def create_adapter(
             packet_callback=packet_callback,
             sandbox_data=sandbox_data,
         )
-    raise ValueError(f"未知适配器模式: {cfg.mode}。可选值: onebot, local")
+    if mode in {"onebot", "official", "dual"}:
+        # 延迟导入:SwitchableAdapter 反向依赖本模块的 AdapterSettings。
+        from neobot_adapter.switchable import SwitchableAdapter
+
+        return SwitchableAdapter(
+            cfg,
+            logger=adapter_logger,
+            packet_callback=packet_callback,
+            sandbox_data=sandbox_data,
+            data_dir=cfg.data_dir or None,
+        )
+    raise ValueError(f"未知适配器模式: {cfg.mode}。可选值: onebot, official, dual, local")
 
 
 def _coerce_settings(settings: AdapterSettings | Any | None) -> AdapterSettings:
@@ -75,4 +86,17 @@ def _coerce_settings(settings: AdapterSettings | Any | None) -> AdapterSettings:
         reverse_ws_access_token=str(
             getattr(settings, "reverse_ws_access_token", "") or ""
         ),
+        qq_appid=str(getattr(settings, "qq_appid", "") or ""),
+        qq_client_secret=str(getattr(settings, "qq_client_secret", "") or ""),
+        qq_markdown=bool(getattr(settings, "qq_markdown", True)),
+        qq_base_url=str(
+            getattr(settings, "qq_base_url", "https://api.bot.qq.com")
+            or "https://api.bot.qq.com"
+        ),
+        qq_token_url=str(
+            getattr(settings, "qq_token_url", "https://api.bot.qq.com/app/getAppAccessToken")
+            or "https://api.bot.qq.com/app/getAppAccessToken"
+        ),
+        qq_portal_host=str(getattr(settings, "qq_portal_host", "q.qq.com") or "q.qq.com"),
+        data_dir=str(getattr(settings, "data_dir", "") or ""),
     )

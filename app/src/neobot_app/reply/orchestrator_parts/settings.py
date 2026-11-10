@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from neobot_app.bot_accounts import primary_bot_account
 from neobot_app.prompt.assets import raw_text
 from neobot_app.reply.event import ReplyEvent
 
@@ -174,11 +175,12 @@ class SettingsMixin:
         value = getattr(bot, "nick_name", "Bot")
         return value.strip() if isinstance(value, str) and value.strip() else "Bot"
     def _get_bot_account(self) -> int:
-        if self._config is None:
-            return 0
-        bot = getattr(self._config, "bot", None)
-        value = getattr(bot, "account", 0) or 0
-        return value
+        """机器人 QQ 号（事件之外的回退值）。
+
+        双通道下 config.bot.account 只有一个值，取号统一走 BotAccounts 提供者：
+        已解析时给当前主账号，未解析/旧单通道时内部回退 config.bot.account。
+        """
+        return primary_bot_account(self._config)
     def _show_boundary_markers(self) -> bool:
         if self._config is None:
             return False

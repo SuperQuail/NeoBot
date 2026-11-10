@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from neobot_app.bot_accounts import bot_account_for_event
 from neobot_app.reply.event import ReplyState
 from ._runtime import monotonic_seconds
 from .agent_state import AgentLoopState
@@ -41,7 +42,7 @@ class AgentPipelineMixin:
                 queue_copy,
                 queue_key,
                 numbering=numbering,
-                bot_account=self._get_bot_account(),
+                bot_account=bot_account_for_event(event, self._config),
                 include_boundary_markers=self._show_boundary_markers(),
             )
             member_block = ""
@@ -150,6 +151,7 @@ class AgentPipelineMixin:
                         queue,
                         queue_key,
                         numbering,
+                        bot_account=bot_account_for_event(event, self._config),
                     ):
                         cost_pipeline_extension_budget -= 1
                         group_lifespan = 1
@@ -309,7 +311,7 @@ class AgentPipelineMixin:
                 queue_copy,
                 queue_key,
                 numbering=numbering,
-                bot_account=self._get_bot_account(),
+                bot_account=bot_account_for_event(event, self._config),
                 include_boundary_markers=self._show_boundary_markers(),
             )
             if new_role_messages:

@@ -555,6 +555,36 @@ def test_bootstrap_registers_avatar_host_service() -> None:
     assert 'avatar_store=avatar_store' in source
 
 
+# ── 非真实 QQ 号（官方通道合成 ID）─────────────────────────────
+
+
+async def test_synthetic_official_id_is_never_sent_to_qlogo(db, tmp_path, monkeypatch):
+    """官方 13 位合成号不是 QQ 号：默认取源必须直接失败，不产生 qlogo 请求。"""
+    calls: list[dict] = []
+
+    def _bomb(**kwargs):
+        calls.append(kwargs)
+        raise AssertionError("合成 ID 不应发起 qlogo 请求")
+
+    monkeypatch.setattr("neobot_app.utils.http.image_http_client", _bomb, raising=False)
+    store = AvatarStore(uow_factory=db.uow_factory, directory=tmp_path / "avatars")
+
+    assert await store.maybe_refresh("9000000000001") is True
+    await store.drain()
+
+    assert calls == []
+    assert store.stats()["failed"] == 1
+    assert not (tmp_path / "avatars" / "9000000000001.png").exists()
+
+
+@pytest.mark.parametrize("user_id", ["9000000000001", "123456789012", "abc", ""])
+async def test_fetch_from_qq_rejects_non_qq_ids_before_network(tmp_path, user_id):
+    store = AvatarStore(directory=tmp_path / "avatars")
+
+    with pytest.raises(ValueError, match="QQ"):
+        await store._fetch_from_qq(user_id)
+
+
 @pytest.mark.parametrize("user_id", ["", None])
 async def test_blank_user_id_is_ignored(db, tmp_path, user_id):
     fetcher = CountingFetcher(png())

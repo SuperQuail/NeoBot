@@ -648,6 +648,11 @@ class Config:
                 if current_version and target_version and current_version != target_version:
                     logger.info(f"检测到配置版本变化: {current_version} -> {target_version}")
                     existing_data = cls._apply_migrations(existing_data, current_version, target_version)
+                elif not current_version:
+                    # 没有版本号的更老配置：按升级语义补 onebot（新部署走 schema 默认 official）
+                    from neobot_app.config.migrations import ensure_legacy_adapter_mode
+
+                    ensure_legacy_adapter_mode(existing_data)
             except Exception as e:
                 logger.error(f"读取配置文件失败: {e}")
                 load_error = e

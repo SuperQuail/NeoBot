@@ -126,6 +126,7 @@ class ReplyOrchestrator(LifecycleHooksMixin, LifecycleStartMixin, LifecycleShutd
         config_update_callback: Any = None,
         sleep_service: Any = None,
         standby_service: Any = None,
+        bot_profile: Any = None,
     ) -> None:
         self._adapter = adapter
         self._sleep_service = sleep_service
@@ -140,6 +141,8 @@ class ReplyOrchestrator(LifecycleHooksMixin, LifecycleStartMixin, LifecycleShutd
         self._friend_queue = friend_message_queue
         self._config = config
         self._willing_service = willing_service
+        #: BotDetector：提供 profile.kind（official / unofficial）给提示词注入能力开关
+        self._bot_profile = bot_profile
         self._image_parse_service = image_parse_service
         self._emoji_service = emoji_service
         self._tts_service = tts_service

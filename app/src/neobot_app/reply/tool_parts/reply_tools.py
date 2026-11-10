@@ -160,6 +160,12 @@ class _ReplyToolsMixin:
                     expanded_raw.append(False)
             send_segments = expanded_bodies
 
+        # 双待模式：auto（默认）跟随事件自己的通道；显式值用于「这条改用另一边发」
+        raw_channel = str(args.get("channel") or "auto").strip().casefold()
+        if raw_channel not in {"auto", "onebot", "official"}:
+            return f"错误：channel 必须为 auto/onebot/official 之一，收到 {args.get('channel')}"
+        channel = None if raw_channel == "auto" else raw_channel
+
         delivered = await self._send_reply(
             text=text,
             reply_to=reply_to,
@@ -167,6 +173,7 @@ class _ReplyToolsMixin:
             segments=send_segments,
             images=images,
             **({"split_preview": split_preview} if split_preview is not None else {}),
+            **({"channel": channel} if channel else {}),
         )
         if delivered is False:
             # sender 侧兜底判定「清洗后什么都不剩」：绝不能不吭声地当成发过，
@@ -395,7 +402,13 @@ class _ReplyToolsMixin:
                 "[msg_id=...]、[被回复消息] 这类系统标注（它们是系统给你读的，不是输出格式），"
                 "也不要把思考过程、草稿、计划或 <think> 标签写进去。"
                 "例如要回一句「你好呀」，text 就写 \"你好呀\"，不要写 \"12: 某群友: 你好呀\"；"
-                "要引用某条消息时用 reply_to_number 传编号，正文里不要再写一遍编号和名字。",
+                "要引用某条消息时用 reply_to_number 传编号，正文里不要再写一遍编号和名字。"
+                + (
+                    "官方通道注意：发图片用 emoji_numbers（或 send_long_reply 发 Markdown 图），"
+                    "发语音用 speak；官方协议不支持拍一拍、QQ 表情回应与 QQ 内置表情搜索。"
+                    if self._official_platform
+                    else ""
+                ),
                 {
                     "properties": {
                         "text": {
@@ -411,7 +424,7 @@ class _ReplyToolsMixin:
                         "mention_qqs": {
                             "type": "array",
                             "items": {"type": "integer"},
-                            "description": "可选，要 @ 的 QQ 号列表。QQ 号见群友列表里的「QQ号:...」。仅在群聊生效，由 agent 自行决定是否 @ 以及 @ 谁；仅在需要提醒通知某人时使用。正文里需要表达 @ 时，没有特殊情况应在 @ 后留一个空格（例如「@ 某人」）；特殊需要可自行不加。",
+                            "description": "可选，要 @ 的 QQ 号列表。QQ 号见群友列表里的「QQ号:...」。仅在群聊生效，由 agent 自行决定是否 @ 以及 @ 谁；仅在需要提醒通知某人时使用。系统会发送真正的 @；正文里不要再写「@昵称」或「@ QQ号」，否则会出现两个 @。正文里要称呼对方时直接写名字，不要带 @。",
                         },
                         "segments": {
                             "type": "array",
@@ -441,6 +454,12 @@ class _ReplyToolsMixin:
                             "type": "array",
                             "items": {"type": "integer"},
                             "description": "可选，要发送的自定义表情包编号列表（统一入口，原 send_emoji 已并入）。编号来自 list_emojis 或 search_custom_emoji；每张图片单独作为一条消息发送，文字另外单独发送，不会合并到同一条消息；编号不存在会直接报错。",
+                        },
+                        "channel": {
+                            "type": "string",
+                            "enum": ["auto", "onebot", "official"],
+                            "default": "auto",
+                            "description": "可选，指定用哪个机器人通道发送：auto（默认，跟随本条消息进来的通道）/ onebot / official。只有双通道同时运行且确有需要时才指定，一般留空。",
                         },
                     },
                     "required": [],

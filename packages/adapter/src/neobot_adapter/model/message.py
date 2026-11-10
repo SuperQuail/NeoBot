@@ -355,6 +355,7 @@ class GeneralMessage(General):
     raw_message : Optional[str] = None #原始消息内容
     font : Optional[int] = None #字体
     sender : Optional[PostMessageMessagesender] = None
+    neobot_channel : Optional[str] = None #事件所属适配器通道（onebot/official），由双通道门面注入
 
 class PrivateMessage(GeneralMessage):
     """私聊消息数据结构"""

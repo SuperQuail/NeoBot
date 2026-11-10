@@ -7,6 +7,7 @@ from typing import Any
 from neobot_app.skills.base import SkillManager
 from neobot_app.skills.archive_crud import ArchiveCRUDSkill
 from neobot_app.skills.user_profile import UserProfileSkill
+from neobot_app.skills.user_identity import UserIdentitySkill
 from neobot_app.skills.favorability import FavorabilitySkill
 from neobot_app.skills.chat_history import ChatHistorySkill
 from neobot_app.skills.group_management import GroupManagementSkill
@@ -179,6 +180,9 @@ def build_all_skills(
                 image_parse_provider=vision_provider,
             )
         )
+
+    if "user_identity" not in disabled:
+        skills_to_register.append(UserIdentitySkill())
 
     if "favorability" not in disabled:
         skills_to_register.append(

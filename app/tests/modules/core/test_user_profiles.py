@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
+from neobot_app.user_identity import bind_user_identity, link_user_qq
 from neobot_app.user_profiles import UserProfileService
 
 
@@ -220,6 +221,27 @@ def test_format_group_member_line_includes_profile_segments() -> None:
     assert "头像记忆:头像是一只猫" in line
     assert "好感度:" in line
     assert line.endswith("</群友_1>")
+
+
+def test_format_mapped_member_shows_qq_and_qq_id(tmp_path) -> None:
+    """官方合成 ID 映射真实 QQ 后，档案同时显示 QQ 号和 QQ ID。"""
+    synthetic = 9000000000011
+    bind_user_identity(tmp_path)
+    try:
+        assert link_user_qq(synthetic, 123456789, trusted=True)[0]
+        member = SimpleNamespace(
+            user_id=synthetic,
+            nickname="枫",
+            card="",
+            sex=None,
+            role="member",
+        )
+
+        line = UserProfileService._format_group_member_line(1, member, None)
+
+        assert "QQ:123456789（QQ ID:9000000000011）" in line
+    finally:
+        bind_user_identity(None)
 
 
 async def test_collect_group_members_from_queue_full_scan_dedupes() -> None:

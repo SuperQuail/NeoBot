@@ -49,6 +49,16 @@ export const PAGE_ROUTES: readonly PageRoute[] = [
     component: lazy(() => import('../pages/Bots')),
   },
   {
+    path: '/channels',
+    label: '通道',
+    title: '机器人通道',
+    group: '配置',
+    icon: 'message',
+    viewport: true,
+    skeleton: 'workspace',
+    component: lazy(() => import('../pages/BotChannels')),
+  },
+  {
     path: '/config',
     label: '配置',
     title: '配置管理',

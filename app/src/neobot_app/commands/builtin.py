@@ -20,6 +20,12 @@ from neobot_app.commands.model import (
     CommandContext,
     permission_name,
 )
+from neobot_app.bot_accounts import looks_like_real_qq
+from neobot_app.user_identity import (
+    link_group_number,
+    link_user_qq,
+    trusted_qq_for_user,
+)
 from neobot_app.panel_auth import (
     MAX_PASSWORD_LENGTH,
     MIN_PASSWORD_LENGTH,
@@ -95,6 +101,32 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
                 ("QQ号|@某人", "必填。要移除的次级管理员 QQ 号,或直接 @ 对方"),
             ),
             handler=_handle_del_admin,
+        ),
+        Command(
+            name="linkqq",
+            description=(
+                "把用户与本通道真实 QQ 号映射：只给 QQ 号时映射发送者本人；"
+                "@ 一个用户再给 QQ 号时映射对方。官方合成 ID 之后会显示为 QQ 号，"
+                "管理员/名单也能按真实 QQ 号识别"
+            ),
+            permission=PERM_SUB_ADMIN,
+            usage="<QQ号> 或 <@用户> <QQ号>",
+            params=(
+                ("QQ号", "必填。真实 QQ 号（5~11 位纯数字）；不 @ 人时映射发送者自己"),
+                ("@用户", "可选。要映射的当前通道用户；提供时映射对方"),
+            ),
+            handler=_handle_link_qq,
+        ),
+        Command(
+            name="linkgroup",
+            description=(
+                "把当前群与真实 QQ 群号映射：官方群的合成 ID 之后会显示为群号，"
+                "群黑白名单也按真实群号识别"
+            ),
+            permission=PERM_SUB_ADMIN,
+            usage="<群号>",
+            params=(("群号", "必填。当前群的真实 QQ 群号（5~12 位纯数字）"),),
+            handler=_handle_link_group,
         ),
         Command(
             name="sleep",
@@ -725,6 +757,52 @@ def _ai_reply_available(ctx: CommandContext) -> bool:
         return False
 
 
+async def _handle_link_qq(ctx: CommandContext) -> str:
+    """把 @ 到的用户（或发送者本人）与真实 QQ 号绑定（管理员级）。
+
+    只有一个参数时映射**发送者本人**：这是官方通道的主路径（官方不能 @ 其他用户，
+    且被 @ 者信息在官方事件里需要 mentions 才能拿到）。
+    """
+    message = ctx.message
+    bot_account = ctx.service._bot_account(message)
+    targets = [qq for qq in ctx.at_qqs if qq != bot_account]
+    if len(targets) > 1:
+        return "一次只能 @ 一个用户。"
+    qq_args = [arg for arg in ctx.args if arg.isdigit()]
+    if len(qq_args) != 1:
+        return (
+            "用法：/linkqq <QQ号>（映射你自己）或 /linkqq @用户 <QQ号>"
+            "（QQ 号为 5~11 位纯数字）"
+        )
+    qq_number = int(qq_args[0])
+    if not looks_like_real_qq(qq_number):
+        return "QQ 号必须是 5~11 位纯数字。"
+    target = targets[0] if targets else int(ctx.user_id or 0)
+    if not target:
+        return "无法确定要映射的用户。"
+    if target == bot_account:
+        return "不能把机器人账号映射成普通用户。"
+    channel = str(getattr(message, "neobot_channel", "") or "") or None
+    ok, message_text = link_user_qq(
+        target, qq_number, channel=channel, trusted=True
+    )
+    return message_text if ok else f"映射失败：{message_text}"
+
+
+async def _handle_link_group(ctx: CommandContext) -> str:
+    """把当前群的真实群号映射到本通道群 ID（管理员级）。"""
+    if ctx.kind != "group":
+        return "请在群聊中使用 /linkgroup <群号>。"
+    args = [arg for arg in ctx.args if arg.isdigit()]
+    if len(args) != 1:
+        return "用法：/linkgroup <群号>（群号为 5~12 位纯数字）"
+    channel = str(getattr(ctx.message, "neobot_channel", "") or "") or None
+    ok, message_text = link_group_number(
+        ctx.conv_id, int(args[0]), channel=channel, trusted=True
+    )
+    return message_text if ok else f"映射失败：{message_text}"
+
+
 async def _handle_add_admin(ctx: CommandContext) -> str:
     return await _modify_admin(ctx, add=True)
 
@@ -740,6 +818,9 @@ async def _modify_admin(ctx: CommandContext, *, add: bool) -> str:
     卡片只画头像 + 人数，纯文本降级也只说人数（issue #85）。
     """
     target_qq = _extract_target_qq(ctx)
+    if target_qq is not None:
+        # 官方合成 ID 已人工映射时，管理员名单统一存真实 QQ 号。
+        target_qq = trusted_qq_for_user(target_qq) or target_qq
     if target_qq is None:
         # 参数缺失：一行提示就够，不上卡片；但仍然**不带任何号码**
         return (
@@ -855,7 +936,7 @@ async def _handle_set_password(ctx: CommandContext) -> str:
 
 def _extract_target_qq(ctx: CommandContext) -> int | None:
     """从参数或 @ 段提取目标 QQ 号(排除 @bot 触发段)。"""
-    bot_account = ctx.service._bot_account()
+    bot_account = ctx.service._bot_account(getattr(ctx, "message", None))
     # 优先 @ 段(排除 bot 自己)
     for qq in sorted(ctx.at_qqs):
         if qq != bot_account:

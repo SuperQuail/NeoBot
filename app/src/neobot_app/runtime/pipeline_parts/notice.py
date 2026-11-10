@@ -12,6 +12,8 @@ from neobot_adapter.model.notice import PrivateMessageDelete
 from neobot_adapter.model.notice import PrivatePoke
 from neobot_adapter.utils.parse import safe_parse_model
 
+from neobot_app.user_identity import display_user_id
+
 from .helpers import _build_poke_action_text
 
 
@@ -77,7 +79,7 @@ class _PipelineNoticeMixin:
         else:
             return
 
-        operator_name = f"QQ:{user_id}" if user_id is not None else "未知用户"
+        operator_name = display_user_id(user_id) if user_id is not None else "未知用户"
         if user_id is not None and self._profile_service is not None:
             try:
                 profile = await asyncio.wait_for(
@@ -214,7 +216,7 @@ class _PipelineNoticeMixin:
                         resp.data.card
                         or resp.data.nickname
                         or resp.data.card_or_nickname
-                        or f"QQ:{user_id}"
+                        or display_user_id(user_id)
                     )
             except asyncio.TimeoutError:
                 self._logger.warning(
@@ -232,7 +234,7 @@ class _PipelineNoticeMixin:
                     timeout=self._get_dependency_timeout_seconds(),
                 )
                 if resp and resp.data:
-                    return resp.data.nickname or f"QQ:{user_id}"
+                    return resp.data.nickname or display_user_id(user_id)
             except asyncio.TimeoutError:
                 self._logger.warning(
                     "解析陌生人名称超时",
@@ -242,4 +244,4 @@ class _PipelineNoticeMixin:
             except Exception:
                 pass
 
-        return f"QQ:{user_id}"
+        return display_user_id(user_id)

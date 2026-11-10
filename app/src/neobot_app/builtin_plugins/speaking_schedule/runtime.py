@@ -1,11 +1,24 @@
 """Runtime instance and configuration consumer owned by a plugin load."""
 
+from types import SimpleNamespace
+
 import tomlkit
+from neobot_app.bot_accounts import bot_account_for_message, primary_bot_account
 from neobot_app.config.hot_reload import HotReloadRule
 from neobot_contracts.ports.speaking import SpeakingDecision
 from .config import ScheduleConfig
 from .schedule import evaluate, next_boundary
 from .state import ClockHealth, MuteStore, atomic_write, utc_now
+
+
+def _event_message_view(event):
+    """钩子把入站事件以 dict 交进来；提供者按对象属性取号，这里只做形态适配。"""
+    if isinstance(event, dict):
+        return SimpleNamespace(
+            self_id=event.get("self_id"),
+            neobot_channel=event.get("neobot_channel"),
+        )
+    return event
 
 
 def update_document(doc, values):
@@ -40,13 +53,15 @@ class ScheduleRuntime:
         self.registry = ctx.plugin_host.services.require("speaking_policy")
         self.mutes = MuteStore(ctx.data_dir / "mutes.json")
         self.clock = ClockHealth()
+        #: 最近一条入站事件所属的机器人号（双通道下用于静默/时间样本记账）。
+        self._latest_account = 0
 
     @property
     def account(self):
-        config = self.ctx.plugin_host.services.get("config")
-        account = str(getattr(getattr(config, "bot", None), "account", "") or "")
-        self.clock.select_account(account)
-        return account
+        """当前机器人账号：优先最近事件的 self_id，无事件时回退统一提供者。"""
+        account = self._latest_account or primary_bot_account()
+        self.clock.select_account(str(account) if account else "")
+        return str(account) if account else ""
 
     async def apply_config(self, config):
         updated = ScheduleConfig.model_validate(config)
@@ -74,8 +89,11 @@ class ScheduleRuntime:
         return evaluate(self.config, conversation, utc_now())
 
     async def sample(self, event):
+        account = bot_account_for_message(_event_message_view(event))
+        if account:
+            self._latest_account = account
         previous = self.clock.health
-        self.clock.sample(event, self.account, utc_now().timestamp())
+        self.clock.sample(event, str(account) if account else "", utc_now().timestamp())
         if self.clock.health != previous and "异常" in self.clock.health:
             self.ctx.logger.warning(self.clock.health)
 

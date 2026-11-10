@@ -75,10 +75,20 @@ class AdapterSupervisor(ConfigConsumer):
     async def apply_config(self, config: Any) -> None:
         """配置热重载入口：解析新设置并按需重启监听。
 
+        可切换适配器（SwitchableAdapter）自己负责通道模式与两组监听设置的
+        生效编排，这里直接委托，避免控制面重复实现一遍切换事务。
+
         Raises:
             RuntimeError: 新设置与原设置不同，但适配器不支持运行期改设置。
             OSError: 新端口/地址无法绑定（旧设置已回滚并重新监听）。
         """
+        apply_channel_config = getattr(self._adapter, "apply_channel_config", None)
+        if callable(apply_channel_config):
+            ok, message = await apply_channel_config(config)
+            if not ok:
+                # 切换/重启失败必须让热重载报告失败，否则面板会显示「已生效」。
+                raise RuntimeError(str(message or "适配器通道切换失败"))
+            return
         settings = self._resolve_settings(config)
         if settings is None:
             return

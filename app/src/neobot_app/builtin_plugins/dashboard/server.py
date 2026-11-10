@@ -24,6 +24,7 @@ from neobot_app.panel_auth import get_panel_password_store
 from . import system as system_module
 from .api import DashboardApi, _json_error
 from .bilibili_login import BilibiliQrLoginFlow
+from .qqbot_panel import QQBotPageExtension
 from .config import DashboardConfig
 from .config_manager import BotConfigManager, EnvFileManager
 from .metrics import Metrics, latency_sample_capacity
@@ -272,6 +273,12 @@ class DashboardServer:
         return bool(self._live_config().get("allow_remote_manage", self._allow_remote_manage))
 
     async def start(self) -> str | None:
+        # 机器人通道页是面板自己的自包含页面（不经 React 构建），随面板启动挂载。
+        # 测试会用 object.__new__ 造只带少量属性的 server 直接验证端口逻辑，
+        # 这里补一次空扩展表，避免与启动地址测试的构造方式耦合。
+        if not hasattr(self, "_extensions"):
+            self._extensions = {}
+        self.register_extension("qqbot", QQBotPageExtension())
         app = self._make_app()
         runner = web.AppRunner(app, access_log=None, shutdown_timeout=5)
         await runner.setup()
@@ -316,6 +323,10 @@ class DashboardServer:
             local_url=self.public_url,
             listen_host=self.config.host,
             password_configured=self.passwords.configured,
+        )
+        # 二维码在页面内直接用 SVG 渲染；打印页面地址方便从日志直接打开扫码
+        self.logger.info(
+            f"机器人通道页已就绪: {self.public_url}qqbot/（QQ 官方机器人扫码绑定二维码显示在此页）"
         )
         if not self.passwords.configured:
             self.logger.warning(
@@ -386,6 +397,7 @@ class DashboardServer:
         self._route(app, "POST", "/api/config/billing/preview", self.api.config_billing_preview)
         # 快捷部署菜单：新手引导 + OneBot 连接信息（NapCat 侧要填的地址与 token）
         self._route(app, "GET", "/api/deploy/status", self.api.deploy_status)
+        self._route(app, "POST", "/api/deploy/official-bind", self.api.deploy_official_bind)
         self._route(app, "POST", "/api/deploy/onebot-token", self.api.deploy_generate_token)
         self._route(app, "GET", "/api/logs", self.api.logs)
         self._route(app, "GET", "/api/tasks", self.api.tasks)
@@ -463,6 +475,11 @@ class DashboardServer:
         self._route(app, "GET", "/bilibili/login.js", self.api.bilibili_login_script)
         self._route(app, "GET", "/api/bilibili/login/status", self.api.bilibili_login_status)
         self._route(app, "POST", "/api/bilibili/login/start", self.api.bilibili_login_start)
+
+        # 机器人通道（OneBot / QQ 官方）：状态、热切换与官方扫码重新绑定。
+        self._route(app, "GET", "/api/qqbot/status", self.api.qqbot_status)
+        self._route(app, "POST", "/api/qqbot/switch", self.api.qqbot_switch)
+        self._route(app, "POST", "/api/qqbot/bind/rebind", self.api.qqbot_rebind)
 
         self._route(app, "GET", "/favicon.ico", self._favicon)
         self._route(app, "GET", "/image/{name}", self._image)
@@ -600,6 +617,9 @@ class DashboardServer:
             "worker-src 'self' blob:; base-uri 'none'; form-action 'none'"
         )
         path = self._strip_base(request.path)
+        if path == "/qqbot" or path.startswith("/qqbot/"):
+            # 机器人通道页嵌在面板内容区（同源 iframe）里，保留侧栏；只允许同源嵌套。
+            response.headers["X-Frame-Options"] = "SAMEORIGIN"
         if path.startswith(_API_PREFIX) or self._extension_requires_auth(path):
             response.headers["Cache-Control"] = "no-store"
         from .api_parts.plugin_views import apply_plugin_view_headers

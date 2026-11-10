@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from neobot_app.bot_accounts import bot_account_for_event
 from neobot_app.reply.event import ReplyEvent, ReplyState
 from .tool_text import _render_tool_package_index
 
@@ -20,10 +21,12 @@ class AgentPromptMixin:
         """构建本轮 agent 的提示词与初始消息，返回后续步骤共用的上下文。"""
         from neobot_app.message.numbering import MessageNumbering
 
-        # 带上 bot_account：wait/增量注入等文本渲染路径需要判断「这条是不是我自己发的」，
-        # 以免把自己的历史发言渲染成「编号: 发送者: 正文」再次示范脏格式。
+        # 带上本次事件的机器人账号：wait/增量注入等文本渲染路径需要判断
+        # 「这条是不是我自己发的」，以免把自己的历史发言渲染成
+        # 「编号: 发送者: 正文」再次示范脏格式。双通道下每个通道号不同，
+        # 取事件级账号，不能读 config.bot.account 的单值。
         numbering = MessageNumbering(
-            bot_account=getattr(getattr(self._config, "bot", None), "account", None),
+            bot_account=bot_account_for_event(event, self._config) or None,
             queue=queue,
             queue_key=queue_key,
         )

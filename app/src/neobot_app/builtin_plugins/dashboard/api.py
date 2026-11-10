@@ -25,6 +25,7 @@ from .api_parts.chat_flows import ChatFlowsMixin
 from .api_parts.archives import ArchivesMixin
 from .api_parts.archive_summary import ArchiveSummaryMixin
 from .api_parts.admin import AdminMixin
+from .api_parts.qqbot import QqbotMixin
 
 from .api_parts._common import (
     _pydantic_errors,
@@ -82,6 +83,7 @@ class DashboardApi(
     ArchivesMixin,
     ArchiveSummaryMixin,
     AdminMixin,
+    QqbotMixin,
     DashboardApiBase,
 ):
     """面板接口集合。"""

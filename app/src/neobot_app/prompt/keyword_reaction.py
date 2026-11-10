@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
+from neobot_app.bot_accounts import is_bot_message
 from neobot_app.prompt.assets import text
 
 if TYPE_CHECKING:
@@ -93,19 +94,10 @@ class KeywordReactionBuilder:
             return []
 
         # 跳过 bot 自己发出的消息(语音/长回复等自推消息也会进队列),
-        # 避免关键词规则因 bot 自己的发言自触发
-        bot_account = getattr(queue, "bot_account", None)
-        if bot_account:
-            try:
-                bot_account = int(bot_account)
-            except (TypeError, ValueError):
-                bot_account = None
-        if bot_account:
-            recent_messages = [
-                message
-                for message in recent_messages
-                if _safe_user_id(message) != bot_account
-            ]
+        # 避免关键词规则因 bot 自己的发言自触发。两个号由统一提供者判定。
+        recent_messages = [
+            message for message in recent_messages if not is_bot_message(message)
+        ]
 
         message_texts = [self._render_message_text(message) for message in recent_messages]
         # 统一 casefold 一次(匹配热路径直接复用,避免每规则每消息重复计算)

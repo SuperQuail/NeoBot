@@ -10,6 +10,8 @@ from typing import Any
 from neobot_adapter.model.message import GroupMessage, MessageSegment, PrivateMessage
 from neobot_contracts.ports.logging import Logger, NullLogger
 
+from neobot_app.bot_accounts import bot_account_for_message, bot_accounts
+from neobot_app.user_identity import group_number_for, qq_for_user
 from neobot_app.config.schemas.bot import BotConfig
 from neobot_app.core.paths import get_data_dir
 from neobot_app.message.queue import MessageQueue
@@ -127,7 +129,7 @@ class WillingService:
                 else self._base_probability("group")
             ),
             conversation_coefficient=1.0,
-            bot_account=int(self._config.bot.account),
+            bot_account=bot_account_for_message(message, self._config),
             bot_name=self._config.bot.nick_name,
             bot_aliases=tuple(self._config.bot.alias_name or []),
             mentioned_bot=mentioned,
@@ -398,7 +400,7 @@ class WillingService:
             observed_messages_text=tuple(observed_messages),
             base_probability=base_probability,
             conversation_coefficient=conversation_coefficient,
-            bot_account=int(self._config.bot.account),
+            bot_account=bot_account_for_message(message, self._config),
             bot_name=self._config.bot.nick_name,
             bot_aliases=tuple(self._config.bot.alias_name or []),
             mentioned_bot=mentioned_bot,
@@ -427,22 +429,26 @@ class WillingService:
         if conversation_type == "group":
             if self._config.message.enable_group is False:
                 return False, "group_disabled"
+            mapped_group = group_number_for(queue_key)
             return self._check_list_rule(
                 queue_key,
                 self._config.chat.group_use_black_list,
                 self._config.chat.group_list or [],
                 black_list_reason="group_blacklisted",
                 white_list_reason="group_not_in_whitelist",
+                aliases=(str(mapped_group),) if mapped_group else (),
             )
 
         if self._config.message.enable_private is False:
             return False, "private_disabled"
+        mapped = qq_for_user(queue_key)
         return self._check_list_rule(
             queue_key,
             self._config.chat.friend_use_black_list,
             self._config.chat.friend_list or [],
             black_list_reason="friend_blacklisted",
             white_list_reason="friend_not_in_whitelist",
+            aliases=(str(mapped),) if mapped else (),
         )
 
     @staticmethod
@@ -453,12 +459,13 @@ class WillingService:
         *,
         black_list_reason: str,
         white_list_reason: str,
+        aliases: tuple[str, ...] = (),
     ) -> tuple[bool, str]:
         normalized = {str(item) for item in configured_list if str(item).strip()}
         if not normalized:
             return True, ""
 
-        in_list = queue_key in normalized
+        in_list = queue_key in normalized or any(alias in normalized for alias in aliases)
         if use_black_list and in_list:
             return False, black_list_reason
         if not use_black_list and not in_list:
@@ -504,10 +511,24 @@ class WillingService:
         """检查机器人是否被 @提及，且配置了被@必回。"""
         if not getattr(self._config.chat, "at_mention_guaranteed_reply", True):
             return False
+        # 官方群事件只会推送 @ 机器人的消息，没有 at 段也按被 @ 处理；账号解析完成前
+        # bot.account 还没填，at 段对不上，走这段兜住
+        if isinstance(message, GroupMessage) and self._is_official_platform(message):
+            return True
         return self._mentioned_bot(message)
 
+    def _is_official_platform(self, message: Any = None) -> bool:
+        """消息所在通道是否为 QQ 官方机器人协议；无通道信息时回退主档。"""
+        detector = self._bot_detector
+        if detector is None:
+            return False
+        channel = getattr(message, "neobot_channel", None)
+        lookup = getattr(detector, "profile_for", None)
+        profile = lookup(channel) if callable(lookup) else getattr(detector, "profile", None)
+        return getattr(profile, "kind", None) == "official"
+
     def _mentioned_bot(self, message: ChatMessage) -> bool:
-        target = str(self._config.bot.account)
+        target = str(bot_account_for_message(message, self._config))
         if message.message:
             for segment in message.message:
                 segment_type = getattr(segment, "type", None)
@@ -526,7 +547,9 @@ class WillingService:
         return f"[CQ:at,qq={target}" in raw_message
 
     def _called_bot_name(self, text: str) -> bool:
-        names = [self._config.bot.nick_name, *(self._config.bot.alias_name or []), str(self._config.bot.account)]
+        names = [self._config.bot.nick_name, *(self._config.bot.alias_name or [])]
+        # 双待下两条通道的号都由统一提供者给出，调用侧不关心单/双通道。
+        names.extend(str(account) for account in bot_accounts(self._config))
         lowered_text = text.casefold()
         return any(name and str(name).casefold() in lowered_text for name in names)
 

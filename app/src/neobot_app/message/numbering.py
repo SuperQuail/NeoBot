@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from neobot_app.bot_accounts import is_bot_message
+
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -64,10 +66,11 @@ class MessageNumbering:
         输出的格式去模仿（问题报告的根因）。wait 结果、增量注入、文本回退路径
         都必须和聊天记录渲染保持一致，否则同一条管线里一边禁止一边示范。
         """
-        is_self = (
-            self._bot_account is not None
-            and getattr(message, "user_id", None) == self._bot_account
-        )
+        # 自身发言由统一提供者判定（self_id/通道/config 细节不可见）；直接构造
+        # MessageNumbering 并显式注入 bot_account 的旧测试/调用在没有绑定时兜底。
+        is_self = is_bot_message(message)
+        if not is_self and self._bot_account is not None:
+            is_self = getattr(message, "user_id", None) == self._bot_account
         marker = "[被回复消息] " if replied else ""
         if is_self:
             return f"[msg_id={msg_id}] {marker}{content}"

@@ -38,6 +38,9 @@ class ConnectionTimeoutError(RuntimeError):
 #: 当时积压的全部会话；给到 600 秒是为了让「正常积压」能跑完，同时避免无界等待。
 CLOSE_FLUSH_TIMEOUT_SECONDS = 600.0
 
+#: 启动后等待框架连入再判定身份的单次等待（秒）；超时只继续等，不影响启动。
+_IDENTITY_CONNECTION_WAIT_SECONDS = 30.0
+
 
 class NeoBotApplication(Generic[T]):
     #: 适配器停止的软超时：只用于**先报错**，之后的等待由 shield 继续。
@@ -188,7 +191,7 @@ class NeoBotApplication(Generic[T]):
                     self._logger.info(f"本地适配器 WebSocket 地址: {ws_url}")
             if self._bot_detector is not None:
                 log_stage("bot_detection")
-                await self._bot_detector.refresh()
+                await self._start_identity_detection()
             if getattr(self, "_owns_plugins", True) and self._plugin_runtime is not None:
                 log_stage("plugin_start")
                 await self._plugin_runtime.start_all()
@@ -249,6 +252,44 @@ class NeoBotApplication(Generic[T]):
             if deferred is not None:
                 raise deferred
             raise
+
+    async def _start_identity_detection(self) -> None:
+        """连上后再判定身份；尚未连接时挂后台任务等连接，启动不因等待而阻塞。"""
+        await self._bot_detector.resolve_identity()
+        if getattr(self.adapter, "connected", False):
+            return
+        wait = getattr(self.adapter, "wait_for_connection", None)
+        if not callable(wait):
+            return
+        self._background_tasks.append(asyncio.create_task(self._resolve_identity_when_connected(wait)))
+
+    async def _resolve_identity_when_connected(self, wait: Callable[..., Any]) -> None:
+        """等待框架连入后判定一次身份；停止时随后台任务一起取消。"""
+        while not self._shutdown_event.is_set():
+            try:
+                connected = await asyncio.to_thread(wait, _IDENTITY_CONNECTION_WAIT_SECONDS)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # 适配器等待异常不该打死后台任务：记录后继续等下一档
+                self._logger.warning(
+                    "等待框架连接失败，稍后重试",
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+                await asyncio.sleep(1.0)
+                continue
+            if not connected:
+                continue
+            try:
+                await self._bot_detector.resolve_identity()
+            except Exception as exc:
+                self._logger.warning(
+                    "连接后身份判定失败",
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+            return
 
     async def _rollback_start(self, started: list[str]) -> BaseException | None:
         """Rollback startup without letting one cleanup failure skip later resources."""

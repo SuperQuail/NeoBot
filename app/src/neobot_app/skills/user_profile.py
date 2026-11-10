@@ -6,6 +6,7 @@ import asyncio
 import json
 from typing import Any
 
+from neobot_app.bot_accounts import looks_like_real_qq
 from neobot_app.skills.base import SkillModule
 
 def _json(data: dict[str, Any]) -> str:
@@ -122,6 +123,19 @@ async def _handle_analyze_user_avatar(self: UserProfileSkill, args: dict) -> str
     user_id = str(args.get("user_id", "")).strip()
     if not user_id:
         return _json({"ok": False, "error": "缺少 user_id"})
+    # 官方通道的 user_id 是 13 位合成 ID，没有 QQ 头像可拉；直接给明确错误，
+    # 不要把合成 ID 当 QQ 号去调 get_qq_avatar。
+    if not looks_like_real_qq(user_id):
+        return _json(
+            {
+                "ok": False,
+                "error": (
+                    "该用户 ID 不是真实 QQ 号（官方通道的合成 ID 没有 QQ 头像）；"
+                    "请改从消息附件/头像 URL 获取图片。"
+                ),
+                "user_id": user_id,
+            }
+        )
     group_id = str(args.get("group_id", "")).strip() or None
     requirement = str(args.get("requirement", "")).strip() or (
         "请简洁描述这个QQ头像中稳定、可作为长期记忆的视觉信息。"

@@ -135,6 +135,18 @@ def dynamic_text(name: str) -> Callable[[PromptContext], str]:
     return render
 
 
+def _official_platform_note(_ctx: PromptContext) -> str:
+    """官方机器人协议的能力边界：固定文案，不读模板/配置（没有 TOML 分区）。"""
+    return (
+        "<官方机器人限制>\n"
+        "你通过 QQ 官方机器人协议接入，只能被动回复收到的消息：不能主动私聊，也不能主动加好友或入群。\n"
+        "群成员列表、好友列表、群资料等接口多数不可用，拿不到的信息按不知道处理，不要反复重试。\n"
+        "不要调用群管理（禁言、踢人、撤回他人消息、改群名等）和好友管理（加好友、删好友、改备注等）动作。\n"
+        "你看到的用户/群 ID 是开放平台的合成 ID，不是真实 QQ 号；不要拿它去搜索、加好友或拼 QQ 资料链接。\n"
+        "</官方机器人限制>"
+    )
+
+
 # ── 块定义 ────────────────────────────────────────────────────────────────────
 
 
@@ -416,6 +428,16 @@ BLOCKS: tuple[Block, ...] = (
         ),
         per_round=True,
         note="原生视觉说明（仅主模型支持原生视觉时追加到 system 末尾）",
+    ),
+    Block(
+        "official_platform_note",
+        Stage.SYSTEM_APPEND,
+        CHAT_SCOPES,
+        order=110,
+        requires=(feature("official_platform"),),
+        text=_official_platform_note,
+        per_round=True,
+        note="官方机器人协议的能力边界：只能被动回复，不能加好友/入群，列表接口多数不可用",
     ),
     # ── 每轮构建的上下文 user 块 ──
     Block(

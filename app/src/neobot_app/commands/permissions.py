@@ -14,6 +14,12 @@ from neobot_app.commands.model import (
     PERM_SUB_ADMIN,
     PERM_SUPER_ADMIN,
 )
+from neobot_app.user_identity import trusted_qq_for_user
+
+
+#: 开放平台默认的开发者的合成 ID（官方通道首个 identity），默认拥有超级管理员权限。
+#: 放在代码里而不是配置文件，保证老配置升级/新部署都生效；可在以后按需改成配置项。
+RESERVED_SUPER_ADMIN_IDS = frozenset({9000000000001})
 
 
 class PermissionManager:
@@ -22,8 +28,8 @@ class PermissionManager:
 
     @property
     def super_admins(self) -> set[int]:
-        """超级管理员 QQ 号集合(配置不可被命令修改)。"""
-        return self._admin_set("admin_accounts")
+        """超级管理员 QQ 号集合(配置不可被命令修改；含保留的官方开发者 ID)。"""
+        return self._admin_set("admin_accounts") | set(RESERVED_SUPER_ADMIN_IDS)
 
     @property
     def sub_admins(self) -> set[int]:
@@ -43,12 +49,24 @@ class PermissionManager:
                 continue
         return result
 
+    @staticmethod
+    def _candidates(user_id: int | str) -> set[int]:
+        """管理员判定同时认通道本地 ID 与管理员命令写入的 trusted 真实 QQ 号。
+
+        agent 工具写的映射只用于展示，不参与权限判定——避免模型自封管理员。
+        """
+        uid = int(user_id)
+        candidates = {uid}
+        mapped = trusted_qq_for_user(uid)
+        if mapped:
+            candidates.add(mapped)
+        return candidates
+
     def is_super_admin(self, user_id: int | str) -> bool:
-        return int(user_id) in self.super_admins
+        return bool(self._candidates(user_id) & self.super_admins)
 
     def is_sub_admin(self, user_id: int | str) -> bool:
-        uid = int(user_id)
-        return uid in self.sub_admins or uid in self.super_admins
+        return bool(self._candidates(user_id) & (self.sub_admins | self.super_admins))
 
     def can(self, user_id: int | str, level: int) -> bool:
         """用户是否具备指定权限等级。"""
@@ -67,6 +85,6 @@ class PermissionManager:
         「内部状态 → 用户可见文本」的泄露面（issue #85）；需要号码时请看配置或面板。
         """
         return (
-            f"超级管理员 {len(self.super_admins)} 人 / "
+            f"超级管理员 {len(self._admin_set('admin_accounts'))} 人 / "
             f"次级管理员 {len(self.sub_admins)} 人"
         )

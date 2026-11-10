@@ -82,14 +82,14 @@ _THINK_TOKEN = re.compile(
 def _known_names(known_sender_names: list[str] | tuple[str, ...] | None) -> list[str]:
     """规整已知发送者名字：去空、去首尾空白、去重、按长度降序（先长后短）。
 
-    `QQ:123` 形态的兜底名字不参与（正文里出现 `QQ:123` 未必是前缀标注）。
+    `QQ:123` / `ID:9000…` 形态的兜底名字不参与（正文里出现它们未必是前缀标注）。
     """
     if not known_sender_names:
         return []
     seen: dict[str, None] = {}
     for raw in known_sender_names:
         name = str(raw or "").strip()
-        if not name or name.startswith("QQ:") or len(name) > _MAX_NAME_CHARS:
+        if not name or name.startswith(("QQ:", "ID:")) or len(name) > _MAX_NAME_CHARS:
             continue
         seen.setdefault(name, None)
     return sorted(seen, key=len, reverse=True)[:MAX_KNOWN_SENDER_NAMES]

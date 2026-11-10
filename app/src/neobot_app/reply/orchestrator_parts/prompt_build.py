@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 from neobot_contracts.models import ConversationRef
+from neobot_app.bot_accounts import bot_account_for_event, looks_like_real_qq
+from neobot_app.user_identity import group_number_for, id_label, qq_for_user
 from neobot_app.prompt.blocks import Stage, blocks_for
 from neobot_app.prompt.context import Scope
 from neobot_app.reply.event import ReplyEvent, ReplyState
@@ -14,6 +16,61 @@ if TYPE_CHECKING:
 
 
 class PromptBuildMixin:
+    #: 官方通道提示词最前面的身份说明（按需求原文，不改标点）
+    _OFFICIAL_PROMPT_PREFIX = (
+        "当前你是使用官方渠道搭建的QQ机器人,所以你看不到QQ号和群号,只看得到QQ ID和群ID,"
+    )
+    #: 官方通道没有真实 QQ 号/群号，提示词里的「QQ号」「群号」统一改称 ID。
+    _OFFICIAL_PROMPT_REPLACEMENTS = (
+        ("QQ群号", "QQ群 ID"),
+        ("QQ号", "QQ ID"),
+        ("QQ 号", "QQ ID"),
+        ("群号", "群 ID"),
+        ("群 号", "群 ID"),
+    )
+
+    @classmethod
+    def _official_replace_text(cls, text: str) -> str:
+        for old, new in cls._OFFICIAL_PROMPT_REPLACEMENTS:
+            text = text.replace(old, new)
+        return text
+
+    @classmethod
+    def _official_prompt_text(cls, text: str) -> str:
+        # 先替换再加前缀：前缀里的「QQ号」「群号」是需求原文，不能再被替换
+        return f"{cls._OFFICIAL_PROMPT_PREFIX}\n{cls._official_replace_text(text)}"
+
+    def _officialize_prompt(
+        self,
+        event: ReplyEvent,
+        prompt: str,
+        context_blocks: list[dict[str, str]] | None = None,
+    ) -> str:
+        if not self._is_official_platform(event):
+            return prompt
+        if context_blocks:
+            for block in context_blocks:
+                content = block.get("content")
+                if isinstance(content, str):
+                    block["content"] = self._official_replace_text(content)
+        return self._official_prompt_text(prompt)
+
+    def _is_official_platform(self, event: ReplyEvent) -> bool:
+        """当前事件是否来自官方机器人通道。
+
+        双待模式下事件自带 neobot_channel，直接看它；旧路径（单通道/未标注）没有
+        这个字段，回退到身份判定（profile 未解析时按非官方处理）。
+        """
+        channel = str(getattr(event, "neobot_channel", "") or "")
+        if channel:
+            return channel == "official"
+        profile = getattr(getattr(self, "_bot_profile", None), "profile", None)
+        return getattr(profile, "kind", None) == "official"
+
+    def _event_bot_account(self, event: ReplyEvent) -> int:
+        """本次回复的机器人 QQ 号统一由提供者解析（事件/通道/config 细节不可见）。"""
+        return bot_account_for_event(event, self._config)
+
     def _append_round_blocks(
         self,
         prompt: str,
@@ -74,13 +131,20 @@ class PromptBuildMixin:
             "prompt.build.before", event, queue_key=queue_key
         )
         if before_prompt.consumed:
-            return str(before_prompt.result or before_prompt.payload.get("prompt", ""))
+            return self._officialize_prompt(
+                event, str(before_prompt.result or before_prompt.payload.get("prompt", ""))
+            )
         event.transition(ReplyState.BUILDING_PROMPT)
         if event.conversation_ref is None:
             raise ValueError("ReplyEvent.conversation_ref is None")
 
         round_dynamic = dict(dynamic or {})
-        round_features = {"agent_mode": agent_mode, **dict(features or {})}
+        bot_account = self._event_bot_account(event)
+        round_features = {
+            "agent_mode": agent_mode,
+            "official_platform": self._is_official_platform(event),
+            **dict(features or {}),
+        }
 
         if event.conversation_ref.kind == "group":
             try:
@@ -92,6 +156,7 @@ class PromptBuildMixin:
                         last_reply_message_id=last_reply_message_id,
                         all_new=all_new,
                         context_blocks=context_blocks,
+                        bot_account=bot_account,
                     ),
                     timeout=self._get_prompt_timeout_seconds(),
                 )
@@ -114,7 +179,9 @@ class PromptBuildMixin:
                 after_prompt = await self._emit_runtime_event(
                     "prompt.build.after", event, queue_key=queue_key, prompt=prompt
                 )
-                return str(after_prompt.payload.get("prompt", prompt))
+                return self._officialize_prompt(
+                    event, str(after_prompt.payload.get("prompt", prompt)), context_blocks
+                )
             except asyncio.TimeoutError:
                 self._logger.warning(
                     "群聊提示词构建超时",
@@ -133,6 +200,7 @@ class PromptBuildMixin:
                     last_reply_message_id=last_reply_message_id,
                     all_new=all_new,
                     context_blocks=context_blocks,
+                    bot_account=bot_account,
                 ),
                 timeout=self._get_prompt_timeout_seconds(),
             )
@@ -145,7 +213,9 @@ class PromptBuildMixin:
             after_prompt = await self._emit_runtime_event(
                 "prompt.build.after", event, queue_key=queue_key, prompt=prompt
             )
-            return str(after_prompt.payload.get("prompt", prompt))
+            return self._officialize_prompt(
+                event, str(after_prompt.payload.get("prompt", prompt)), context_blocks
+            )
         except asyncio.TimeoutError:
             self._logger.warning(
                 "私聊提示词构建超时",
@@ -171,6 +241,7 @@ class PromptBuildMixin:
         """
         if self._prompt_builder is None:
             return []
+        bot_account = self._event_bot_account(event)
         if event.conversation_ref is not None and event.conversation_ref.kind == "group":
             return await self._prompt_builder.build_group_chat_messages(
                 group_id=int(queue_key),
@@ -178,6 +249,7 @@ class PromptBuildMixin:
                 numbering=numbering,
                 last_reply_message_id=last_reply_message_id,
                 all_new=all_new,
+                bot_account=bot_account,
             )
         return await self._prompt_builder.build_friend_chat_messages(
             user_id=int(queue_key),
@@ -185,6 +257,7 @@ class PromptBuildMixin:
             numbering=numbering,
             last_reply_message_id=last_reply_message_id,
             all_new=all_new,
+            bot_account=bot_account,
         )
     def _resolve_last_reply(
         self,
@@ -241,17 +314,25 @@ class PromptBuildMixin:
             sender_id = str(message.user_id)
 
         msg_type = getattr(message, "message_type", "")
+        # 官方通道的 user/group id 是开放平台 13 位合成 ID，不是 QQ 号；提示词
+        # 里按 ID 规模统一标注，避免模型拿合成 ID 去拼 qlogo/资料链接或加好友。
+        event_channel = str(getattr(event, "neobot_channel", "") or "") or None
+        # 人工映射过的官方合成 ID 在提示词里直接显示真实 QQ 号。
+        sender_value = (qq_for_user(sender_id, event_channel) or sender_id) if sender_id else ""
+        sender_label = id_label(sender_id, event_channel) if sender_id else "QQ"
         if isinstance(message, GroupMessage) or msg_type == "group":
             group_id = getattr(message, "group_id", None) or queue_key
-            lines = [
-                "[当前聊天环境]",
-                "会话类型：群聊",
-                f"群号：{group_id}",
-            ]
+            mapped_group = group_number_for(group_id, event_channel)
+            group_line = (
+                f"群号：{mapped_group}"
+                if mapped_group
+                else f"{'群号' if looks_like_real_qq(group_id) else '群 ID'}：{group_id}"
+            )
+            lines = ["[当前聊天环境]", "会话类型：群聊", group_line]
             if sender_name and sender_id:
-                lines.append(f"消息发送者：{sender_name}（QQ：{sender_id}）")
+                lines.append(f"消息发送者：{sender_name}（{sender_label}：{sender_value}）")
             elif sender_id:
-                lines.append(f"消息发送者QQ：{sender_id}")
+                lines.append(f"消息发送者{sender_label}：{sender_value}")
             return "\n".join(lines)
 
         lines = [
@@ -259,7 +340,7 @@ class PromptBuildMixin:
             "会话类型：私聊",
         ]
         if sender_name and sender_id:
-            lines.append(f"聊天对象：{sender_name}（QQ：{sender_id}）")
+            lines.append(f"聊天对象：{sender_name}（{sender_label}：{sender_value}）")
         elif sender_id:
-            lines.append(f"聊天对象QQ：{sender_id}")
+            lines.append(f"聊天对象{sender_label}：{sender_value}")
         return "\n".join(lines)

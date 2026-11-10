@@ -34,7 +34,7 @@ _DYNAMIC: dict[str, dict[str, object]] = {
 }
 
 #: agent 模式能力开关（skill / 工具包 / 原生视觉块依赖）。
-_FEATURES = {"agent_mode": True, "native_vision": True}
+_FEATURES = {"agent_mode": True, "native_vision": True, "official_platform": True}
 
 _SCOPE_ORDER = (Scope.GROUP, Scope.PRIVATE, Scope.LIVE, Scope.SUBAGENT)
 

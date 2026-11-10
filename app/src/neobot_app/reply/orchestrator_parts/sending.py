@@ -12,8 +12,10 @@ from neobot_app.reply.sender import ReplySender, SelfSentSink
 
 
 class SendingMixin:
-    async def _send_with_timeout(self, conversation_ref: ConversationRef, payload: object) -> Any:
-        return await self._sender.send_with_timeout(conversation_ref, payload)
+    async def _send_with_timeout(
+        self, conversation_ref: ConversationRef, payload: object, channel: str | None = None
+    ) -> Any:
+        return await self._sender.send_with_timeout(conversation_ref, payload, channel=channel)
 
     async def _call_api_with_timeout(self, action: str, params: dict[str, Any]) -> Any:
         return await self._sender.call_api_with_timeout(action, params)
@@ -56,6 +58,7 @@ class SendingMixin:
         self_sent: SelfSentSink | None = None,
         sender_names: list[str] | None = None,
         split_preview: ReplySplitPreview | None = None,
+        channel: str | None = None,
     ) -> bool:
         """转发到 ReplySender.send_reply；返回是否真的发出了内容（见 sender 注释）。"""
         if self_sent is not None and self_sent.usable:
@@ -92,6 +95,7 @@ class SendingMixin:
             self_sent=self_sent,
             sender_names=names,
             **({"split_preview": split_preview} if split_preview is not None else {}),
+            **({"channel": channel} if channel else {}),
         )
 
     @staticmethod
@@ -170,12 +174,14 @@ class SendingMixin:
         conversation_kind: str,
         reply_to_message_id: int | None = None,
         mention_user_ids: list[int] | None = None,
+        channel: str | None = None,
     ) -> list[dict]:
         return ReplySender.build_reply_segments(
             text=text,
             conversation_kind=conversation_kind,
             reply_to_message_id=reply_to_message_id,
             mention_user_ids=mention_user_ids,
+            channel=channel,
         )
 
     @staticmethod

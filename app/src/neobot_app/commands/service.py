@@ -9,6 +9,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from neobot_app.bot_accounts import bot_account_for_message, primary_bot_account
 from neobot_app.commands.builtin import build_builtin_commands
 from neobot_app.commands.model import (
     CommandContext,
@@ -166,7 +167,7 @@ class CommandService:
         - 私聊:文本为命令形态即可
         - 非命令形态 / 未注册命令:返回 consumed=False(移交正常管线)
         """
-        bot_account = self._bot_account()
+        bot_account = self._bot_account(message)
         at_qqs = self._collect_at_qqs(message)
         text = self._message_text(message)
 
@@ -227,11 +228,11 @@ class CommandService:
 
     # ── 消息解析辅助 ──
 
-    def _bot_account(self) -> int:
-        try:
-            return int(getattr(getattr(self._config, "bot", None), "account", 0) or 0)
-        except (TypeError, ValueError):
-            return 0
+    def _bot_account(self, message: Any = None) -> int:
+        """当前消息对应的 bot 账号：统一由提供者解析（self_id/通道/config 细节不可见）。"""
+        if message is not None:
+            return bot_account_for_message(message, self._config)
+        return primary_bot_account(self._config)
 
     @staticmethod
     def _segment_type(segment: Any) -> str:
@@ -281,7 +282,13 @@ class CommandService:
         if not segments:
             return ""
         for segment in segments:
-            if CommandService._segment_type(segment) != "text":
+            segment_type = CommandService._segment_type(segment)
+            if segment_type in ("at", "mention"):
+                # at 段在纯文本里取出后不能直接消失：否则「/linkqq@某人 123」
+                # 这种没有显式空格的输入会拼成「/linkqq123」，命令无法触发。
+                parts.append(" ")
+                continue
+            if segment_type != "text":
                 continue
             data = CommandService._segment_data(segment)
             text = data.get("text")

@@ -25,6 +25,7 @@ from neobot_adapter.model.message import (
     PrivateMessage,
 )
 
+from neobot_app.bot_accounts import bot_accounts, is_bot_message, primary_bot_account
 from neobot_app.message.queue import MessageQueue, QueueEntryType
 from neobot_app.time_context import epoch_seconds_int
 from neobot_app.user_profiles import UserProfileService
@@ -163,7 +164,7 @@ class ChatStreamManager:
                 reaction_weight=reaction_weight,
                 forward_weight=forward_weight,
                 self_sent_weight=self_sent_weight,
-                bot_account=bot_cfg.bot.account,
+                bot_account=primary_bot_account(bot_cfg),
                 reply_blacklist=set(bot_cfg.chat.reply_blacklist or []),
             )
         if self._friend_queue is None:
@@ -174,7 +175,7 @@ class ChatStreamManager:
                 reaction_weight=reaction_weight,
                 forward_weight=forward_weight,
                 self_sent_weight=self_sent_weight,
-                bot_account=bot_cfg.bot.account,
+                bot_account=primary_bot_account(bot_cfg),
                 reply_blacklist=set(bot_cfg.chat.reply_blacklist or []),
             )
 
@@ -396,7 +397,6 @@ class ChatStreamManager:
                 queue_key=queue_key,
                 conversation=ConversationRef(kind="private", id=queue_key),
                 backend_messages=pushed_messages,
-                bot_account=self._queue_bot_account(self._friend_queue),
                 limit=max_observations,
             )
 
@@ -451,7 +451,6 @@ class ChatStreamManager:
                 queue_key=queue_key,
                 conversation=ConversationRef(kind="group", id=queue_key),
                 backend_messages=pushed_messages,
-                bot_account=self._queue_bot_account(self._group_queue),
                 limit=max_observations,
             )
 
@@ -459,15 +458,6 @@ class ChatStreamManager:
             logger.error(f"处理群 {group.group_id} 历史消息时出错: {e}", exc_info=True)
 
     # ── Bot 自身消息补齐（软重启后 assistant 块）─────────────────
-
-    @staticmethod
-    def _queue_bot_account(queue: Optional[MessageQueue]) -> int:
-        """取队列上记录的机器人 QQ；取不到时返回 0（补齐逻辑随即跳过）。"""
-        account = getattr(queue, "bot_account", None)
-        try:
-            return int(account) if account else 0
-        except (TypeError, ValueError):
-            return 0
 
     @staticmethod
     def _message_text(message: Any) -> str:
@@ -488,40 +478,56 @@ class ChatStreamManager:
         return "".join(parts)
 
     async def _load_recent_self_messages(
-        self, conversation: ConversationRef, bot_sender_id: str, limit: int | None = None
+        self,
+        conversation: ConversationRef,
+        bot_sender_ids: Set[str],
+        limit: int | None = None,
     ) -> list[Any]:
-        """读取该会话本地落盘的 Bot 自身消息；失败返回空列表，不抛异常。
+        """读取该会话本地落盘的 Bot 自身消息（双通道下可能有多个账号）；失败返回空列表。
 
-        limit=None 表示不设独立上限——与后端历史用同一个窗口（max_observations），
-        避免出现「后端历史有、本地补齐只取 20 条」的口径错位。
+        仓库按单个 sender_id 过滤，这里逐账号读取后按发生时间合并；limit 是
+        合并后的总窗口（与后端历史同一口径），None 表示不限。
         """
+        if not bot_sender_ids:
+            return []
+        records: list[Any] = []
         try:
             async with self._uow_factory() as uow:
-                return await uow.messages.get_recent_by_sender(
-                    conversation, bot_sender_id, limit
-                )
+                for sender_id in sorted(bot_sender_ids):
+                    records.extend(
+                        await uow.messages.get_recent_by_sender(
+                            conversation, sender_id, limit
+                        )
+                    )
         except Exception as e:
             logger.warning(
                 f"读取会话 {conversation.kind}:{conversation.id} 的本地 Bot 自身消息失败: {e}"
             )
             return []
+        records.sort(
+            key=lambda record: _to_epoch_seconds(getattr(record, "occurred_at", None)) or 0
+        )
+        if limit is not None and len(records) > limit:
+            records = records[-limit:]
+        return records
 
     @classmethod
     def _is_duplicate_of_backend(
-        cls, record: Any, backend_messages: list[Any], bot_account: int
+        cls, record: Any, backend_messages: list[Any]
     ) -> bool:
         """本地记录是否已存在于后端历史里（对应验收 S5）。
 
         判定三重口径：同一会话（调用方已限定）、发送者都是 Bot 自己、文本相同
-        且时间相差 <= SELF_SENT_DEDUP_WINDOW_SECONDS。只在 sender_id == bot_qq
-        范围内比对，绝不会因此丢掉他人的消息。
+        且时间相差 <= SELF_SENT_DEDUP_WINDOW_SECONDS。「是不是 Bot 自己」统一
+        交给 bot_accounts.is_bot_message：消息级 self_id 优先，其次已知账号集合
+        （双通道两个号都算），绝不因此丢掉他人的消息。
         """
         text = str(getattr(record, "text", "") or "").strip()
         if not text:
             return True
         record_time = _to_epoch_seconds(getattr(record, "occurred_at", None))
         for message in backend_messages:
-            if getattr(message, "user_id", None) != bot_account:
+            if not is_bot_message(message):
                 continue
             if cls._message_text(message).strip() != text:
                 continue
@@ -534,10 +540,23 @@ class ChatStreamManager:
                 return True
         return False
 
+    @staticmethod
+    def _record_sender_account(record: Any) -> int:
+        """本地记录里的机器人账号（record.sender_id）；旧数据/异常值返回 0。"""
+        try:
+            return int(str(getattr(record, "sender_id", "") or ""))
+        except (TypeError, ValueError):
+            return 0
+
     def _self_sent_entry(
-        self, record: Any, conversation: ConversationRef, bot_account: int
+        self, record: Any, conversation: ConversationRef
     ) -> tuple[int, Any]:
-        """把一条本地 Bot 记录还原成可入队的消息对象与时间戳。"""
+        """把一条本地 Bot 记录还原成可入队的消息对象与时间戳。
+
+        账号以落库的 record.sender_id 为准（双通道下两个机器人各是各的），
+        旧记录缺失时才回退统一提供者的主账号。
+        """
+        bot_account = self._record_sender_account(record) or primary_bot_account()
         occurred_at = _to_epoch_seconds(getattr(record, "occurred_at", None))
         if occurred_at is None:
             occurred_at = epoch_seconds_int()
@@ -586,32 +605,32 @@ class ChatStreamManager:
         queue_key: str,
         conversation: ConversationRef,
         backend_messages: list[Any],
-        bot_account: int,
         limit: int | None = None,
     ) -> None:
         """把本地落盘的 Bot 自身发言补齐进队列（在 push_history 之后调用）。
 
-        ① 按 sender_id == bot_qq 取最近 limit 条本地记录（None = 不限，
-           与后端历史同窗口 max_observations）；
-        ② 跳过后端历史里已有的记录（同文本、时间相差 <=30s）；
+        ① 按当前所有机器人账号（双通道下两个）逐账号取最近记录，合并后取
+           最近 limit 条（None = 不限，与后端历史同窗口 max_observations）；
+        ② 跳过后端历史里已有的记录（Bot 自己 + 同文本 + 时间相差 <=30s）；
         ③ 与已在队列里的条目一起按 occurred_at 排序后重建该会话队列——
            push_history 只能追加，直接 append 会把较早的 assistant 块排到较新
            的 user 消息之后，模型看到的顺序就错了。
 
         全流程不抛异常：失败只记日志，既不影响启动流程，也不动既有灌入结果。
         """
-        if not bot_account or queue is None:
+        accounts = bot_accounts()
+        if not accounts or queue is None:
             return
         try:
             records = await self._load_recent_self_messages(
-                conversation, str(bot_account), limit
+                conversation, {str(account) for account in accounts}, limit
             )
             if not records:
                 return
             deduped = [
                 record
                 for record in records
-                if not self._is_duplicate_of_backend(record, backend_messages, bot_account)
+                if not self._is_duplicate_of_backend(record, backend_messages)
             ]
             if not deduped:
                 return
@@ -625,9 +644,7 @@ class ChatStreamManager:
                 # 出现）：重建会打乱它们，退化为只追加——宁可顺序不完美也不丢事件。
                 logger.debug(f"会话 {queue_key} 存在非消息条目，Bot 自身消息改为追加入队")
                 for record in deduped:
-                    occurred_at, message = self._self_sent_entry(
-                        record, conversation, bot_account
-                    )
+                    occurred_at, message = self._self_sent_entry(record, conversation)
                     queue.push_history(queue_key, message, occurred_at=occurred_at)
                 return
 
@@ -637,7 +654,7 @@ class ChatStreamManager:
                 if entry.kind == QueueEntryType.MESSAGE and entry.message is not None
             ]
             for record in deduped:
-                merged.append(self._self_sent_entry(record, conversation, bot_account))
+                merged.append(self._self_sent_entry(record, conversation))
             merged.sort(key=lambda item: item[0])
 
             queue.clear(queue_key)

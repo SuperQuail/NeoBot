@@ -49,6 +49,7 @@ class AgentHandlersMixin:
         send_original: bool = False,
         images: list[int] | None = None,
         split_preview: ReplySplitPreview | None = None,
+        channel: str | None = None,
     ) -> bool:
         """发送回复；返回是否真的发出了内容（False ⇒ 工具层提示模型重新生成）。
 
@@ -74,6 +75,7 @@ class AgentHandlersMixin:
                 self_sent=sink,
                 sender_names=sender_names,
                 **({"split_preview": split_preview} if split_preview is not None else {}),
+                **({"channel": channel} if channel else {}),
             )
         else:
             delivered = await self._send_reply(
@@ -86,6 +88,7 @@ class AgentHandlersMixin:
                 self_sent=sink,
                 sender_names=sender_names,
                 **({"split_preview": split_preview} if split_preview is not None else {}),
+                **({"channel": channel} if channel else {}),
             )
         if delivered is not False:
             state.reply_sent = True
@@ -287,8 +290,11 @@ class AgentHandlersMixin:
         reply_to: int | None = None,
         mention: list[int] | None = None,
         markdown: str = "",
+        channel: str | None = None,
     ) -> None:
         conv_ref = event.conversation_ref
+        # 未显式指定时跟随事件通道；双待下图片/说明文字与文本走同一个框架。
+        channel = channel or getattr(event, "neobot_channel", None) or None
         before_message_id = queue.get_last_message_id(queue_key)
         # 解析消息编号 -> 实际 message_id
         reply_to_message_id = None
@@ -304,8 +310,9 @@ class AgentHandlersMixin:
                 conversation_kind=conv_ref.kind if conv_ref else "",
                 reply_to_message_id=reply_to_message_id,
                 mention_user_ids=mention,
+                channel=channel,
             )
-            caption_delivered = await self._send_with_timeout(conv_ref, caption_segs)
+            caption_delivered = await self._send_with_timeout(conv_ref, caption_segs, channel=channel)
             if conv_ref is not None and caption_delivered is not False:
                 state.reply_sent = True
                 self._clear_unsent_marker(event)
@@ -319,6 +326,7 @@ class AgentHandlersMixin:
             conv_ref,
             Path(image_path),
             wait_response=False,
+            channel=channel,
         )
         if image_delivered is not False:
             state.reply_sent = True

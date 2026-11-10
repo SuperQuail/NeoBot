@@ -14,6 +14,7 @@ from neobot_app.observability.logging import LoguruLoggerFactory, configure_logu
 from neobot_app.prompt.store import PromptStore, sync_default_prompts
 from neobot_app.runtime.adapter_supervisor import AdapterSupervisor
 from neobot_app.runtime.hot_reload_registry import HotReloadRegistry
+from neobot_app.user_identity import bind_user_identity
 from neobot_app.utils.data_sync import sync_data_files
 from .core_reuse import _build_storage, _load_config_for_reuse, _reuse_or, _run_once, config_load_error
 from .maintenance_services import _register_billing_hot_reload_rule, _warmup_billing_scripts
@@ -26,6 +27,7 @@ def _build_core_services(state: _BuildState) -> None:
     _run_once("loguru", lambda: configure_loguru(DATA_DIR / "logs", runtime_events=True))
     logger_factory = _reuse_or("logger_factory", LoguruLoggerFactory)
     config = _load_config_for_reuse()
+    bind_user_identity(DATA_DIR)
     set_console_show_module(getattr(getattr(config, "debug", None), "console_show_module", False))
 
     sync_data_files(SRC_DATA_DIR, DATA_DIR)
