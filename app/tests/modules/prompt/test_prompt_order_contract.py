@@ -18,7 +18,7 @@ _APPEND_DYNAMIC = {
     "available_skills": "本轮命中的技能",
     "allowed_tools": "技能 allowed-tools 限制",
 }
-_APPEND_FEATURES = {"agent_mode": True, "native_vision": True}
+_APPEND_FEATURES = {"agent_mode": True, "native_vision": True, "official_platform": True}
 
 
 def _group_ctx(store, config, **kwargs):

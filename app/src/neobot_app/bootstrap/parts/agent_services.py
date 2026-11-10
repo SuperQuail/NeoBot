@@ -73,15 +73,24 @@ def _build_agent_services(state: _BuildState) -> None:
         config=config,
         logger=logger_factory.get_logger("app.skills"),
     )
-    register_config_reload_command(
-        host_facade=plugin["host_facade"],
-        config=config,
-        on_reload=lambda: sync_balance_query_skill(
+
+    async def _reload_side_effects() -> None:
+        """重载后重放构建期副作用：余额 Skill 同步 + 身份判定。"""
+        sync_balance_query_skill(
             registry=markdown_skill_registry,
             data_dir=DATA_DIR,
             config=config,
             logger=logger_factory.get_logger("app.skills"),
-        ),
+        )
+        # bot.account / bot.official_mode 可热重载：已连接时按新配置重新判定身份
+        reapply = getattr(memory_svcs["bot_detector"], "reapply", None)
+        if callable(reapply):
+            await reapply(config)
+
+    register_config_reload_command(
+        host_facade=plugin["host_facade"],
+        config=config,
+        on_reload=_reload_side_effects,
         hot_reload=hot_reload_registry,
     )
     balance_checker = build_balance_checker(

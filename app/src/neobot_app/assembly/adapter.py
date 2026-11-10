@@ -52,6 +52,18 @@ def _settings_from_config(config: Any = None) -> AdapterSettings:
         reverse_ws_access_token=str(
             getattr(adapter_cfg, "reverse_ws_access_token", "") or ""
         ),
+        qq_appid=str(getattr(adapter_cfg, "qq_appid", "") or ""),
+        qq_client_secret=str(getattr(adapter_cfg, "qq_client_secret", "") or ""),
+        qq_markdown=bool(getattr(adapter_cfg, "qq_markdown", True)),
+        qq_base_url=str(
+            getattr(adapter_cfg, "qq_base_url", "") or "https://api.bot.qq.com"
+        ),
+        qq_token_url=str(
+            getattr(adapter_cfg, "qq_token_url", "")
+            or "https://api.bot.qq.com/app/getAppAccessToken"
+        ),
+        qq_portal_host=str(getattr(adapter_cfg, "qq_portal_host", "") or "q.qq.com"),
+        data_dir=str(DATA_DIR),
     )
     return _apply_env_overrides(settings)
 
@@ -87,6 +99,16 @@ def _apply_env_overrides(settings: AdapterSettings) -> AdapterSettings:
     reverse_token = _env_ci("NEO_BOT_ADAPTER_TOKEN") or _env_ci("NEOBOT_ADAPTER_TOKEN")
     if reverse_token:
         values["reverse_ws_access_token"] = reverse_token
+    # 官方机器人凭据可只放在 .env（不进 config.toml），环境变量优先于配置值
+    qq_appid = _env_ci("NEOBOT_QQ_APPID")
+    if qq_appid:
+        values["qq_appid"] = qq_appid
+    qq_secret = _env_ci("NEOBOT_QQ_SECRET")
+    if qq_secret:
+        values["qq_client_secret"] = qq_secret
+    qq_base_url = _env_ci("NEOBOT_QQ_BASE_URL")
+    if qq_base_url:
+        values["qq_base_url"] = qq_base_url
     if not values:
         return settings
     return replace(settings, **values)

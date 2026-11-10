@@ -9,7 +9,12 @@ class Adapter:
 
     mode: str = field(
         default="onebot",
-        metadata={"description": "适配器模式：onebot 或 local"},
+        metadata={
+            "description": (
+                "适配器模式：onebot（反向 WebSocket 接入 OneBot 框架）、"
+                "official（内嵌 QQ 官方机器人协议）或 local（本地内置机器人）"
+            )
+        },
     )
     local_host: str = field(
         default="127.0.0.1",
@@ -59,4 +64,30 @@ class Adapter:
                 "也可用环境变量 NEO_BOT_ADAPTER_TOKEN / NEOBOT_ADAPTER_TOKEN 配置"
             )
         },
+    )
+    qq_appid: str = field(
+        default="",
+        metadata={"description": ("QQ 官方机器人 AppID（official 模式）；也可用环境变量 NEOBOT_QQ_APPID 配置")},
+    )
+    qq_client_secret: str = field(
+        default="",
+        metadata={"description": ("QQ 官方机器人 AppSecret（official 模式）；也可用环境变量 NEOBOT_QQ_SECRET 配置")},
+    )
+    qq_markdown: bool = field(
+        default=True,
+        metadata={
+            "description": ("official 模式下文本消息默认按 Markdown 发送；官方接口拒绝 Markdown 时自动降级为纯文本重发")
+        },
+    )
+    qq_base_url: str = field(
+        default="https://api.bot.qq.com",
+        metadata={"description": ("QQ 官方机器人 API 基地址（official 模式）；也可用环境变量 NEOBOT_QQ_BASE_URL 配置")},
+    )
+    qq_token_url: str = field(
+        default="https://api.bot.qq.com/app/getAppAccessToken",
+        metadata={"description": ("QQ 官方机器人 access token 获取地址（official 模式）")},
+    )
+    qq_portal_host: str = field(
+        default="q.qq.com",
+        metadata={"description": ("QQ 机器人扫码绑定门户域名（official 模式）")},
     )

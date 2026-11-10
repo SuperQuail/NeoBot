@@ -14,6 +14,11 @@ if TYPE_CHECKING:
 
 
 class PromptBuildMixin:
+    def _is_official_platform(self) -> bool:
+        """当前是否官方机器人通道；身份解析完成前 profile 为空，按非官方处理。"""
+        profile = getattr(getattr(self, "_bot_profile", None), "profile", None)
+        return getattr(profile, "kind", None) == "official"
+
     def _append_round_blocks(
         self,
         prompt: str,
@@ -80,7 +85,11 @@ class PromptBuildMixin:
             raise ValueError("ReplyEvent.conversation_ref is None")
 
         round_dynamic = dict(dynamic or {})
-        round_features = {"agent_mode": agent_mode, **dict(features or {})}
+        round_features = {
+            "agent_mode": agent_mode,
+            "official_platform": self._is_official_platform(),
+            **dict(features or {}),
+        }
 
         if event.conversation_ref.kind == "group":
             try:
