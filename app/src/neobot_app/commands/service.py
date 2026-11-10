@@ -282,7 +282,13 @@ class CommandService:
         if not segments:
             return ""
         for segment in segments:
-            if CommandService._segment_type(segment) != "text":
+            segment_type = CommandService._segment_type(segment)
+            if segment_type in ("at", "mention"):
+                # at 段在纯文本里取出后不能直接消失：否则「/linkqq@某人 123」
+                # 这种没有显式空格的输入会拼成「/linkqq123」，命令无法触发。
+                parts.append(" ")
+                continue
+            if segment_type != "text":
                 continue
             data = CommandService._segment_data(segment)
             text = data.get("text")

@@ -143,6 +143,26 @@ async def test_one_arg_links_sender_self():
     assert "已映射" in sent[-1][2]
 
 
+async def test_at_segment_separates_command_and_argument():
+    """没有显式空格的「/linkqq@用户 123」也要能按 at 段分隔出命令参数。"""
+    sent: list[tuple] = []
+    service = _service(sent)
+    message = SimpleNamespace(
+        user_id=SUB,
+        message=[
+            {"type": "text", "data": {"text": "/linkqq"}},
+            {"type": "at", "data": {"qq": str(BOT)}},
+            {"type": "at", "data": {"qq": str(SYNTHETIC)}},
+            {"type": "text", "data": {"text": "3514733681"}},
+        ],
+    )
+
+    result = await service.handle_message(message, kind="group", queue_key="100")
+
+    assert result.consumed is True
+    assert qq_for_user(SYNTHETIC) == 3514733681
+
+
 async def test_at_target_without_qq_shows_usage():
     sent: list[tuple] = []
     service = _service(sent)
