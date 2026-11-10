@@ -1783,18 +1783,22 @@ version = "2.1.0a7"
 source = { editable = "packages/adapter" }
 dependencies = [
     { name = "aiohttp" },
+    { name = "cryptography" },
     { name = "loguru" },
     { name = "neobot-contracts" },
     { name = "pydantic" },
+    { name = "qrcode" },
     { name = "websockets" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = "<4" },
+    { name = "cryptography", specifier = ">=46.0.0,<51" },
     { name = "loguru", specifier = ">=0.7.2,<0.8" },
     { name = "neobot-contracts", editable = "packages/contracts" },
     { name = "pydantic", specifier = ">=2.7.4,<3" },
+    { name = "qrcode", specifier = ">=8,<9" },
     { name = "websockets", specifier = "<18" },
 ]
 
