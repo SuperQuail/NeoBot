@@ -52,7 +52,7 @@ export const PAGE_ROUTES: readonly PageRoute[] = [
     path: '/channels',
     label: '通道',
     title: '机器人通道',
-    group: '概览',
+    group: '配置',
     icon: 'message',
     viewport: true,
     skeleton: 'workspace',
