@@ -237,6 +237,37 @@ class UserIdentityMap:
             for local_channel, local in candidates:
                 if local_channel == str(channel):
                     return local
+            return None
+        return candidates[0][1]
+
+    def synthetic_for_group(
+        self, group_number: Any, channel: str | None = None
+    ) -> int | None:
+        """真实群号反查通道本地合成群 ID（用于官方发送侧切通道）。"""
+        target = _to_int(group_number)
+        if not target:
+            return None
+        candidates: list[tuple[str, int]] = []
+        for key, entry in self._aliases.items():
+            if _to_int(entry.get("qq")) != target:
+                continue
+            parts = key.split(":")
+            if len(parts) == 3 and parts[0] == _GROUP:
+                local_channel, local_id = parts[1], parts[2]
+            elif len(parts) == 2:
+                local_channel, local_id = parts[0], parts[1]
+            else:
+                continue
+            local = _to_int(local_id)
+            if local:
+                candidates.append((local_channel, local))
+        if not candidates:
+            return None
+        if channel:
+            for local_channel, local in candidates:
+                if local_channel == str(channel):
+                    return local
+            return None
         return candidates[0][1]
 
     def group_number_for(
@@ -378,6 +409,10 @@ def synthetic_for_qq(qq: Any, channel: str | None = None) -> int | None:
     return _singleton.synthetic_for_qq(qq, channel)
 
 
+def synthetic_for_group(group_number: Any, channel: str | None = None) -> int | None:
+    return _singleton.synthetic_for_group(group_number, channel)
+
+
 def display_group_id(group_id: Any, channel: str | None = None) -> str:
     return _singleton.display_group_id(group_id, channel)
 
@@ -399,6 +434,7 @@ __all__ = [
     "link_user_qq",
     "qq_for_user",
     "synthetic_for_qq",
+    "synthetic_for_group",
     "trusted_qq_for_user",
     "unlink_group_number",
     "unlink_user_qq",

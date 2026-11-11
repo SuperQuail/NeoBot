@@ -169,6 +169,28 @@ class _PipelineLifecycleMixin:
                 error=str(exc),
             )
 
+    def _is_linked_group_duplicate(self, message: Any) -> bool:
+        """OneBot 已连接的已映射群：官方通道的同一条群消息交给 OneBot 处理。
+
+        官方通道断开时不会走这里，消息仍按官方事件处理/回复。
+        """
+        if str(getattr(message, "message_type", "") or "") not in ("", "group"):
+            return False
+        if str(getattr(message, "neobot_channel", "") or "") != "official":
+            return False
+        group_id = getattr(message, "group_id", None)
+        if group_id is None:
+            return False
+        from neobot_app.user_identity import group_number_for
+
+        if group_number_for(group_id, "official") is None:
+            return False
+        adapter = getattr(self, "_adapter", None) or getattr(self, "adapter", None)
+        connected = getattr(adapter, "connected_channels", None)
+        if connected is None:
+            return False
+        return "onebot" in connected
+
     async def _is_duplicate_message(
         self, message: PrivateMessage | GroupMessage
     ) -> bool:

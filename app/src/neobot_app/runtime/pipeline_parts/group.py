@@ -34,6 +34,12 @@ class _PipelineGroupMixin:
                 group_id=message.group_id,
             )
             return
+        if self._is_linked_group_duplicate(message):
+            self._logger.debug(
+                "已映射群在 OneBot 通道在线，官方重复消息交给 OneBot 处理",
+                group_id=message.group_id,
+            )
+            return
         queue_key = str(message.group_id or "")
         if await self._handle_agent_tool_input(message, kind="group", queue_key=queue_key, queue=self._group_queue):
             return

@@ -1053,3 +1053,23 @@ def test_bot_account_id_falls_back_to_config():
     assert pipeline._bot_account_id(_group_message(12003)) == 111
 
 
+
+
+def test_linked_group_official_message_deduped_when_onebot_connected(tmp_path) -> None:
+    from neobot_app.user_identity import bind_user_identity, link_group_number
+
+    bind_user_identity(tmp_path)
+    try:
+        assert link_group_number(8000000000009, 123456789, channel="official", trusted=True)[0]
+        pipeline = object.__new__(EventPipeline)
+        pipeline.adapter = SimpleNamespace(connected_channels=("onebot", "official"))
+        message = _group_message(9101)
+        message.group_id = 8000000000009
+        message.neobot_channel = "official"
+
+        assert pipeline._is_linked_group_duplicate(message) is True
+
+        pipeline.adapter = SimpleNamespace(connected_channels=("official",))
+        assert pipeline._is_linked_group_duplicate(message) is False
+    finally:
+        bind_user_identity(None)

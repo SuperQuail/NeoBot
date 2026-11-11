@@ -196,9 +196,45 @@ class ReplySender:
 
     # ── public API (also used by engine) ────────────────────────
 
+    def _preferred_linked_group_target(
+        self, conversation_ref: ConversationRef, channel: str | None
+    ) -> tuple[ConversationRef, str | None]:
+        """已 link 且两通道都在线的群：默认 OneBot，OneBot 不可用再走官方。
+
+        群在两通道的会话 id 不同（OneBot 用真实群号，官方用合成群号），所以
+        换通道时必须同时换 ConversationRef.id。
+        """
+        if conversation_ref.kind != "group" or not channel:
+            return conversation_ref, channel
+        from neobot_app.user_identity import group_number_for, synthetic_for_group
+
+        source_channel = str(channel).strip().casefold()
+        if source_channel == "onebot":
+            real_group = str(conversation_ref.id).strip()
+            if not real_group.isdigit():
+                return conversation_ref, channel
+        else:
+            real_group = str(group_number_for(conversation_ref.id, source_channel) or "")
+        if not real_group.isdigit():
+            return conversation_ref, channel
+        official_id = synthetic_for_group(int(real_group), "official")
+        if not official_id:
+            return conversation_ref, channel
+        connected = getattr(self._adapter, "connected_channels", None)
+        if connected is None:
+            return conversation_ref, channel
+        if "onebot" in connected:
+            return ConversationRef(kind="group", id=real_group), "onebot"
+        if "official" in connected:
+            return ConversationRef(kind="group", id=str(official_id)), "official"
+        return conversation_ref, channel
+
     async def send_with_timeout(
         self, conversation_ref: ConversationRef, payload: object, channel: str | None = None
     ) -> Any:
+        conversation_ref, channel = self._preferred_linked_group_target(
+            conversation_ref, channel
+        )
         envelope = RuntimeEnvelope(
             kind="reply_lifecycle",
             stage="message.send.before",
@@ -343,6 +379,7 @@ class ReplySender:
         conv_ref = event.conversation_ref
         if conv_ref is None:
             raise ValueError("ReplyEvent.conversation_ref is None")
+        conv_ref, channel = self._preferred_linked_group_target(conv_ref, channel)
 
         send_results: list[object] = []
         formatted_messages: list[list[dict]] = []

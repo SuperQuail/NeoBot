@@ -18,6 +18,7 @@ from neobot_app.user_identity import (
     id_label,
     link_group_number,
     link_user_qq,
+    synthetic_for_group,
     qq_for_user,
     trusted_qq_for_user,
     unlink_group_number,
@@ -158,3 +159,9 @@ def test_developer_id_is_super_admin_only_when_in_config():
     assert configured.is_super_admin(RESERVED) is True
     assert configured.can(RESERVED, PERM_SUB_ADMIN) is True
     assert configured.is_super_admin(9000000000009) is False
+
+
+def test_synthetic_for_group_reverse_lookup():
+    assert link_group_number(SYNTHETIC_GROUP, REAL_GROUP, channel="official", trusted=True)[0]
+    assert synthetic_for_group(REAL_GROUP, "official") == SYNTHETIC_GROUP
+    assert synthetic_for_group(REAL_GROUP, "onebot") is None

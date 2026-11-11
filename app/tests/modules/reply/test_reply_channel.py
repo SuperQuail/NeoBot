@@ -399,3 +399,27 @@ def test_multiple_duplicate_leading_mentions_are_dropped() -> None:
     )
 
     assert segments[-1]["data"]["text"] == "正文"
+
+
+def test_linked_group_prefers_onebot_and_falls_back_official(tmp_path) -> None:
+    from neobot_app.user_identity import bind_user_identity, link_group_number
+
+    bind_user_identity(tmp_path)
+    try:
+        assert link_group_number(8000000000010, 123456789, channel="official", trusted=True)[0]
+        sender = object.__new__(ReplySender)
+        official = ConversationRef(kind="group", id="8000000000010")
+        onebot = ConversationRef(kind="group", id="123456789")
+
+        sender._adapter = SimpleNamespace(connected_channels=("onebot", "official"))
+        target, channel = sender._preferred_linked_group_target(official, "official")
+        assert (channel, target.id) == ("onebot", "123456789")
+
+        target, channel = sender._preferred_linked_group_target(onebot, "onebot")
+        assert (channel, target.id) == ("onebot", "123456789")
+
+        sender._adapter = SimpleNamespace(connected_channels=("official",))
+        target, channel = sender._preferred_linked_group_target(onebot, "onebot")
+        assert (channel, target.id) == ("official", "8000000000010")
+    finally:
+        bind_user_identity(None)
