@@ -419,3 +419,36 @@ def test_friend_add_maps_to_notice(workdir) -> None:
     assert event is not None
     assert event["notice_type"] == "friend_add"
     assert event["user_id"] == mapper._identity.user_id("user-openid-9")
+
+
+def test_group_msg_receive_maps_to_notice(workdir) -> None:
+    mapper = _mapper(workdir)
+    event = mapper.from_dispatch(
+        _dispatch("GROUP_MSG_RECEIVE", {"timestamp": 1784276800, "group_openid": "group-openid-1"})
+    )
+    assert event is not None
+    assert event["notice_type"] == "group_msg_receive"
+    assert event["group_id"] == mapper._identity.group_id("group-openid-1")
+
+
+def test_c2c_msg_reject_maps_to_notice(workdir) -> None:
+    mapper = _mapper(workdir)
+    event = mapper.from_dispatch(
+        _dispatch("C2C_MSG_REJECT", {"timestamp": 1784570599, "openid": "user-openid-1"})
+    )
+    assert event is not None
+    assert event["notice_type"] == "c2c_msg_reject"
+    assert event["user_id"] == mapper._identity.user_id("user-openid-1")
+
+
+def test_subscribe_message_status_maps_to_notice(workdir) -> None:
+    mapper = _mapper(workdir)
+    event = mapper.from_dispatch(
+        _dispatch(
+            "SUBSCRIBE_MESSAGE_STATUS",
+            {"openid": "user-openid-1", "result": [{"template_id": 1, "op": 1}]},
+        )
+    )
+    assert event is not None
+    assert event["notice_type"] == "subscribe_message_status"
+    assert event["subscribe_results"] == [{"template_id": 1, "op": 1}]

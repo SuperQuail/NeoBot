@@ -595,3 +595,17 @@ async def test_markdown_at_everyone_requires_admin_role(workdir) -> None:
 
     assert result.status == "failed"
     assert "群管理员" in result.message
+
+
+async def test_proactive_send_has_no_passive_msg_id(workdir) -> None:
+    sender, api, identity, _passive, _ = _sender(workdir)
+    conversation = _private(identity)
+
+    result = await sender.send(conversation, "主动提醒", proactive=True)
+
+    assert result.status == "ok"
+    body = api.calls[-1]["body"]
+    assert body["msg_type"] == 0
+    assert body["content"] == "主动提醒"
+    assert "msg_id" not in body
+    assert "msg_seq" not in body

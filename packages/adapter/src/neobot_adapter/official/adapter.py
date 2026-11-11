@@ -253,12 +253,13 @@ class OfficialAdapter:
         message: str | list[dict[str, Any]],
         timeout: float = 5.0,
         wait_response: bool = True,
+        proactive: bool = False,
     ) -> response.SendMsgResponse:
         check_speech(self._core.speaking_policy, conversation, self._logger)
         sender = self._sender
         if sender is None:
             return _failed_response("QQ 官方机器人尚未连接，无法发送消息")
-        return await sender.send(conversation, message, timeout)
+        return await sender.send(conversation, message, timeout, proactive=proactive)
 
     async def rebind(self) -> None:
         """重新发起扫码绑定；绑定成功后用新凭据重连，旧连接在成功前保持。"""

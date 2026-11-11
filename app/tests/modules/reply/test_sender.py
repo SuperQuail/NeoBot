@@ -328,3 +328,21 @@ async def test_call_api_with_timeout_forwards_action_and_params():
     result = await sender.call_api_with_timeout("group_poke", {"group_id": 1, "user_id": 2})
     assert adapter.api_calls == [("group_poke", {"group_id": 1, "user_id": 2})]
     assert result == {"status": "ok"}
+
+
+async def test_send_reply_returns_false_when_adapter_reports_failed() -> None:
+    class _FailedAdapter(FakeAdapter):
+        async def send(self, conversation_ref, payload, wait_response=True, **kwargs):
+            self.sent.append(payload)
+            return {"status": "failed", "retcode": 1404, "message": "被平台拒绝"}
+
+    sender, _adapter = _make_sender()
+    failed = _FailedAdapter()
+    sender._adapter = failed
+    event = _make_private_event()
+
+    delivered = await sender.send_reply(event, "你好")
+
+    assert delivered is False
+    assert failed.sent
+    assert event.send_response is None

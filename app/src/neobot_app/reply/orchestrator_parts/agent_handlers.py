@@ -269,8 +269,19 @@ class AgentHandlersMixin:
         )
         speak_conv = event.conversation_ref
         before_message_id = queue.get_last_message_id(queue_key)
-        delivered = await self._send_with_timeout(speak_conv, [segment])
-        # 与 send_reply 同语义：语音真实发出即视为已回复
+        delivered = await self._send_with_timeout(
+            speak_conv, [segment], proactive=bool(event.proactive)
+        )
+        from neobot_app.reply.sender import send_response_ok
+
+        if not send_response_ok(delivered):
+            self._logger.info(
+                "语音消息发送失败",
+                event_id=event.event_id,
+                error=str(getattr(delivered, "message", "") or ""),
+            )
+            return "错误：语音发送失败，请检查后台日志或告知用户无法发送"
+        # 与 send_reply 同语义：语音真实发出才视为已回复
         if delivered is not False:
             state.reply_sent = True
             self._clear_unsent_marker(event)
@@ -353,7 +364,9 @@ class AgentHandlersMixin:
                 mention_user_ids=mention,
                 channel=channel,
             )
-            caption_delivered = await self._send_with_timeout(conv_ref, caption_segs, channel=channel)
+            caption_delivered = await self._send_with_timeout(
+                conv_ref, caption_segs, channel=channel, proactive=bool(event.proactive)
+            )
             if conv_ref is not None and send_response_ok(caption_delivered):
                 state.reply_sent = True
                 self._clear_unsent_marker(event)
@@ -368,8 +381,9 @@ class AgentHandlersMixin:
             Path(image_path),
             wait_response=False,
             channel=channel,
+            proactive=bool(event.proactive),
         )
-        if image_delivered is not False:
+        if send_response_ok(image_delivered):
             state.reply_sent = True
             self._clear_unsent_marker(event)
             event.send_response = image_delivered

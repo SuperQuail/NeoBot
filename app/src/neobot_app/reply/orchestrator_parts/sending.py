@@ -13,9 +13,16 @@ from neobot_app.reply.sender import ReplySender, SelfSentSink
 
 class SendingMixin:
     async def _send_with_timeout(
-        self, conversation_ref: ConversationRef, payload: object, channel: str | None = None
+        self,
+        conversation_ref: ConversationRef,
+        payload: object,
+        channel: str | None = None,
+        *,
+        proactive: bool = False,
     ) -> Any:
-        return await self._sender.send_with_timeout(conversation_ref, payload, channel=channel)
+        return await self._sender.send_with_timeout(
+            conversation_ref, payload, channel=channel, proactive=proactive
+        )
 
     async def _call_api_with_timeout(self, action: str, params: dict[str, Any]) -> Any:
         return await self._sender.call_api_with_timeout(action, params)

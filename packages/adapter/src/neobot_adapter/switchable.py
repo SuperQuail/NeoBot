@@ -104,10 +104,15 @@ def current_channel() -> Optional[str]:
 @contextmanager
 def channel_context(channel: Optional[str]) -> Iterator[None]:
     """在 with 块内把未显式指定通道的请求钉到 channel；块内新建任务会继承。"""
-    token = _EVENT_CHANNEL.set(_normalize_channel(channel))
+    normalized = _normalize_channel(channel)
+    token = _EVENT_CHANNEL.set(normalized)
+    from neobot_adapter.request._proxy import request_channel_context, reset_request_channel
+
+    proxy_token, _ = request_channel_context(normalized)
     try:
         yield
     finally:
+        reset_request_channel(proxy_token)
         _EVENT_CHANNEL.reset(token)
 
 
@@ -383,13 +388,17 @@ class SwitchableAdapter:
         timeout: float = 5.0,
         wait_response: bool = True,
         channel: Optional[str] = None,
+        proactive: bool = False,
     ) -> response.SendMsgResponse:
         if self._switching:
             return response.SendMsgResponse(status="failed", retcode=-1, message=_SWITCHING_MESSAGE)
         selected, error = self._select_channel(conversation, channel)
         if error is not None:
             return response.SendMsgResponse(status="failed", retcode=-1, message=error)
-        return await self._backends[selected].send(conversation, message, timeout, wait_response=wait_response)
+        extra = {"proactive": True} if proactive and selected == "official" else {}
+        return await self._backends[selected].send(
+            conversation, message, timeout, wait_response=wait_response, **extra
+        )
 
     # ── 通道切换 ────────────────────────────────────────────────────
 

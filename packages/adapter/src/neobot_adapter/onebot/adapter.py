@@ -379,6 +379,7 @@ class OneBotAdapter:
         message: str | list[dict[str, Any]],
         timeout: float = 5.0,
         wait_response: bool = True,
+        proactive: bool = False,
     ) -> response.SendMsgResponse:
         """统一的消息发送接口；wait_response=False 时不等上游 echo 回执。"""
         if conversation.kind == "private":

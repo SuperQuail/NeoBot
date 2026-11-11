@@ -303,6 +303,8 @@ class MessageSender:
         conversation: ConversationRef,
         message: str | list[dict[str, Any]],
         timeout: float = _API_TIMEOUT_SECONDS,
+        *,
+        proactive: bool = False,
     ) -> response.SendMsgResponse:
         """发送一条 OneBot 消息；任何失败都返回 failed，不改写内容。"""
         kind = str(conversation.kind or "")
@@ -319,10 +321,14 @@ class MessageSender:
             prepared = _prepare(message)
             reference = self._reference_idx(prepared.reply)
             if prepared.markdown is not None:
-                return await self._send_markdown(kind, openid, conversation.id, prepared, reference, timeout)
+                return await self._send_markdown(
+                    kind, openid, conversation.id, prepared, reference, timeout, proactive
+                )
             if not prepared.text and not prepared.media:
                 return self._fail(kind, conversation.id, "消息内容为空")
-            return await self._send_plain(kind, openid, conversation.id, prepared, reference, timeout)
+            return await self._send_plain(
+                kind, openid, conversation.id, prepared, reference, timeout, proactive
+            )
         except _SendFailure as exc:
             return self._fail(kind, conversation.id, str(exc))
         except (OfficialApiError, OfficialAuthError) as exc:
@@ -344,11 +350,12 @@ class MessageSender:
         prepared: _Prepared,
         reference: str | None,
         timeout: float,
+        proactive: bool,
     ) -> response.SendMsgResponse:
         sent_id: int | None = None
         if prepared.text:
             for chunk in _split_text(prepared.text):
-                payload = self._passive_payload(kind, conversation_id)
+                payload = self._message_payload(kind, conversation_id, proactive)
                 payload["msg_type"] = 0
                 payload["content"] = chunk
                 if reference:
@@ -369,7 +376,7 @@ class MessageSender:
                 source=source,
                 file_name=file_name,
             )
-            payload = self._passive_payload(kind, conversation_id)
+            payload = self._message_payload(kind, conversation_id, proactive)
             payload["msg_type"] = 7
             payload["media"] = {"file_info": media.file_info}
             if reference:
@@ -393,6 +400,7 @@ class MessageSender:
         prepared: _Prepared,
         reference: str | None,
         timeout: float,
+        proactive: bool,
     ) -> response.SendMsgResponse:
         content = self._render_markdown_mentions(str(prepared.markdown or ""), kind)
         if not content.strip():
@@ -403,7 +411,7 @@ class MessageSender:
             raise _SendFailure(
                 f"Markdown 消息 {len(content)} 字，超过单条上限 {_TEXT_LIMIT}；请精简或改用 send_long_reply"
             )
-        payload = self._passive_payload(kind, conversation_id)
+        payload = self._message_payload(kind, conversation_id, proactive)
         payload["msg_type"] = 2
         payload["markdown"] = {"content": content}
         if reference:
@@ -446,7 +454,11 @@ class MessageSender:
 
     # ── 公共字段 ────────────────────────────────────────────────────
 
-    def _passive_payload(self, kind: str, conversation_id: Any) -> dict[str, Any]:
+    def _message_payload(
+        self, kind: str, conversation_id: Any, proactive: bool
+    ) -> dict[str, Any]:
+        if proactive:
+            return {}
         msg_id, reason = self._passive.acquire(kind, conversation_id)
         if msg_id is None:
             raise _SendFailure(reason)

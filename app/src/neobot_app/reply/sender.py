@@ -206,7 +206,12 @@ class ReplySender:
     # ── public API (also used by engine) ────────────────────────
 
     async def send_official_markdown(
-        self, event: Any, content: str, *, reply_to_message_id: int | None = None
+        self,
+        event: Any,
+        content: str,
+        *,
+        reply_to_message_id: int | None = None,
+        proactive: bool = False,
     ) -> Any:
         """发送一条官方 Markdown 消息；不切分、不降级，失败原样返回。"""
         conv_ref = event.conversation_ref
@@ -216,7 +221,9 @@ class ReplySender:
         if reply_to_message_id is not None:
             segments.append({"type": "reply", "data": {"id": str(reply_to_message_id)}})
         segments.append({"type": "official_markdown", "data": {"content": content}})
-        return await self.send_with_timeout(conv_ref, segments, channel="official")
+        return await self.send_with_timeout(
+            conv_ref, segments, channel="official", proactive=proactive
+        )
 
     def _preferred_linked_group_target(
         self, conversation_ref: ConversationRef, channel: str | None
@@ -252,7 +259,12 @@ class ReplySender:
         return conversation_ref, channel
 
     async def send_with_timeout(
-        self, conversation_ref: ConversationRef, payload: object, channel: str | None = None
+        self,
+        conversation_ref: ConversationRef,
+        payload: object,
+        channel: str | None = None,
+        *,
+        proactive: bool = False,
     ) -> Any:
         envelope = RuntimeEnvelope(
             kind="reply_lifecycle",
@@ -271,6 +283,8 @@ class ReplySender:
         # 只有指定了通道才带 channel：单通道/旧适配器的 send 没有这个参数，
         # 传 None 会让它们 TypeError；None 本来就表示「交给适配器默认通道」。
         channel_kwargs: dict[str, Any] = {"channel": channel} if channel else {}
+        if proactive:
+            channel_kwargs["proactive"] = True
         # 不等 echo 回执：请求写上线即视为发送成功。等待回执会把 agent 循环
         # 卡在上游往返上，而实测发送几乎不会失败（失败由连接状态与心跳发现）。
         result = await asyncio.wait_for(
@@ -422,16 +436,24 @@ class ReplySender:
             ]
             for index, (image_number, entry) in enumerate(image_entries):
                 formatted_messages.append([prepare_image_segment(self._file_server, entry.file_path)])
-                record_delivery(
-                    await send_image(
-                        self._file_server,
-                        self._adapter,
-                        conv_ref,
-                        entry.file_path,
-                        wait_response=False,
-                        channel=channel,
-                    )
+                image_result = await send_image(
+                    self._file_server,
+                    self._adapter,
+                    conv_ref,
+                    entry.file_path,
+                    wait_response=False,
+                    channel=channel,
+                    proactive=bool(event.proactive),
                 )
+                if not send_response_ok(image_result):
+                    self._logger.info(
+                        "图片消息发送失败",
+                        event_id=event.event_id,
+                        error=str(getattr(image_result, "message", "") or ""),
+                    )
+                    self._leave_sending(event, conv_ref.kind)
+                    return False
+                record_delivery(image_result)
                 if index == len(image_entries) - 1 and not text.strip() and not segments:
                     event.send_incomplete = False
                 await self._emit_self_sent_image(self_sent, conv_ref, entry.file_path, bot_account=bot_account)
@@ -513,7 +535,18 @@ class ReplySender:
                 channel=channel,
             )
             formatted_messages.append(formatted)
-            record_delivery(await self.send_with_timeout(conv_ref, formatted, channel=channel))
+            text_result = await self.send_with_timeout(
+                conv_ref, formatted, channel=channel, proactive=bool(event.proactive)
+            )
+            if not send_response_ok(text_result):
+                self._logger.info(
+                    "回复消息发送失败",
+                    event_id=event.event_id,
+                    error=str(getattr(text_result, "message", "") or ""),
+                )
+                self._leave_sending(event, conv_ref.kind)
+                return False
+            record_delivery(text_result)
             # 逐条按「真正发到 QQ 的那句文本」入队：重建后模型知道自己分几句说了什么
             self._emit_self_sent_text(self_sent, conv_ref, message_text, bot_account=bot_account)
             self._last_sentence_time[pipeline_key] = monotonic_seconds()

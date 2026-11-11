@@ -30,6 +30,11 @@ NOTICE_EVENTS = frozenset(
         "FRIEND_DEL",
         "GROUP_ADD_ROBOT",
         "GROUP_DEL_ROBOT",
+        "GROUP_MSG_RECEIVE",
+        "GROUP_MSG_REJECT",
+        "C2C_MSG_RECEIVE",
+        "C2C_MSG_REJECT",
+        "SUBSCRIBE_MESSAGE_STATUS",
     }
 )
 
@@ -212,6 +217,44 @@ class EventMapper:
                 "post_type": "notice",
                 "notice_type": "friend_add" if event_type == "FRIEND_ADD" else "friend_remove",
                 "user_id": self._identity.user_id(openid),
+            }
+        if event_type in {"GROUP_MSG_RECEIVE", "GROUP_MSG_REJECT"}:
+            group_openid = str(data.get("group_openid") or "").strip()
+            if not group_openid:
+                return None
+            operator_openid = str(data.get("op_member_openid") or "").strip()
+            return {
+                "time": timestamp,
+                "self_id": self.self_id,
+                "post_type": "notice",
+                "notice_type": "group_msg_receive" if event_type.endswith("RECEIVE") else "group_msg_reject",
+                "group_id": self._identity.group_id(group_openid),
+                "operator_id": self._identity.user_id(operator_openid) if operator_openid else 0,
+            }
+        if event_type in {"C2C_MSG_RECEIVE", "C2C_MSG_REJECT"}:
+            openid = str(data.get("openid") or "").strip()
+            if not openid:
+                return None
+            return {
+                "time": timestamp,
+                "self_id": self.self_id,
+                "post_type": "notice",
+                "notice_type": "c2c_msg_receive" if event_type.endswith("RECEIVE") else "c2c_msg_reject",
+                "user_id": self._identity.user_id(openid),
+            }
+        if event_type == "SUBSCRIBE_MESSAGE_STATUS":
+            group_openid = str(data.get("group_openid") or "").strip()
+            user_openid = str(data.get("openid") or "").strip()
+            if not group_openid and not user_openid:
+                return None
+            return {
+                "time": timestamp,
+                "self_id": self.self_id,
+                "post_type": "notice",
+                "notice_type": "subscribe_message_status",
+                "group_id": self._identity.group_id(group_openid) if group_openid else 0,
+                "user_id": self._identity.user_id(user_openid) if user_openid else 0,
+                "subscribe_results": data.get("result") if isinstance(data.get("result"), list) else [],
             }
         if event_type in {"GROUP_ADD_ROBOT", "GROUP_DEL_ROBOT"}:
             group_openid = str(data.get("group_openid") or "").strip()

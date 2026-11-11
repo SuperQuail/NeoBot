@@ -74,6 +74,7 @@ async def send_image(
     *,
     wait_response: bool = True,
     channel: str | None = None,
+    proactive: bool = False,
 ) -> SendMsgResponse:
     """发送图片消息；wait_response=False 时不等上游 echo 回执。
 
@@ -82,6 +83,8 @@ async def send_image(
     """
     segment = prepare_image_segment(file_server, file_path)
     channel_kwargs: Dict[str, Any] = {"channel": channel} if channel else {}
+    if proactive:
+        channel_kwargs["proactive"] = True
     return await adapter.send(
         conversation, [segment], wait_response=wait_response, **channel_kwargs
     )
