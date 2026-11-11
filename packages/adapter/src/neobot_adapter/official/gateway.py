@@ -23,6 +23,7 @@ from neobot_adapter.official.auth import (
     OfficialAuthError,
     OfficialNetworkError,
     TokenProvider,
+    classify_http_error,
     http_scope,
 )
 from neobot_adapter.official.settings import OfficialSettings
@@ -170,9 +171,9 @@ class OfficialGateway:
                     fatal_code = exc.code
                 elif action == "token":
                     # token 失效时旧 session 也一并作废：刷新后重新 Identify。
+                    # 4004 通常刷新后即可恢复，不计入连续登录失败。
                     self._token_provider.invalidate()
                     clear_session = True
-                    auth_failed = True
                 elif action == "session":
                     clear_session = True
             except OfficialNetworkError as exc:
@@ -262,11 +263,13 @@ class OfficialGateway:
                 raise OfficialNetworkError(
                     f"获取官方网关地址失败: {type(exc).__name__}: {exc}"
                 ) from exc
-        if not isinstance(data, dict) or status != 200:
-            raise OfficialAuthError(f"获取官方网关地址失败：HTTP {status}")
+        if status != 200:
+            raise classify_http_error(status, f"获取官方网关地址失败：HTTP {status}")
+        if not isinstance(data, dict):
+            raise OfficialNetworkError("获取官方网关地址失败：响应格式异常")
         ws_url = str(data.get("url") or "").strip()
         if not ws_url:
-            raise OfficialAuthError("获取官方网关地址失败：响应缺少 url")
+            raise OfficialNetworkError("获取官方网关地址失败：响应缺少 url")
         return ws_url
 
     async def _notify_auth_exhausted(self) -> None:

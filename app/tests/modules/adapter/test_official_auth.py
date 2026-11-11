@@ -368,17 +368,49 @@ async def test_token_provider_classifies_network_failure_as_network_error(
         await provider.get_token()
 
 
-async def test_token_provider_surfaces_http_failure(workdir: Path) -> None:
-    http = FakeHttp(status=401, payload={"message": "invalid appid"})
+@pytest.mark.parametrize("status", [401, 403])
+async def test_token_provider_surfaces_auth_http_failure(workdir: Path, status: int) -> None:
+    http = FakeHttp(status=status, payload={"message": "invalid appid"})
     provider = TokenProvider(_settings(workdir), http)
-    with pytest.raises(OfficialAuthError, match="401"):
+    with pytest.raises(OfficialAuthError, match=str(status)) as excinfo:
+        await provider.get_token()
+    assert not isinstance(excinfo.value, OfficialNetworkError)
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503])
+async def test_token_provider_transient_http_failure_is_network_error(workdir: Path, status: int) -> None:
+    """限频/5xx 只是瞬时故障：不能当成凭据失效。"""
+    http = FakeHttp(status=status, payload={"message": "busy"})
+    provider = TokenProvider(_settings(workdir), http)
+    with pytest.raises(OfficialNetworkError, match=str(status)):
+        await provider.get_token()
+
+
+@pytest.mark.parametrize("code", [10004, 100007, 100016])
+async def test_token_provider_auth_business_code_is_auth_error(workdir: Path, code: int) -> None:
+    """getAppAccessToken 失败用 HTTP 200 + code 返回：明确的 appid/secret 错误才算鉴权失败。"""
+    http = FakeHttp(status=200, payload={"code": code, "message": "invalid appid or secret"})
+    provider = TokenProvider(_settings(workdir), http)
+    with pytest.raises(OfficialAuthError, match=f"code={code}") as excinfo:
+        await provider.get_token()
+    assert not isinstance(excinfo.value, OfficialNetworkError)
+
+
+async def test_token_provider_rate_limit_business_code_is_network_error(
+    workdir: Path,
+) -> None:
+    """100001 是限频：按网络异常处理，不能累计成连续鉴权失败。"""
+    http = FakeHttp(status=200, payload={"code": 100001, "message": "Too many requests"})
+    provider = TokenProvider(_settings(workdir), http)
+    with pytest.raises(OfficialNetworkError, match="100001"):
         await provider.get_token()
 
 
 async def test_token_provider_requires_access_token(workdir: Path) -> None:
+    """200 但缺 access_token 且无明确鉴权错误码：按网络异常处理，不删凭据。"""
     http = FakeHttp(status=200, payload={"message": "no token"})
     provider = TokenProvider(_settings(workdir), http)
-    with pytest.raises(OfficialAuthError, match="access token"):
+    with pytest.raises(OfficialNetworkError, match="access token"):
         await provider.get_token()
 
 
