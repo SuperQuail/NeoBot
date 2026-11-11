@@ -100,6 +100,13 @@ class OfficialAdapter:
         self._event_sink = event_sink
         self._data_dir = Path(data_dir) if data_dir else Path(settings.data_dir)
         self._credentials = CredentialStore(self._data_dir)
+        #: 构造时的配置凭据；用于区分凭据来源（配置/环境变量 vs 扫码落盘）。
+        self._config_credentials = (
+            Credentials(settings.app_id, settings.client_secret)
+            if settings.app_id and settings.client_secret
+            else None
+        )
+        self._credentials_source = ""
         self._identity = IdentityMap(
             self._data_dir,
             namespace=self._settings.app_id,
@@ -123,6 +130,8 @@ class OfficialAdapter:
         self._robot_nickname = ""
         self._bound = self._load_credentials() is not None
         self._bind_state = BindState()
+        #: 连续登录失败后给面板的说明文案；成功连接后清空。
+        self._relogin_notice = ""
         self._bind_flow: QrBindFlow | None = None
         self._bind_task: asyncio.Task[None] | None = None
         self._connected_event = threading.Event()
@@ -435,7 +444,28 @@ class OfficialAdapter:
                 timeout_seconds=_CONNECT_TIMEOUT_SECONDS,
             )
 
+    async def _on_auth_exhausted(self) -> None:
+        """连续登录/鉴权失败：停自动重连，按凭据来源决定是否删除落盘凭据并转扫码。"""
+        if not self._started:
+            return
+        if self._credentials_source == "config":
+            # 配置/环境变量是用户资产，不静默删除；提示修好配置或清空后改为扫码。
+            self._logger.error(
+                "配置中的 AppID/AppSecret 失效，请检查配置或清空后重新扫码"
+            )
+        else:
+            self._credentials.delete()
+            self._bound = False
+            self._logger.error("已删除失效的扫码凭据，请用手机 QQ 重新扫码登录")
+        self._relogin_notice = "连续登录失败，请用手机 QQ 重新扫码登录"
+        if self._bind_task is None or self._bind_task.done():
+            self._bind_state = BindState()
+        self._start_bind_flow()
+
     def _apply_credentials(self, credentials: Credentials) -> None:
+        self._credentials_source = (
+            "config" if credentials == self._config_credentials else "store"
+        )
         if (credentials.app_id, credentials.client_secret) != (
             self._settings.app_id,
             self._settings.client_secret,
@@ -463,6 +493,7 @@ class OfficialAdapter:
             self._token_provider,
             self._on_event,
             self._logger,
+            on_auth_exhausted=self._on_auth_exhausted,
         )
 
     async def _shutdown_runtime(self) -> None:
@@ -546,6 +577,7 @@ class OfficialAdapter:
             # 停止与 READY 竞争时不要把已停止的适配器重新标记成已连接。
             return
         self._connected = True
+        self._relogin_notice = ""
         self._ready_event.set()
         self._connected_event.set()
         self._logger.info("QQ 官方机器人已连接", robot_uin=self._robot_uin)
@@ -660,6 +692,8 @@ class OfficialAdapter:
         await self._restart_with_new_credentials()
 
     def _on_bind_state(self, state: BindState) -> None:
+        if self._relogin_notice and state.phase == "pending" and not state.error:
+            state = replace(state, error=self._relogin_notice)
         self._bind_state = state
 
     async def _cancel_bind_flow(self) -> None:

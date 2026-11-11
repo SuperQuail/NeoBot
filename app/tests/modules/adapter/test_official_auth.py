@@ -28,6 +28,7 @@ from neobot_adapter.official.auth import (
     CredentialStore,
     Credentials,
     OfficialAuthError,
+    OfficialNetworkError,
     QrBindFlow,
     TokenProvider,
     decrypt_secret,
@@ -350,6 +351,20 @@ async def test_token_provider_requires_credentials(workdir: Path) -> None:
         FakeHttp(),
     )
     with pytest.raises(OfficialAuthError, match="AppID"):
+        await provider.get_token()
+
+
+async def test_token_provider_classifies_network_failure_as_network_error(
+    workdir: Path,
+) -> None:
+    """断网只是网络异常：不能当成凭据失效（否则会被连续失败计数误判）。"""
+
+    class _OfflineHttp:
+        def post(self, url: str, json: dict[str, Any], headers: Any = None) -> Any:
+            raise ConnectionError("offline")
+
+    provider = TokenProvider(_settings(workdir), _OfflineHttp())
+    with pytest.raises(OfficialNetworkError):
         await provider.get_token()
 
 

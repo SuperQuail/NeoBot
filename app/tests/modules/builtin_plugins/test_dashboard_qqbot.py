@@ -123,9 +123,10 @@ def _bind_state(
     phase: str = "pending",
     url: str = "https://q.qq.com/qqbot/connect.html?task_id=abc",
     svg: str = "<svg>qr</svg>",
+    error: str = "",
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        phase=phase, url=url, svg=svg, expires_at=1730000000, error=""
+        phase=phase, url=url, svg=svg, expires_at=1730000000, error=error
     )
 
 
@@ -341,6 +342,19 @@ async def test_status_tolerates_broken_account_sources() -> None:
     assert all(item["nickname"] == "" for item in payload["channels"])
 
 
+async def test_status_exposes_relogin_hint_on_pending_bind() -> None:
+    """连续登录失败后适配器把说明写进 bind.error，面板据此提示重新扫码。"""
+    hint = "连续登录失败，请用手机 QQ 重新扫码登录"
+    adapter = _adapter(bind_state=_bind_state(error=hint))
+    api, _, _ = _make_api(adapter=adapter, config=_config())
+    payload = json.loads((await api.qqbot_status(_Request())).text)
+
+    official = _channels(payload)["official"]
+    assert official["bind"]["phase"] == "pending"
+    assert official["bind"]["svg"] == "<svg>qr</svg>"
+    assert official["bind"]["error"] == hint
+
+
 async def test_status_hides_official_bind_secrets_from_read_only_sessions() -> None:
     api, _, _ = _make_api(
         adapter=_adapter(), config=_config(), manage=False
@@ -538,6 +552,8 @@ async def test_channel_script_uses_relative_api_and_channels_payload() -> None:
     assert "X-CSRF-Token" in script.text
     assert "status" in script.text
     assert "switch" in script.text
+    # 连续登录失败时适配器把说明放在 bind.error，脚本要把它显示出来
+    assert "bind.error" in script.text
 
 
 async def test_channel_page_redirects_directory_and_leaves_other_paths() -> None:

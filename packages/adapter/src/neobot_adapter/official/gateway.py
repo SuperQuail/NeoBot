@@ -19,7 +19,12 @@ from websockets.exceptions import ConnectionClosed
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
-from neobot_adapter.official.auth import OfficialAuthError, TokenProvider, http_scope
+from neobot_adapter.official.auth import (
+    OfficialAuthError,
+    OfficialNetworkError,
+    TokenProvider,
+    http_scope,
+)
 from neobot_adapter.official.settings import OfficialSettings
 
 _OP_DISPATCH = 0
@@ -47,8 +52,11 @@ _FATAL_CLOSE_CODES = frozenset({4914, 4915})
 _TOKEN_CLOSE_CODES = frozenset({4004})
 #: session_id/seq 失效：清空会话后重新 Identify。
 _SESSION_CLOSE_CODES = frozenset({4006, 4007, 4009})
+#: 连续登录/鉴权失败达到这次数后停止自动重连，交由上层重新扫码。
+_AUTH_FAILURE_LIMIT = 3
 
 EventHandler = Callable[[dict[str, Any]], Awaitable[None] | None]
+AuthExhaustedHandler = Callable[[], Awaitable[None] | None]
 
 
 class _Reconnect(Exception):
@@ -81,6 +89,7 @@ class OfficialGateway:
         *,
         http: Any | None = None,
         ws_connect: Callable[[str], Awaitable[Any]] | None = None,
+        on_auth_exhausted: AuthExhaustedHandler | None = None,
     ) -> None:
         self._settings = settings
         self._token_provider = token_provider
@@ -88,6 +97,9 @@ class OfficialGateway:
         self._logger = logger if logger is not None else NullLogger()
         self._http = http
         self._ws_connect = ws_connect if ws_connect is not None else websockets.connect
+        self._on_auth_exhausted = on_auth_exhausted
+        #: 连续登录/鉴权失败计数；READY/RESUMED 清零，普通断线不计。
+        self._auth_failures = 0
         self._task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
         self._connected = asyncio.Event()
@@ -136,6 +148,7 @@ class OfficialGateway:
         while not self._stopping.is_set():
             fatal_code: int | None = None
             clear_session = False
+            auth_failed = False
             try:
                 await self._connect_once()
                 reason = "网关连接已关闭"
@@ -159,11 +172,16 @@ class OfficialGateway:
                     # token 失效时旧 session 也一并作废：刷新后重新 Identify。
                     self._token_provider.invalidate()
                     clear_session = True
+                    auth_failed = True
                 elif action == "session":
                     clear_session = True
+            except OfficialNetworkError as exc:
+                reason = f"官方网关网络异常: {exc}"
+                self._logger.warning(reason)
             except OfficialAuthError as exc:
                 reason = f"官方网关鉴权失败: {exc}"
                 self._logger.warning(reason)
+                auth_failed = True
             except Exception as exc:
                 reason = f"官方网关异常: {type(exc).__name__}: {exc}"
                 self._logger.warning(reason)
@@ -179,6 +197,15 @@ class OfficialGateway:
                     code=fatal_code,
                 )
                 break
+            if auth_failed:
+                self._auth_failures += 1
+                if self._auth_failures >= _AUTH_FAILURE_LIMIT:
+                    self._logger.error(
+                        f"连续 {_AUTH_FAILURE_LIMIT} 次登录失败，需要重新扫码登录",
+                        reason=reason,
+                    )
+                    await self._notify_auth_exhausted()
+                    break
             if clear_session:
                 self._logger.info("官方网关会话状态失效，下次连接重新 Identify")
                 self._reset_session()
@@ -232,13 +259,30 @@ class OfficialGateway:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                raise OfficialAuthError(f"获取官方网关地址失败: {type(exc).__name__}: {exc}") from exc
+                raise OfficialNetworkError(
+                    f"获取官方网关地址失败: {type(exc).__name__}: {exc}"
+                ) from exc
         if not isinstance(data, dict) or status != 200:
             raise OfficialAuthError(f"获取官方网关地址失败：HTTP {status}")
         ws_url = str(data.get("url") or "").strip()
         if not ws_url:
             raise OfficialAuthError("获取官方网关地址失败：响应缺少 url")
         return ws_url
+
+    async def _notify_auth_exhausted(self) -> None:
+        """连续鉴权失败达到上限：交给上层处理（停止旧凭据重连、转重新扫码）。"""
+        if self._on_auth_exhausted is None:
+            return
+        try:
+            result = self._on_auth_exhausted()
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:
+            self._logger.error(
+                "官方网关鉴权耗尽回调失败",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
 
     # ── 帧处理 ──────────────────────────────────────────────────────
 
@@ -272,6 +316,9 @@ class OfficialGateway:
         if isinstance(seq, int) and not isinstance(seq, bool):
             self._last_seq = seq
         event_type = str(payload.get("t") or "")
+        if event_type in {"READY", "RESUMED"}:
+            # 成功连接即清零：只有连续的登录/鉴权失败才累计。
+            self._auth_failures = 0
         if event_type == "READY":
             session_id = str(data.get("session_id") or "").strip()
             if session_id:

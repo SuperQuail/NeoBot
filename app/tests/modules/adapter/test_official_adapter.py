@@ -38,11 +38,38 @@ def workdir():
         shutil.rmtree(path, ignore_errors=True)
 
 
+class FakeLogger:
+    def __init__(self) -> None:
+        self.debugs: list[tuple[str, dict]] = []
+        self.infos: list[tuple[str, dict]] = []
+        self.warnings: list[tuple[str, dict]] = []
+        self.errors: list[tuple[str, dict]] = []
+
+    def bind(self, **ctx: object) -> "FakeLogger":
+        return self
+
+    def debug(self, msg: str, **kw: object) -> None:
+        self.debugs.append((msg, kw))
+
+    def info(self, msg: str, **kw: object) -> None:
+        self.infos.append((msg, kw))
+
+    def warning(self, msg: str, **kw: object) -> None:
+        self.warnings.append((msg, kw))
+
+    def error(self, msg: str, **kw: object) -> None:
+        self.errors.append((msg, kw))
+
+    def exception(self, msg: str, **kw: object) -> None:
+        self.errors.append((msg, kw))
+
+
 class _FakeCredentialStore:
     """类级凭据值，方便假扫码流程与适配器共享。"""
 
     value: Credentials | None = None
     instances: list["_FakeCredentialStore"] = []
+    deletes = 0
 
     def __init__(self, data_dir) -> None:
         self.data_dir = data_dir
@@ -56,6 +83,7 @@ class _FakeCredentialStore:
 
     def delete(self) -> None:
         type(self).value = None
+        type(self).deletes += 1
 
 
 class _FakeTokenProvider:
@@ -130,9 +158,12 @@ class _FakeApi:
 class _FakeGateway:
     instances: list["_FakeGateway"] = []
 
-    def __init__(self, settings, token_provider, on_event, logger=None, **kwargs) -> None:
+    def __init__(
+        self, settings, token_provider, on_event, logger=None, *, on_auth_exhausted=None, **kwargs
+    ) -> None:
         self.settings = settings
         self.on_event = on_event
+        self.on_auth_exhausted = on_auth_exhausted
         self.connected = False
         self.started = 0
         self.stopped = 0
@@ -162,6 +193,7 @@ class _FakeGateway:
 def _install_fakes(monkeypatch, *, credentials: Credentials | None) -> None:
     _FakeCredentialStore.value = credentials
     _FakeCredentialStore.instances = []
+    _FakeCredentialStore.deletes = 0
     _FakeApi.instances = []
     _FakeGateway.instances = []
     monkeypatch.setattr(adapter_module, "CredentialStore", _FakeCredentialStore)
@@ -170,11 +202,11 @@ def _install_fakes(monkeypatch, *, credentials: Credentials | None) -> None:
     monkeypatch.setattr(adapter_module, "OfficialGateway", _FakeGateway)
 
 
-def _make_adapter(workdir, events: list[dict]) -> adapter_module.OfficialAdapter:
+def _make_adapter(workdir, events: list[dict], logger=None) -> adapter_module.OfficialAdapter:
     settings = OfficialSettings(app_id="", client_secret="", data_dir=workdir)
     return adapter_module.OfficialAdapter(
         settings,
-        logger=NullLogger(),
+        logger=logger if logger is not None else NullLogger(),
         event_sink=events.append,
         data_dir=workdir,
     )
@@ -344,6 +376,78 @@ async def test_rebind_failure_keeps_existing_connection(workdir, monkeypatch) ->
     assert adapter.connected is True
     assert gateway.stopped == 0
     assert adapter.settings.app_id == "app-1"
+    await adapter.stop()
+
+
+async def test_auth_exhaustion_deletes_stored_credentials_and_restarts_bind(
+    workdir, monkeypatch
+) -> None:
+    _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
+    _BlockingBindFlow.release = asyncio.Event()
+    _BlockingBindFlow.completed = 0
+    monkeypatch.setattr(adapter_module, "QrBindFlow", _BlockingBindFlow)
+    logger = FakeLogger()
+    adapter = _make_adapter(workdir, [], logger=logger)
+    await adapter.start()
+    gateway = _FakeGateway.instances[0]
+
+    await gateway.on_auth_exhausted()
+
+    assert _FakeCredentialStore.deletes == 1
+    assert adapter.bound is False
+    await _wait_until(lambda: adapter.bind_state.phase == "pending")
+    assert adapter.bind_state.error == "连续登录失败，请用手机 QQ 重新扫码登录"
+    assert any("已删除失效的扫码凭据" in message for message, _kw in logger.errors)
+
+    bind_task = adapter._bind_task
+    assert bind_task is not None
+    _BlockingBindFlow.release.set()
+    await asyncio.wait_for(bind_task, timeout=2)
+
+    # 扫码成功后用新凭据重连，旧扫码凭据已被删除。
+    assert adapter.settings.app_id == "app-new"
+    assert adapter.connected is True
+    assert len(_FakeGateway.instances) == 2
+    assert gateway.stopped == 1
+    await adapter.stop()
+
+
+async def test_auth_exhaustion_with_config_credentials_keeps_config(
+    workdir, monkeypatch
+) -> None:
+    _install_fakes(monkeypatch, credentials=None)
+    _BlockingBindFlow.release = asyncio.Event()
+    _BlockingBindFlow.completed = 0
+    monkeypatch.setattr(adapter_module, "QrBindFlow", _BlockingBindFlow)
+    logger = FakeLogger()
+    adapter = adapter_module.OfficialAdapter(
+        OfficialSettings(
+            app_id="config-app", client_secret="config-secret", data_dir=workdir
+        ),
+        logger=logger,
+        event_sink=None,
+        data_dir=workdir,
+    )
+    await adapter.start()
+    gateway = _FakeGateway.instances[0]
+
+    await gateway.on_auth_exhausted()
+
+    # 配置/环境变量是用户资产：只提示、不删除。
+    assert _FakeCredentialStore.deletes == 0
+    assert adapter.settings.app_id == "config-app"
+    assert any("配置中的 AppID/AppSecret 失效" in message for message, _kw in logger.errors)
+    await _wait_until(lambda: adapter.bind_state.phase == "pending")
+    assert adapter.bind_state.error == "连续登录失败，请用手机 QQ 重新扫码登录"
+
+    # 扫码成功后新凭据覆盖运行期 settings，旧配置不会再把连接带回坏凭据。
+    bind_task = adapter._bind_task
+    assert bind_task is not None
+    _BlockingBindFlow.release.set()
+    await asyncio.wait_for(bind_task, timeout=2)
+
+    assert adapter.settings.app_id == "app-new"
+    assert adapter.connected is True
     await adapter.stop()
 
 

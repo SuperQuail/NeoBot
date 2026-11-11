@@ -45,6 +45,10 @@ class OfficialAuthError(RuntimeError):
     """官方协议鉴权/绑定失败；消息可直接展示给用户。"""
 
 
+class OfficialNetworkError(OfficialAuthError):
+    """访问官方接口时的网络层失败：不代表凭据失效，不计入连续登录失败。"""
+
+
 @dataclass(frozen=True, slots=True)
 class Credentials:
     app_id: str
@@ -75,7 +79,7 @@ async def _post_json(http: Any, url: str, payload: dict[str, Any]) -> dict[str, 
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        raise OfficialAuthError(f"请求官方接口失败: {type(exc).__name__}: {exc}") from exc
+        raise OfficialNetworkError(f"请求官方接口失败: {type(exc).__name__}: {exc}") from exc
     if not isinstance(data, dict):
         raise OfficialAuthError("官方接口响应格式异常")
     if status != 200:

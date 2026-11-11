@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 
 from neobot_adapter.official import gateway as gateway_module
+from neobot_adapter.official.auth import OfficialAuthError, OfficialNetworkError
 from neobot_adapter.official.gateway import OfficialGateway
 from neobot_adapter.official.settings import OfficialSettings
 
@@ -148,6 +149,7 @@ def _make_gateway(
     token: FakeTokenProvider | None = None,
     on_event: Any = None,
     logger: FakeLogger | None = None,
+    on_auth_exhausted: Any = None,
 ) -> tuple[OfficialGateway, FakeWS, FakeHttp, list[str]]:
     fake_ws = ws if ws is not None else FakeWS()
     fake_http = http if http is not None else FakeHttp()
@@ -165,6 +167,7 @@ def _make_gateway(
         logger if logger is not None else FakeLogger(),
         http=fake_http,
         ws_connect=connect,
+        on_auth_exhausted=on_auth_exhausted,
     )
     return gateway, fake_ws, fake_http, urls
 
@@ -352,6 +355,133 @@ async def test_gateway_op7_and_op9_raise_reconnect(workdir: Path, op: int, clear
         await gateway._handle_frame(SimpleNamespace(), json.dumps(_frame(op)))
 
     assert excinfo.value.clear_session is clear_session
+
+
+# ── 连续登录/鉴权失败 ──────────────────────────────────────────────
+
+
+async def test_gateway_requires_relogin_after_three_auth_failures(workdir: Path) -> None:
+    """token 获取失败与 4004 都算登录失败；第 3 次后停止重连并交给上层。"""
+    exhausted: list[int] = []
+    logger = FakeLogger()
+    gateway, _ws, _http, _urls = _make_gateway(
+        workdir, logger=logger, on_auth_exhausted=lambda: exhausted.append(1)
+    )
+    attempts: list[int] = []
+
+    async def failing_connect() -> None:
+        attempts.append(1)
+        if len(attempts) == 2:
+            raise gateway_module._GatewayClosed(4004, "invalid token")
+        raise OfficialAuthError("获取官方网关地址失败：HTTP 401")
+
+    gateway._connect_once = failing_connect
+    gateway._backoff_delay = lambda attempt: 0.0
+
+    await gateway.start()
+    task = gateway._task
+    assert task is not None
+    await asyncio.wait_for(asyncio.shield(task), 2.0)
+
+    assert len(attempts) == 3
+    assert exhausted == [1]
+    assert not gateway.connected
+    assert any("连续 3 次登录失败" in message for message, _kw in logger.errors)
+    await gateway.stop()
+
+
+@pytest.mark.parametrize("event_type", ["READY", "RESUMED"])
+async def test_gateway_auth_failure_count_resets_on_ready_or_resumed(
+    workdir: Path, event_type: str
+) -> None:
+    """就绪过（READY/RESUMED）即清零：失败两次、就绪、再失败三次才耗尽。"""
+    exhausted: list[int] = []
+    gateway, _ws, _http, _urls = _make_gateway(
+        workdir, on_auth_exhausted=lambda: exhausted.append(1)
+    )
+    attempts: list[int] = []
+
+    async def scripted_connect() -> None:
+        attempts.append(1)
+        if len(attempts) == 3:
+            gateway._track_dispatch(
+                {"t": event_type, "d": {"session_id": "s-1"}},
+                {"session_id": "s-1"},
+            )
+            raise gateway_module._GatewayClosed(1000, "normal close")
+        raise OfficialAuthError("token 失效")
+
+    gateway._connect_once = scripted_connect
+    gateway._backoff_delay = lambda attempt: 0.0
+
+    await gateway.start()
+    task = gateway._task
+    assert task is not None
+    await asyncio.wait_for(asyncio.shield(task), 2.0)
+
+    assert len(attempts) == 6
+    assert exhausted == [1]
+    await gateway.stop()
+
+
+async def test_gateway_network_errors_do_not_count_as_auth_failures(
+    workdir: Path,
+) -> None:
+    """token/网关地址请求的网络层失败只是断网，不能当凭据失效。"""
+    exhausted: list[int] = []
+    gateway, _ws, _http, _urls = _make_gateway(
+        workdir, on_auth_exhausted=lambda: exhausted.append(1)
+    )
+    attempts: list[int] = []
+
+    async def offline_connect() -> None:
+        attempts.append(1)
+        if len(attempts) >= 3:
+            gateway._stopping.set()
+        raise OfficialNetworkError("请求官方接口失败: ClientConnectorError")
+
+    gateway._connect_once = offline_connect
+    gateway._backoff_delay = lambda attempt: 0.0
+
+    await gateway.start()
+    task = gateway._task
+    assert task is not None
+    await asyncio.wait_for(asyncio.shield(task), 2.0)
+
+    assert len(attempts) == 3
+    assert gateway._auth_failures == 0
+    assert exhausted == []
+
+
+async def test_gateway_network_closes_do_not_count_as_auth_failures(
+    workdir: Path,
+) -> None:
+    """普通断线、会话失效、限频退避都不算登录失败，不触发重新扫码。"""
+    exhausted: list[int] = []
+    gateway, _ws, _http, _urls = _make_gateway(
+        workdir, on_auth_exhausted=lambda: exhausted.append(1)
+    )
+    codes = [4006, 4008, 1000]
+    attempts: list[int] = []
+
+    async def flaky_connect() -> None:
+        attempts.append(1)
+        code = codes[len(attempts) - 1]
+        if len(attempts) >= len(codes):
+            gateway._stopping.set()
+        raise gateway_module._GatewayClosed(code, "network")
+
+    gateway._connect_once = flaky_connect
+    gateway._backoff_delay = lambda attempt: 0.0
+
+    await gateway.start()
+    task = gateway._task
+    assert task is not None
+    await asyncio.wait_for(asyncio.shield(task), 2.0)
+
+    assert len(attempts) == 3
+    assert gateway._auth_failures == 0
+    assert exhausted == []
 
 
 # ── 事件回调与停止 ──────────────────────────────────────────────────
