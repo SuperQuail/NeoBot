@@ -20,8 +20,12 @@ _TAG_RE = re.compile(r"<[^>]*>")
 _AT_USER_RE = re.compile(r'<qqbot-at-user\s+id="([A-Za-z0-9_-]{1,128})"\s*/>')
 #: 官方协议标签：除内嵌 @用户 外，正文里出现的一律全角化（不能真的 @/弹出按钮）。
 _OFFICIAL_TAG_RE = re.compile(r"</?qqbot-[^>]*>|<@!?[^>]*>")
-#: Markdown 链接/图片：[text](url) / ![alt](url)；只校验目标 URL。
-_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)\s]*)\)")
+#: Markdown 链接/图片：[text](url) / ![alt](url)；只校验目标 URL（允许尖括号/空白）。
+_LINK_RE = re.compile(r"!?\[[^\]]*\]\(\s*<?([^)\s>]*)>?\s*\)")
+#: 引用式链接定义：[ref]: url；与正文链接一起校验。
+_LINK_DEF_RE = re.compile(r"(?m)^\s*\[[^\]]+\]:\s*<?(\S+?)>?\s*$")
+#: 危险 scheme 兜底：即使解析不到链接，也不允许正文出现这些协议。
+_DANGEROUS_SCHEME_RE = re.compile(r"(?i)\b(?:javascript|vbscript|data|file)\s*:")
 #: @全体本地节流：群 openid -> 本地自然日；重启清空可接受（官方限制才是权威）。
 _AT_EVERYONE_SENT: dict[str, str] = {}
 
@@ -70,8 +74,12 @@ def _unsupported_tag(content: str) -> str | None:
 
 def _unsafe_link(content: str) -> str | None:
     """链接只允许 http(s)：拒绝 javascript:/data:/file: 与回环/内网地址。"""
-    for match in _LINK_RE.finditer(content):
-        url = match.group(1).strip()
+    if _DANGEROUS_SCHEME_RE.search(content):
+        return "Markdown 中出现了不安全的链接协议（只允许 http(s)）"
+    candidates = [m.group(1) for m in _LINK_RE.finditer(content)]
+    candidates.extend(m.group(1) for m in _LINK_DEF_RE.finditer(content))
+    for raw in candidates:
+        url = raw.strip()
         if not url:
             continue
         parts = urlsplit(url)

@@ -56,6 +56,16 @@ def test_block_renders_capability_boundaries_when_feature_enabled() -> None:
         assert phrase in text
 
 
+def test_block_guides_structured_at_everyone_instead_of_tag() -> None:
+    """提示词与发送层口径一致：@全体用参数，正文别手写标签（会被转义）。"""
+    composer = PromptComposer()
+    ctx = make_context(scope=Scope.GROUP, features={"official_platform": True})
+
+    text = composer.render_status_text(_BLOCK_ID, ctx)
+    assert "at_everyone=true" in text
+    assert "正文不要写 <qqbot-at-everyone />" in text
+
+
 def _orchestrator() -> ReplyOrchestrator:
     """只挂构建提示词需要的最小属性（沿用 test_at_mention_wait_hint 的做法）。"""
     orch = ReplyOrchestrator.__new__(ReplyOrchestrator)

@@ -380,6 +380,26 @@ async def test_unsafe_links_are_rejected(url: str) -> None:
     assert handler.calls == []
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        "[点我]( javascript:alert(1))",
+        "[点我][ref]\n\n[ref]: javascript:alert(1)",
+    ],
+)
+async def test_unsafe_link_forms_are_rejected(content: str) -> None:
+    """带空白/引用式写法也不能绕过链接协议校验。"""
+    handler = _Handler()
+
+    result = _payload(
+        await _executor(handler).execute("send_official_markdown", {"content": content})
+    )
+
+    assert result["ok"] is False
+    assert "链接" in result["error"] or "不安全" in result["error"]
+    assert handler.calls == []
+
+
 async def test_https_link_is_allowed() -> None:
     handler = _Handler()
 
