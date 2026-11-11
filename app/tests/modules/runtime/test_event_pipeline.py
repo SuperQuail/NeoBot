@@ -10,6 +10,7 @@ import pytest
 
 from neobot_adapter.model.basic import PostMessageMessagesender
 from neobot_adapter.model.message import GroupMessage, MessageSegment
+from neobot_adapter.utils.parse import safe_parse_model
 from neobot_app.config.schemas.bot import Bot, BotConfig, Chat
 from neobot_app.message.queue import MessageQueue
 from neobot_app.runtime.event_pipeline import EventPipeline
@@ -1071,5 +1072,67 @@ def test_linked_group_official_message_deduped_when_onebot_connected(tmp_path) -
 
         pipeline.adapter = SimpleNamespace(connected_channels=("official",))
         assert pipeline._is_linked_group_duplicate(message) is False
+    finally:
+        bind_user_identity(None)
+
+
+def test_linked_group_official_at_bot_message_kept_when_onebot_connected(
+    tmp_path,
+) -> None:
+    """映射群 + OneBot 在线：显式 @官方 bot 的消息不能去重（OneBot 侧没有这个 @）。
+
+    走生产解析路径（事件字典 → GroupMessage），顺带防住 message_type 枚举化后
+    去重判定整段失效的回归。
+    """
+    from neobot_app.user_identity import bind_user_identity, link_group_number
+
+    bind_user_identity(tmp_path)
+    try:
+        assert link_group_number(8000000000009, 123456789, channel="official", trusted=True)[0]
+        pipeline = object.__new__(EventPipeline)
+        pipeline.adapter = SimpleNamespace(connected_channels=("onebot", "official"))
+        event = {
+            "post_type": "message",
+            "message_type": "group",
+            "message_id": 9102,
+            "self_id": 123456789,
+            "group_id": 8000000000009,
+            "user_id": "user_openid",
+            "neobot_channel": "official",
+            "message": [{"type": "text", "data": {"text": "普通消息"}}],
+            "raw_message": "普通消息",
+        }
+
+        def parsed(segments: list[dict]) -> GroupMessage:
+            return safe_parse_model({**event, "message": segments}, GroupMessage)
+
+        # 没有 at 的普通消息：仍被去重
+        assert pipeline._is_linked_group_duplicate(parsed(event["message"])) is True
+
+        # 显式 @ 官方 bot（@ 事件/正文 @bot 由适配器补 at 段）：不丢，按官方通道处理
+        assert (
+            pipeline._is_linked_group_duplicate(
+                parsed(
+                    [
+                        {"type": "at", "data": {"qq": 123456789}},
+                        {"type": "text", "data": {"text": "帮我看看"}},
+                    ]
+                )
+            )
+            is False
+        )
+
+        # @ 的不是官方 bot：仍按普通重复消息交给 OneBot
+        assert (
+            pipeline._is_linked_group_duplicate(
+                parsed(
+                    [
+                        {"type": "at", "data": {"qq": 987654321}},
+                        {"type": "text", "data": {"text": "帮我看看"}},
+                    ]
+                )
+            )
+            is True
+        )
     finally:
         bind_user_identity(None)
