@@ -1,7 +1,7 @@
-"""UserIdentitySkill — 官方合成用户 ID 与真实 QQ 号的人工映射。
+"""UserIdentitySkill — 官方 openid 与真实 QQ 号的人工映射。
 
-官方通道只给 openid，NeoBot 内部映射成 13 位合成 ID，和真实 QQ 号没有 API
-可以互转。Agent 在提示词里看到 `ID:9000…` 且能从对话判断其真实 QQ 号时，
+官方通道只给 openid，NeoBot 直接以完整 openid 作为本地身份 key，和真实 QQ 号没有 API
+可以互转。Agent 在提示词里看到 `openid:<完整值>` 且能从对话判断其真实 QQ 号时，
 用这里的工具写入同一份映射文件；管理员命令 /linkqq 也写这份文件。
 """
 

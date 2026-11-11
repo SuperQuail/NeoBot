@@ -22,7 +22,6 @@ from neobot_app.user_identity import (
     openid_for_legacy_id,
     openid_for_qq,
     profile_identity,
-    synthetic_for_group,
     qq_for_user,
     trusted_group_number_for,
     trusted_qq_for_user,
@@ -181,10 +180,10 @@ def test_developer_id_is_super_admin_only_when_in_config():
     assert configured.is_super_admin(9000000000009) is False
 
 
-def test_synthetic_for_group_reverse_lookup():
-    assert link_group_number(SYNTHETIC_GROUP, REAL_GROUP, channel="official", trusted=True)[0]
-    assert synthetic_for_group(REAL_GROUP, "official") == SYNTHETIC_GROUP
-    assert synthetic_for_group(REAL_GROUP, "onebot") is None
+def test_openid_for_group_reverse_lookup():
+    assert link_group_number(OPENID_GROUP, REAL_GROUP, channel="official", trusted=True)[0]
+    assert openid_for_group(REAL_GROUP, "official") == OPENID_GROUP
+    assert openid_for_group(REAL_GROUP, "onebot") is None
 
 
 # ── openid 主键 ─────────────────────────────────────────────

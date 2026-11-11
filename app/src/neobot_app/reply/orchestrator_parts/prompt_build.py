@@ -314,10 +314,10 @@ class PromptBuildMixin:
             sender_id = str(message.user_id)
 
         msg_type = getattr(message, "message_type", "")
-        # 官方通道的 user/group id 是开放平台 13 位合成 ID，不是 QQ 号；提示词
-        # 里按 ID 规模统一标注，避免模型拿合成 ID 去拼 qlogo/资料链接或加好友。
+        # 官方通道的 user/group id 是完整 openid，不是 QQ 号；提示词
+        # 统一标 openid，避免模型拿它去拼 qlogo/资料链接或加好友。
         event_channel = str(getattr(event, "neobot_channel", "") or "") or None
-        # 人工映射过的官方合成 ID 在提示词里直接显示真实 QQ 号。
+        # 人工映射过的 openid 在提示词里直接显示真实 QQ 号。
         sender_value = (qq_for_user(sender_id, event_channel) or sender_id) if sender_id else ""
         sender_label = id_label(sender_id, event_channel) if sender_id else "QQ"
         if isinstance(message, GroupMessage) or msg_type == "group":

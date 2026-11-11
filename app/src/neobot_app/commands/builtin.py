@@ -109,7 +109,7 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
             name="linkqq",
             description=(
                 "把用户与本通道真实 QQ 号映射：只给 QQ 号时映射发送者本人；"
-                "@ 一个用户再给 QQ 号时映射对方。官方合成 ID 之后会显示为 QQ 号，"
+                "@ 一个用户再给 QQ 号时映射对方。官方 openid 之后会显示为 QQ 号，"
                 "管理员/名单也能按真实 QQ 号识别"
             ),
             permission=PERM_SUB_ADMIN,
@@ -123,7 +123,7 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
         Command(
             name="linkgroup",
             description=(
-                "把当前群与真实 QQ 群号映射：官方群的合成 ID 之后会显示为群号，"
+                "把当前群与真实 QQ 群号映射：官方群的 openid 之后会显示为群号，"
                 "群黑白名单也按真实群号识别"
             ),
             permission=PERM_SUB_ADMIN,

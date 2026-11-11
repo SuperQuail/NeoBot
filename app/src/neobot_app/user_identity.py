@@ -347,18 +347,6 @@ class UserIdentityMap:
         """真实群号反查本地群 ID（openid 优先，旧合成号原样兼容）。"""
         return self._local_for_number(_GROUP, group_number, channel)
 
-    def synthetic_for_qq(self, qq: Any, channel: str | None = None) -> int | None:
-        """兼容旧调用：真实 QQ 号反查可整数化的本地 ID（openid 返回 None）。"""
-        local = self.openid_for_qq(qq, channel)
-        return _to_int(local) if local and local.isdigit() else None
-
-    def synthetic_for_group(
-        self, group_number: Any, channel: str | None = None
-    ) -> int | None:
-        """兼容旧调用：真实群号反查可整数化的本地群 ID（openid 返回 None）。"""
-        local = self.openid_for_group(group_number, channel)
-        return _to_int(local) if local and local.isdigit() else None
-
     def group_number_for(
         self, group_id: Any, channel: str | None = None
     ) -> int | None:
@@ -542,14 +530,6 @@ def unlink_group_number(
     return _singleton.unlink_group(group_id, channel, force=force)
 
 
-def synthetic_for_qq(qq: Any, channel: str | None = None) -> int | None:
-    return _singleton.synthetic_for_qq(qq, channel)
-
-
-def synthetic_for_group(group_number: Any, channel: str | None = None) -> int | None:
-    return _singleton.synthetic_for_group(group_number, channel)
-
-
 def display_group_id(group_id: Any, channel: str | None = None) -> str:
     return _singleton.display_group_id(group_id, channel)
 
@@ -574,8 +554,6 @@ __all__ = [
     "openid_for_qq",
     "profile_identity",
     "qq_for_user",
-    "synthetic_for_qq",
-    "synthetic_for_group",
     "trusted_group_number_for",
     "trusted_qq_for_user",
     "unlink_group_number",

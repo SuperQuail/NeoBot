@@ -9,7 +9,7 @@ from neobot_app.prompt.render import render_template
 
 #: 官方通道下 dispatch 拒绝清单之外、仍依赖 OneBot 专属接口的技能工具：
 #: 历史消息查询（chat_history / cross_chat_query）用 OneBot 历史接口，而官方
-#: 协议没有该接口；头像解析依赖真实 QQ 头像，官方通道只有合成 ID、没有头像。
+#: 协议没有该接口；头像解析依赖真实 QQ 头像，官方通道只有 openid、没有头像。
 _OFFICIAL_EXTRA_UNSUPPORTED_TOOLS = frozenset(
     {
         "chat_history__read_earlier_messages",

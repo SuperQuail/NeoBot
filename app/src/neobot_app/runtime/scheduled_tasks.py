@@ -190,7 +190,7 @@ class ScheduledTaskManager:
         self._legacy_migration_task = loop.create_task(self.migrate_legacy_bindings())
 
     async def migrate_legacy_bindings(self) -> None:
-        """only-official 下把旧定时任务的真实 QQ/群号迁移成官方合成 ID。"""
+        """only-official 下把旧定时任务的真实 QQ/群号/旧合成号迁移成官方 openid。"""
         from neobot_app.runtime.legacy_bindings import resolve_legacy_official_target
 
         adapter = getattr(self._orchestrator, "_adapter", None) if self._orchestrator else None
@@ -235,7 +235,7 @@ class ScheduledTaskManager:
                     error=str(exc),
                 )
         if migrated:
-            self._logger.info("旧定时任务绑定已迁移到官方合成 ID", tasks=migrated)
+            self._logger.info("旧定时任务绑定已迁移到官方 openid", tasks=migrated)
 
     def set_notification_hub(self, hub: Any) -> None:
         self._notification_hub = hub
