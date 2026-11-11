@@ -29,7 +29,7 @@ verified_hash: c847f1614b5d
   `bootstrap/__init__.py:543 _load_config_or_defaults`（失败 → 默认配置 + 强制待机）；
 * 热重载三层：分类表 `RULES` → 消费者注册表 `HotReloadRegistry` → 具体消费者；
 * 新配置段 `[prompt_optimizations]`（`config/schemas/bot_parts/prompt.py`）：cot 板块总开关
-  `cot_enabled` 与 7 个子块开关，默认全开；旧 `chat.gentle_language_enabled` 在
+  `cot_enabled` 与 8 个子块开关，默认全开；旧 `chat.gentle_language_enabled` 在
   0.9.0 → 0.10.0 迁移里搬进 `gentle_language`，旧键删除；
 * 写入侧（`chat_writer`、dashboard `config_manager`）与它们的读盘语义。
 
@@ -140,7 +140,7 @@ flowchart TD
     C --> C1["chat 实际是 EnhancedChat（继承 core.Chat），共 79 个字段｜基类 13 + 增强 66"]
     C --> C2["models: registry 模型库 + assignments 调用方引用"]
     C2 --> C3["iter_role_models 只产出「被引用且库里存在」的角色"]
-    C --> C4["prompt_optimizations 8 个开关：cot_enabled + 7 个子块｜bot_parts/prompt.py:8"]
+    C --> C4["prompt_optimizations 9 个开关：cot_enabled + 8 个子块｜bot_parts/prompt.py:8"]
     E --> E1["agent 下 11 个子段：creator / memory / problem_solver / sandbox / tools…"]
     E1 --> E2["AgentMemoryTrigger group_interval=500 private_interval=200"]
     E1 --> E3["AgentMemoryArchive max_chars=500 max_total_chars=15000"]
@@ -177,7 +177,7 @@ flowchart TD
 ```
 
 迁移只搬一个键：`chat.gentle_language_enabled` → `prompt_optimizations.gentle_language`，
-true/false 原样保留；`prompt_optimizations` 里其余 6 个开关由 dataclass 默认值 `true` 补齐，
+true/false 原样保留；`prompt_optimizations` 里其余 7 个开关由 dataclass 默认值 `true` 补齐，
 所以老部署升级后行为不变。`new["prompt_optimizations"]` 只在有内容时才写，
 空分区交给加载期的补全写回生成。新增配置段时**必须同时补迁移函数**：只改 schema 的话，
 旧文件缺这一段，会被 `Config.load` 的补全写回整份重生成（补默认值），

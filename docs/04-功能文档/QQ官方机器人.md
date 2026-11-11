@@ -35,7 +35,7 @@ NeoBot 支持两种 QQ 接入通道，并可以**同时运行**：
 - **管理员命令**：
   - `/linkqq <QQ号>`（管理员级别权限）：把**发送者本人**映射到真实 QQ 号（5~11 位纯数字）；也支持 `/linkqq @用户 <QQ号>` 映射被 @ 的人。这条命令写入的映射是 **trusted** 的，可用于管理员/次级管理员权限判定。官方群@事件里的 `mentions` 会按正文里 @ 标记的真实顺序解析成 at 段，所以官方通道也能用 @ 形式，且「命令在前、@ 在后」不会打乱解析；群全量消息 content 里的 @机器人 标记也会补成 bot at 段，保证群命令触发条件成立。
   - `/linkgroup <群号>`（管理员级别权限，群聊中使用）：把**当前群**映射到真实 QQ 群号（5~12 位纯数字），之后提示词/群黑白名单按真实群号识别。
-- **Agent 工具**：`user_identity__link_user_qq(user_id, qq_number[, channel])`、`user_identity__link_group_number(group_id, group_number[, channel])`，以及对应的 get/unlink。Agent 写入的映射**只影响展示**，不参与权限判定（防止模型自己把用户映射成管理员）；管理员映射必须由人类管理员用命令建立。官方群@事件的 `mentions` 会解析为被 @ 用户；官方发送侧 @ 用户必须用 markdown 内嵌 `<qqbot-at-user id="openid" />`（适配器直接使用 openid，不再反查合成 ID；未知/格式不对的 openid 直接失败，不做文本降级）。
+- **Agent 工具**：`user_identity__link_user_qq(user_id, qq_number[, channel])`、`user_identity__link_group_number(group_id, group_number[, channel])`，以及对应的 get/unlink。Agent 写入的映射**只影响展示**，不参与权限判定（防止模型自己把用户映射成管理员）；管理员映射必须由人类管理员用命令建立。官方群@事件的 `mentions` 会解析为被 @ 用户；官方发送侧 @ 用户必须用 markdown 内嵌 `<qqbot-at-user id="openid" />`（适配器直接使用 openid，不再反查合成 ID；未知/格式不对的 openid 会替换成「@用户」纯文字并记 WARNING，不做文本降级）。
 - 生效范围：提示词/用户资料/历史/通知/档案里，已映射的用户显示 `QQ:<真实号>（ID:<完整 openid>）`，群显示 `群号:<真实群号>（ID:<完整 group_openid>）`；**未映射时显示完整 openid 字符串（`ID:<openid>`，不截断）**。好友/群黑白名单、回复黑名单只认管理员命令写入的 trusted 映射；agent 写入的映射只影响展示，不参与访问控制。管理员权限只认 trusted 用户映射。映射只影响展示与身份解析，不改资料存储主键。
 - **超级管理员**：`chat.admin_accounts` **默认留空，必须由部署者在配置/面板显式设置**，配置里存的是**真实 QQ 号（数字）**；官方通道的号主需要先由管理员用 `/linkqq` 把它与真实 QQ 建立 trusted 映射，权限判定才能命中。`/linkqq` 写入超管 QQ 的映射只允许超管本人操作；`/unlinkqq`、`/unlinkgroup` 仅超级管理员可用。
 - **解绑**：机器人通道页提供「解绑官方机器人」，删除本机扫码凭据并断开；配置里显式填写的 AppID/AppSecret 优先于扫码落盘的凭据，热重载不会因为配置留空而丢掉环境变量里的凭据。
@@ -58,15 +58,16 @@ NeoBot 支持两种 QQ 接入通道，并可以**同时运行**：
 | `qq_appid` / `qq_client_secret` 等 | 热重载：只重启官方后端（重新取 token/连网关） |
 | OneBot 反向 WS 地址/端口/token | 热重载：只重启 OneBot 后端，失败回滚 |
 | `[bot].official_mode`、`[bot].account` | 热重载：身份服务按新配置重新判定/回填，队列同步 |
-| 扫码绑定 / 重新扫码 | 运行期完成；新凭据成功后才切换连接，失败保留旧连接 |
+| 扫码绑定 / 重新扫码 / 连续登录失败自动重扫码 | 运行期完成；新凭据成功后才切换连接，失败保留旧连接 |
 
 通道增删会断开被移除的那条连接；两条通道同时运行时，单条断开只影响它自己。发送期间若目标通道不可用会返回明确失败。
 
 ## 官方通道的能力与限制
 
+- **连续登录失败自动重新扫码**：连续 3 次登录/鉴权失败（获取 access token、获取网关地址失败，或网关 `4004` token 失效）后停止用旧凭据自动重连：日志明确提示「连续 3 次登录失败，需要重新扫码登录」，面板「机器人通道」页与终端自动给出新的扫码二维码。扫码落盘的凭据会被删除；AppID/AppSecret 来自配置/环境变量时不会静默删除，只提示检查配置或清空后扫码。绑定成功后用新凭据重连；成功连接（READY/RESUMED）后失败计数清零。普通网络断开、会话失效（`4006/4007/4009`）、限频（`4008`）与 `4914/4915` 不计入这 3 次。
 - **被动回复窗口**：群消息 5 分钟内最多回复 5 条，单聊 60 分钟内最多 4 条。超限/过期直接失败并写 info 日志，不再自动转主动消息；后台通知/定时任务等没有被动窗口的场景显式使用主动消息（`proactive`），失败同样只写日志/返回工具错误。
 - **文本**：普通文本一律按纯文本发送（msg_type=0），不渲染 Markdown；需要 Markdown 时显式使用 `send_official_markdown`（官方 Markdown 卡片），需要 Markdown 图片时显式使用 `send_long_reply`（我们自己的图片渲染）。
-- **发送侧 @ 用户**：必须通过 `send_official_markdown` 的官方 Markdown 卡片内嵌 `@` 发送（普通文本不支持 @）：卡片内容中的 `<qqbot-at-user id="openid" />` 直接使用 openid；`@全体成员` 用 `<qqbot-at-everyone />`。openid 缺失/格式不对时直接失败，不做文本降级。
+- **发送侧 @ 用户**：必须通过 `send_official_markdown` 的官方 Markdown 卡片内嵌 `@` 发送（普通文本不支持 @）：卡片 `content` 里只放行 `<qqbot-at-user id="openid" />`（openid 直接使用；格式非法/无法解析时适配器替换成「@用户」纯文字并记 WARNING）；`@全体成员` 只能由 `at_everyone=true` 生成（仅群聊、每群每天 1 次、需机器人是群管理员），指令按钮只能由 `commands` 数组生成。正文里手写的 `<qqbot-at-everyone />`、`<qqbot-cmd-*/>`、`<@...>` 会被全角化成普通文字（工具回执带 `neutralized` 计数）；普通文本（msg_type=0）同样清理这些标签，不会真的 @ 全体或伪造按钮。
 - **图片/语音**：按官方富媒体协议先上传拿 `file_info`，再以 `msg_type=7` + `media` 发送。本地文件/base64/data/file 走分片上传；http(s) URL 只走官方 URL 转存，不做下载后分片回退（127.0.0.1 等官方拉不到的地址会直接失败并写 info 日志）。
 - **工具可见性**：官方通道隐藏并拒绝 OneBot 专属工具/技能（拍一拍、QQ 表情回应/搜索、onebot 任意 API、好友管理/合并转发、历史消息查询、跨聊天历史查询、头像解析）。发图用 `emoji_numbers`/`send_long_reply`（Markdown 图片），发语音用 `speak`，需要 Markdown 卡片时用 `send_official_markdown`，群管理用 `official_group_manage`（仅官方真实接口）。
 - **收消息**：文本、图片附件、语音 ASR/`voice_wav_url`、引用消息、`mentions` 里的被 @ 用户、`member_role`；群全量消息需要平台权限，默认只收 @ 消息；群成员加入/退出、入群申请、好友增删、机器人入群/退群、群消息接收开启/关闭、单聊主动消息开关、订阅授权状态会映射为 OneBot notice/request。
@@ -80,7 +81,7 @@ NeoBot 支持两种 QQ 接入通道，并可以**同时运行**：
   - OpenAPI 里没有 group_openid → QQ 群号 / user_openid → QQ 号 的转换接口。
 
   因此只按人工 `/linkgroup` 映射关联合法群：已映射且两通道都在线时，官方群消息去重交给 OneBot，回复默认优先 OneBot，OneBot 不可用回落官方；显式 `channel` 不被静默改投。
-- **非目标**：QQ 频道/频道私信、Webhook 模式、流式消息、消息 `keyboard` 字段（模板/自定义键盘）、ARK、互动回调；Markdown 卡片只支持内嵌 `qqbot-cmd-enter`/`qqbot-cmd-input` 指令标签。
+- **非目标**：QQ 频道/频道私信、Webhook 模式、流式消息、消息 `keyboard` 字段（模板/自定义键盘）、ARK、互动回调；Markdown 卡片只支持内嵌 `<qqbot-at-user>` 与由 `at_everyone`/`commands` 结构化参数生成的 `qqbot-at-everyone`/`qqbot-cmd-enter`/`qqbot-cmd-input` 标签，不支持手写这些标签。
 
 ## 从合成号迁移到 openid（旧数据）
 
@@ -92,6 +93,7 @@ NeoBot 支持两种 QQ 接入通道，并可以**同时运行**：
 
 ## 排查
 
+- **日志出现「连续 3 次登录失败，需要重新扫码登录」**：官方通道已停止用旧凭据重连，面板与终端会自动出现新二维码——用手机 QQ 重新扫码即可；来自扫码的旧凭据已删除，来自配置/环境变量的 AppID/AppSecret 不会被改动，请检查配置或清空配置后重新扫码。
 - **只有一条通道在线**：面板「机器人通道」页分别显示两条通道；官方未绑定会显示二维码，OneBot 未连接会显示监听地址。另一条离线不影响这条。
 - **双待下账号显示「未获取（连接后自动读取）」**：该通道尚未连接或身份解析未完成；连接成功后会自动从 API 获取两个不同的机器人 QQ 号。
 - **显式 `channel` 发送失败**：目标通道未启用/未连接，或该会话只存在于另一条通道；换默认 auto 或检查面板状态。

@@ -316,7 +316,7 @@ flowchart TD
     D --> E{"_sleep_service.is_sleeping()?"}
     E -- 是 --> F["_handle_sleeping_message"]
     F --> G{"is_at_mentioned?"}
-    G -- 否 --> G1["日志：睡眠中，消息仅入队不触发回复<br/>（消息已经 push 过了）"]
+    G -- 否 --> G1["INFO message.enqueued：should_reply=false<br/>reason=睡眠中，不触发回复（消息已经 push 过了）"]
     G -- 是 --> H{"block_reason_for_message?"}
     H -- 是 --> H1["屏蔽优先于唤醒：不唤醒、不回复"]
     H -- 否 --> I["sleep_service.wake(reason=at_mention_event)"]
@@ -331,6 +331,8 @@ flowchart TD
 * 待机是**在 push 之前**熔断（`:350-353`/`:546-549`，注释明确要求「必须在 push/档案总结
   之前返回，否则待机期间仍会积压记忆总结任务」）；睡眠是**在 push 之后**只掐回复。
   两者都「不回复」，但待机期间该会话的队列长度不增长，睡眠期间照常增长。
+* 意愿判定各分支结束后只输出一条 INFO `message.enqueued`（含 willingness 三字段），
+  原 `reply.decided` DEBUG 已删除；私聊直通日志额外带 `delay_seconds`。
 * 唤醒响应（`wake_prompt()`）通过 `background_content` 注入 —— 与命令 sync_reply、
   凭据签发共用同一个参数，这是「非概率触发的三种 1.0 回复」的统一实现方式。
 * 凭据签发（`:1417-1472`）：`issuer_id == bot_account` 直接放过（防自我签发）；

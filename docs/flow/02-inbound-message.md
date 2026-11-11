@@ -270,7 +270,7 @@ flowchart LR
     A["_handle_inbound_raw_event(event)"] --> B["InboundPipeline.handle_raw_event"]
     B --> C["map_to_incoming_message 规范化"]
     C --> D["handle(message)"]
-    D --> E["只打一条『收到入站消息』日志"]
+    D --> E["打一条 DEBUG『收到消息』摘要；INFO 入队明细在事件管道的 message.enqueued"]
     E --> F["短期记忆 remember 整段被注释<br/>（未完成功能, 不要画成有效步骤）"]
 ```
 
