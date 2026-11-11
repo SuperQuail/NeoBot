@@ -8,6 +8,7 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 from neobot_app.time_context import from_epoch_seconds
+from neobot_app.user_identity import display_user_id
 
 from .common import (
     NotificationEntry,
@@ -102,8 +103,8 @@ class _QueueTextMixin:
             text = poke.action_text
         else:
             action_desc = _poke_sub_type_text(poke.sub_type)
-            sender = poke.sender_name or f"QQ:{poke.user_id}"
-            target = poke.target_name or f"QQ:{poke.target_id}"
+            sender = poke.sender_name or display_user_id(poke.user_id) or "未知用户"
+            target = poke.target_name or display_user_id(poke.target_id) or "未知用户"
             text = f"{sender} 对 {target} 使用了{action_desc}"
 
         if poke_index == 1:
@@ -171,7 +172,11 @@ class _QueueTextMixin:
         if sender is not None and sender.card:
             return str(sender.card)
         if message.user_id is not None:
-            return f"QQ:{message.user_id}"
+            # 全量展示身份：真实 QQ 号显示 QQ:<号>，官方 openid 显示 openid:<完整值>
+            return (
+                display_user_id(message.user_id, getattr(message, "neobot_channel", None))
+                or "未知用户"
+            )
         return "未知用户"
 
     def _message_sender_label(

@@ -77,7 +77,7 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `content` | string | 是 | Markdown 正文。允许内嵌 `<qqbot-at-user id="合成ID" />`；其余 `<qqbot-*` 标签会被转义成普通文字。上限 4000 字符 |
+| `content` | string | 是 | Markdown 正文。允许内嵌 `<qqbot-at-user id="openid" />`；其余 `<qqbot-*` 标签会被转义成普通文字。上限 4000 字符 |
 | `reply_to_number` | integer | 否 | 引用回复的消息编号（行首编号），语义与 `send_reply` 相同；不存在直接报错 |
 | `at_everyone` | boolean | 否 | 仅群聊；为 true 时在正文最前面插入 `<qqbot-at-everyone />` 和一个空格，每群每天最多 1 次（本地节流 + 官方兜底） |
 | `commands` | array | 否 | 指令按钮，追加在正文末尾。元素 `{text, show?, reference?, enter?}` |
@@ -93,7 +93,7 @@
 
 为什么按钮走结构化参数而不是让模型写标签：需要 urlencode、要卡 100 字符、要按会话类型禁 `enter`，
 也让「用户文本被抄进 content 时附带一个假按钮」变成不可能。@ 之所以允许内嵌写标签，是因为工具必须知道
-@ 的位置（用户 ID 又只以合成 ID 出现在模型上下文里），而 @全体单独用参数把住。
+@ 的位置（官方用户 ID 以完整 openid 出现在模型上下文里），而 @全体单独用参数把住。
 
 ### 4.3 校验（失败即返回 JSON，不发送）
 
@@ -162,7 +162,7 @@
 }
 ```
 
-要点：合成 ID `9000000000123` 由适配器反查成 `member_openid`；`/签到` 被工具编码成 `%2F%E7%AD%BE%E5%88%B0`。
+要点：`<qqbot-at-user id="...">` 里的 openid 直接透传（不再反查合成 ID）；`/签到` 被工具编码成 `%2F%E7%AD%BE%E5%88%B0`。
 
 ### 6.2 群聊：@全体成员
 
@@ -228,7 +228,7 @@
 if markdown is not None:
     if len(markdown) > _TEXT_LIMIT:
         return _failed(f"Markdown 消息 {len(markdown)} 字，超过单条上限 {_TEXT_LIMIT}")
-    markdown = self._render_embedded_mentions(markdown, kind)   # 合成 ID -> openid
+    markdown = self._render_embedded_mentions(markdown, kind)   # 校验/透传 openid
     try:
         official_id = await self._send_text(kind, openid, conversation.id, markdown,
                                            reply_id, timeout, force_markdown=True, split=False)
@@ -236,8 +236,8 @@ if markdown is not None:
         ...  # 见降级链
 ```
 
-- `_render_embedded_mentions`：把 `<qqbot-at-user id="(\d+)" />` 里的合成 ID 用 `self._identity.openid(int(id), "user")`
-  换成 openid；查不到时替换成 `@用户` 文本并记 WARNING（不让坏 ID 原样上线）。私聊里全部替换成 `@用户`。
+- `_render_embedded_mentions`：`<qqbot-at-user id="..." />` 里的值现在就是 openid，直接校验字符集/非空后透传；
+  非法或缺失时替换成 `@用户` 文本并记 WARNING（不让坏 ID 原样上线）。私聊里全部替换成 `@用户`。
 - `at_everyone` 由工具生成标签，适配器原样透传（它无法区分合法来源，节流放在工具层）。
 - `_send_text` 增加 `split: bool = True`；markdown 路径传 False（4000 已在工具/适配器入口卡住）。
 - 降级：`_is_markdown_forbidden` 增加错误码集合 `{304036, 40034008, 40034009, 40034011, 40034124, 40034127}`；
@@ -255,7 +255,7 @@ if markdown is not None:
 | `40054010` 不允许发送 URL | 不自动删链接（会改变语义），返回明确错误 | error：去掉链接或改用 `send_long_reply` |
 | 被动额度用尽/过期（`40034128`/`304103`） | 适配器既有行为：转主动推送，每会话告警一次 | `ok`（额度信息不保证可见） |
 | 主动推送被拒/机器人离线 | 返回 failed | error：本轮不要重试，别再发 |
-| 内嵌 @ 的合成 ID 查不到 | 替换成 `@用户` | `ok`，日志 WARNING |
+| 内嵌 @ 的 openid 非法/缺失 | 替换成 `@用户` | `ok`，日志 WARNING |
 | 清洗后为空 | 不发送 | error，同 `send_reply` 的空内容提示 |
 
 原则：**能在工具层拦的绝不发出去**；发送侧的降级只会「降级格式」，不会「改内容语义」。
@@ -264,7 +264,7 @@ if markdown is not None:
 
 威胁模型：`content` 会混入用户原话、网页抓取、聊天记录引用；攻击者可以让模型「复述」一段带官方标签的文本。
 
-- **R1 标签白名单**：`content` 只放行 `<qqbot-at-user id="13位合成ID（9 开头）" />`；`<qqbot-at-everyone />`、
+- **R1 标签白名单**：`content` 只放行 `<qqbot-at-user id="openid" />`（openid 为非空的不含标签的字符串）；`<qqbot-at-everyone />`、
   `<qqbot-cmd-enter ...>`、`<qqbot-cmd-input ...>`、`<@...>`、`@everyone` 一律转义为全角文字
   （`＜qqbot-at-everyone /＞`）。「把这段话原样发出去」不再能触发 @全体或伪造按钮。
 - **R2 @全体单独开关**：只能由 `at_everyone=true` 生成，仅群聊；本地按 `(群ID, 自然日)` 记录，每天 1 次；
@@ -343,7 +343,7 @@ commands 示例：[{"text": "/签到", "show": "去签到"}]；回车指令只�
 | 工具校验 | `app/tests/modules/reply/test_markdown_tool.py`（新） | 空内容、4001 字、单聊 @、群聊已用 @全体、群聊 enter、commands 非数组/超 100 字、reply_to 不存在；合法输入生成正确段 |
 | 转义/编码 | 同上 | 用户文本里的三个标签被转义成全角；`％` 与已编码输入幂等；`quote(safe="")` 结果正确 |
 | handler | `app/tests/modules/reply/test_tools.py`（扩展） | 发出 `[reply, markdown]`；设置 `state.reply_sent`；自身历史存去标签文本；发送失败返回 error 且不标记已回复 |
-| 适配器 | `app/tests/modules/adapter/test_official_send.py`（扩展） | msg_type=2、无 content 字段、msg_id/msg_seq/message_reference；合成 ID→openid；未知 ID→`@用户`；私聊 @ 降级；>4000 直接 failed；markdown 不被 `_split_text` 切分；各错误码降级纯文本且标签被清；普通文本路径转义标签 |
+| 适配器 | `app/tests/modules/adapter/test_official_send.py`（扩展） | msg_type=2、无 content 字段、msg_id/msg_seq/message_reference；openid 直接透传；非法 ID→`@用户`；私聊 @ 降级；>4000 直接 failed；markdown 不被 `_split_text` 切分；各错误码降级纯文本且标签被清；普通文本路径转义标签 |
 | skill | `app/tests/modules/chat/test_skill_registry.py` 或新用例 | SKILL.md 能被 discover；frontmatter name/description/keywords 合规；不影响 allowed-tools |
 | 集成 | `app/tests/modules/reply/test_dual_identity.py` 附近（扩展） | 双通道官方事件可见、OneBot 事件不可见；markdown 发送显式走 official，不因映射改投 OneBot |
 

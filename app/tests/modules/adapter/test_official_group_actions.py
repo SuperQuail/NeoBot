@@ -1,4 +1,4 @@
-"""官方群管理 action：禁言/踢人/入群审批映射到官方接口。"""
+"""官方群管理 action：openid 直通（兼容旧合成号迁移表）映射到官方接口。"""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def _adapter() -> SimpleNamespace:
 async def test_set_group_ban_adds_member_mute() -> None:
     adapter = _adapter()
     result = await actions.dispatch(
-        adapter, "set_group_ban", {"group_id": 8001, "user_id": 9001, "duration": 600}
+        adapter, "set_group_ban", {"group_id": "group-openid", "user_id": "member-openid", "duration": 600}
     )
 
     assert result["status"] == "ok"
@@ -48,7 +48,7 @@ async def test_set_group_ban_adds_member_mute() -> None:
 
 async def test_set_group_ban_zero_cancels_mute() -> None:
     adapter = _adapter()
-    await actions.dispatch(adapter, "set_group_ban", {"group_id": 8001, "user_id": 9001, "duration": 0})
+    await actions.dispatch(adapter, "set_group_ban", {"group_id": "group-openid", "user_id": "member-openid", "duration": 0})
 
     member = adapter.api.calls[0]["body"]["members"][0]
     assert member == {"op": "del", "member_openid": "member-openid", "mute_expire_at": ""}
@@ -59,7 +59,7 @@ async def test_set_group_kick_uses_batch_remove() -> None:
     result = await actions.dispatch(
         adapter,
         "set_group_kick",
-        {"group_id": 8001, "user_id": 9001, "reject_add_request": True},
+        {"group_id": "group-openid", "user_id": "member-openid", "reject_add_request": True},
     )
 
     assert result["status"] == "ok"
@@ -77,7 +77,7 @@ async def test_batch_remove_permission_error_is_failed() -> None:
         raise OfficialApiError("无权限", code=11253, status=403)
 
     adapter.api.request = deny
-    result = await actions.dispatch(adapter, "set_group_kick", {"group_id": 8001, "user_id": 9001})
+    result = await actions.dispatch(adapter, "set_group_kick", {"group_id": "group-openid", "user_id": "member-openid"})
 
     assert result["status"] == "failed"
     assert "11253" in result["message"]
@@ -88,7 +88,7 @@ async def test_set_group_add_request_maps_approval() -> None:
     result = await actions.dispatch(
         adapter,
         "set_group_add_request",
-        {"group_id": 8001, "user_id": 9001, "flag": "req-1", "approve": False, "reason": "拒绝"},
+        {"group_id": "group-openid", "user_id": "member-openid", "flag": "req-1", "approve": False, "reason": "拒绝"},
     )
 
     assert result["status"] == "ok"
@@ -97,8 +97,21 @@ async def test_set_group_add_request_maps_approval() -> None:
     assert call["body"] == {"op": "decline", "join_request_id": "req-1", "reject_reason": "拒绝"}
 
 
+async def test_legacy_synthetic_ids_are_mapped_to_openids() -> None:
+    """迁移期：后台任务/旧数据里的 13 位合成号仍能按只读映射换成 openid。"""
+    adapter = _adapter()
+    result = await actions.dispatch(
+        adapter, "set_group_ban", {"group_id": 8001, "user_id": 9001, "duration": 60}
+    )
+
+    assert result["status"] == "ok"
+    call = adapter.api.calls[0]
+    assert call["path"] == "/v2/groups/group-openid/restrict_chat_setting"
+    assert call["body"]["members"][0]["member_openid"] == "member-openid"
+
+
 async def test_unknown_group_management_fails_explicitly() -> None:
     adapter = _adapter()
-    result = await actions.dispatch(adapter, "set_group_leave", {"group_id": 8001})
+    result = await actions.dispatch(adapter, "set_group_leave", {"group_id": "group-openid"})
     assert result["status"] == "failed"
     assert "没有主动退群接口" in result["message"]

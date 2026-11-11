@@ -1,4 +1,4 @@
-"""官方事件映射：C2C/群 @ 消息、附件、引用、去重与 RFC3339 时间。"""
+"""官方事件映射：openid 直通的 C2C/群消息、通知、附件、引用、去重与 RFC3339 时间。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import pytest
 from neobot_contracts.ports.logging import NullLogger
 
 from neobot_adapter.official.events import EventMapper
-from neobot_adapter.official.identity import IdentityMap, MessageIdMap
+from neobot_adapter.official.identity import MessageIdMap
 
 
 @pytest.fixture
@@ -28,9 +28,8 @@ def workdir():
         shutil.rmtree(path, ignore_errors=True)
 
 
-def _mapper(workdir, *, self_id: int = 1020304) -> EventMapper:
+def _mapper(_workdir, *, self_id: int = 1020304) -> EventMapper:
     return EventMapper(
-        identity=IdentityMap(workdir),
         message_ids=MessageIdMap(),
         logger=NullLogger(),
         self_id=self_id,
@@ -77,7 +76,7 @@ def test_c2c_message_maps_to_private_event(workdir) -> None:
     assert event["target_id"] == 1020304
     assert event["_official_message_id"] == "ROBOT1.0_c2c-msg"
     assert event["message_id"] > 0
-    assert event["user_id"] == mapper._identity.user_id("user-openid-1")
+    assert event["user_id"] == "user-openid-1"
     assert event["sender"]["nickname"] == "Alice"
     assert event["message"] == [{"type": "text", "data": {"text": "你好"}}]
     expected_time = int(datetime.fromisoformat("2026-01-02T03:04:05+08:00").timestamp())
@@ -96,8 +95,8 @@ def test_group_at_message_puts_at_segment_first(workdir) -> None:
 
     assert event is not None
     assert event["message_type"] == "group"
-    assert event["group_id"] == mapper._identity.group_id("group-openid-1")
-    assert event["user_id"] == mapper._identity.user_id("member-openid-1")
+    assert event["group_id"] == "group-openid-1"
+    assert event["user_id"] == "member-openid-1"
     assert event["sender"]["role"] == "member"
     assert event["message"][0] == {"type": "at", "data": {"qq": 1020304}}
     assert event["message"][1] == {"type": "text", "data": {"text": " 在吗"}}
@@ -127,7 +126,7 @@ def test_group_mentions_become_at_segments(workdir) -> None:
     assert segments[1] == {"type": "text", "data": {"text": " 你们看这个 "}}
     assert segments[2] == {
         "type": "at",
-        "data": {"qq": str(mapper._identity.user_id("member-openid-2")), "name": "小明"},
+        "data": {"qq": str("member-openid-2"), "name": "小明"},
     }
     assert all(segment.get("data", {}).get("name") != "另一个机器人" for segment in segments)
 
@@ -384,8 +383,8 @@ def test_group_member_add_maps_to_notice(workdir) -> None:
     assert event is not None
     assert event["post_type"] == "notice"
     assert event["notice_type"] == "group_increase"
-    assert event["group_id"] == mapper._identity.group_id("group-openid-1")
-    assert event["user_id"] == mapper._identity.user_id("member-openid-2")
+    assert event["group_id"] == "group-openid-1"
+    assert event["user_id"] == "member-openid-2"
 
 
 def test_group_join_request_maps_to_request(workdir) -> None:
@@ -418,7 +417,7 @@ def test_friend_add_maps_to_notice(workdir) -> None:
     )
     assert event is not None
     assert event["notice_type"] == "friend_add"
-    assert event["user_id"] == mapper._identity.user_id("user-openid-9")
+    assert event["user_id"] == "user-openid-9"
 
 
 def test_group_msg_receive_maps_to_notice(workdir) -> None:
@@ -428,7 +427,7 @@ def test_group_msg_receive_maps_to_notice(workdir) -> None:
     )
     assert event is not None
     assert event["notice_type"] == "group_msg_receive"
-    assert event["group_id"] == mapper._identity.group_id("group-openid-1")
+    assert event["group_id"] == "group-openid-1"
 
 
 def test_c2c_msg_reject_maps_to_notice(workdir) -> None:
@@ -438,7 +437,7 @@ def test_c2c_msg_reject_maps_to_notice(workdir) -> None:
     )
     assert event is not None
     assert event["notice_type"] == "c2c_msg_reject"
-    assert event["user_id"] == mapper._identity.user_id("user-openid-1")
+    assert event["user_id"] == "user-openid-1"
 
 
 def test_subscribe_message_status_maps_to_notice(workdir) -> None:

@@ -112,7 +112,7 @@ def _as_datetime(value: Any) -> datetime | None:
 
 
 def safe_user_key(user_id: Any) -> str:
-    """把 user_id 变成可安全用作文件名的键（QQ 号为纯数字，原样保留）。"""
+    """把 user_id 变成可安全用作文件名的键（QQ 数字/openid 字母数字原样保留）。"""
     raw = str(user_id or "").strip()
     if not raw:
         return ""
@@ -394,8 +394,8 @@ class AvatarStore:
     async def _fetch_from_qq(self, key: str) -> bytes:
         """按既有约定从 qlogo 取 640px 头像（唯一的联网点）。
 
-        官方通道的用户 ID 是 13 位合成号，qlogo 认不出；只有看起来像真实 QQ 号
-        的 key 才发请求，合成号直接失败（由调用方计入失败/冷却），不产生网络调用。
+        官方通道的用户 ID 是 openid，qlogo 认不出；只有看起来像真实 QQ 号
+        的 key 才发请求，openid 直接失败（由调用方计入失败/冷却），不产生网络调用。
         """
         if not looks_like_real_qq(key):
             raise ValueError(f"不是真实 QQ 号，跳过 qlogo 头像请求: {key}")

@@ -148,7 +148,7 @@ async def test_ensure_user_profile_refreshes_when_stale_periodic_enabled() -> No
 
     record = await service.ensure_user_profile("123456")
 
-    assert adapter.calls == [("get_stranger_info", (123456,))]
+    assert adapter.calls == [("get_stranger_info", ("123456",))]
     assert record.nick_name == "小明"
 
 
@@ -239,7 +239,7 @@ def test_format_mapped_member_shows_qq_and_qq_id(tmp_path) -> None:
 
         line = UserProfileService._format_group_member_line(1, member, None)
 
-        assert "QQ:123456789（QQ ID:9000000000011）" in line
+        assert "QQ:123456789（openid:9000000000011）" in line
     finally:
         bind_user_identity(None)
 
@@ -288,7 +288,7 @@ async def test_is_bot_group_admin_uses_member_info_then_list_fallback() -> None:
     result = await service.is_bot_group_admin("100", "888")
 
     assert result is True
-    assert adapter.calls == [("get_group_member_info", (100, 888))]
+    assert adapter.calls == [("get_group_member_info", ("100", "888"))]
 
 
 async def test_get_group_name_falls_back_to_placeholder() -> None:

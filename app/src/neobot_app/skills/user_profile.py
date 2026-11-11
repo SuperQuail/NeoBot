@@ -51,10 +51,10 @@ class UserProfileSkill(SkillModule):
                 self._tool_def(
                     "read_user_info",
                     "读取数据库用户资料表中的资料，包含好友备注 remark 和头像解析记忆 avatar_analysis。"
-                    "查询某个QQ号的好友备注或头像记忆时优先使用此工具。",
+                    "查询某个QQ号/官方用户的好友备注或头像记忆时优先使用此工具。",
                     {
                         "properties": {
-                            "user_id": {"type": "string", "description": "QQ号"},
+                            "user_id": {"type": "string", "description": "用户 ID（OneBot 为 QQ 号，官方通道为 openid）"},
                         },
                         "required": ["user_id"],
                     },
@@ -65,11 +65,12 @@ class UserProfileSkill(SkillModule):
             tools.append(
                 self._tool_def(
                     "analyze_user_avatar",
-                    "获取并解析指定用户QQ头像，将解析结果写入用户资料表 avatar_analysis。",
+                    "获取并解析指定用户QQ头像，将解析结果写入用户资料表 avatar_analysis。"
+                    "仅真实 QQ 号有 qlogo 头像；官方 openid 没有。",
                     {
                         "properties": {
-                            "user_id": {"type": "string", "description": "目标QQ号"},
-                            "group_id": {"type": "string", "description": "可选，群号"},
+                            "user_id": {"type": "string", "description": "目标用户 ID（真实 QQ 号）"},
+                            "group_id": {"type": "string", "description": "可选，群 ID（群号/openid）"},
                             "requirement": {"type": "string", "description": "可选，头像解析要求"},
                         },
                         "required": ["user_id"],
@@ -123,14 +124,14 @@ async def _handle_analyze_user_avatar(self: UserProfileSkill, args: dict) -> str
     user_id = str(args.get("user_id", "")).strip()
     if not user_id:
         return _json({"ok": False, "error": "缺少 user_id"})
-    # 官方通道的 user_id 是 13 位合成 ID，没有 QQ 头像可拉；直接给明确错误，
-    # 不要把合成 ID 当 QQ 号去调 get_qq_avatar。
+    # 官方通道的 user_id 是 openid，没有 QQ 头像可拉；直接给明确错误，
+    # 不要把 openid 当 QQ 号去调 get_qq_avatar。
     if not looks_like_real_qq(user_id):
         return _json(
             {
                 "ok": False,
                 "error": (
-                    "该用户 ID 不是真实 QQ 号（官方通道的合成 ID 没有 QQ 头像）；"
+                    "该用户 ID 不是真实 QQ 号（官方通道 openid 没有 QQ 头像）；"
                     "请改从消息附件/头像 URL 获取图片。"
                 ),
                 "user_id": user_id,
@@ -145,9 +146,9 @@ async def _handle_analyze_user_avatar(self: UserProfileSkill, args: dict) -> str
     # 获取头像 URL
     avatar_url: str | None = None
     try:
-        params: dict = {"user_id": int(user_id)}
+        params: dict = {"user_id": user_id}
         if group_id:
-            params["group_id"] = int(group_id)
+            params["group_id"] = group_id
         result = await asyncio.wait_for(
             self._adapter.call_api("get_qq_avatar", params),
             timeout=10.0,

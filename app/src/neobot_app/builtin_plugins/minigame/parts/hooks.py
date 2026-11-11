@@ -161,7 +161,7 @@ async def _tool_chengyu_submit(word: str, user_id: str = "", user_name: str = ""
 # docs/04-功能文档/小游戏.md「对外能力」。要点：
 #   * 只在这里开放「增减积分」；**不新增模型工具**，模型无法自行给自己加分；
 #   * 参数非法抛 ValueError，可预期的业务结果（余额不足 / 总开关关闭）用返回值表达；
-#   * user_id 一律是数字 QQ 号，与玩法侧的账户口径一致。
+#   * user_id 是本地用户 ID 文本：OneBot 数字 QQ 号或官方 openid 字符串。
 
 
 def _points_payload(payload: Any) -> dict[str, Any]:
@@ -169,12 +169,15 @@ def _points_payload(payload: Any) -> dict[str, Any]:
 
 
 def _points_user_id(data: Mapping[str, Any]) -> str:
-    """取出并校验 user_id（数字 QQ 号；长度与 mg_profile.user_id 对齐）。"""
+    """取出并校验 user_id（本地用户 ID 文本；长度与 mg_profile.user_id 对齐）。
+
+    OneBot 是数字 QQ 号，官方通道是 openid 字符串，两者都接受。
+    """
     uid = str(data.get("user_id") or "").strip()
     if not uid:
         raise ValueError("缺少 user_id")
-    if not uid.isdigit() or len(uid) > 32:
-        raise ValueError(f"user_id 必须是数字 QQ 号（收到 {uid!r}）")
+    if len(uid) > 128:
+        raise ValueError(f"user_id 过长（{len(uid)} 字符，上限 128）")
     return uid
 
 

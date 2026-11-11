@@ -99,7 +99,8 @@ class LifecycleShutdownMixin:
             sub_type: str = "normal"
             message_id: int = 0
             user_id: int = 0
-            group_id: int = int(conversation_id) if kind == "group" and conversation_id.isdigit() else 0
+            # 群 ID 可能是官方 openid 字符串：原样放（不 int()、不按位数判断）
+            group_id: Any = str(conversation_id) if kind == "group" and conversation_id else 0
             message: list = field(default_factory=lambda: [{"type": "text", "data": {"text": content}}])
             raw_message: str = ""
             font: int = 0
@@ -129,10 +130,10 @@ class LifecycleShutdownMixin:
             )
 
     def _background_reply_channel(self, kind: str, conversation_id: str, channel: str | None) -> str | None:
-        """合成事件的来源通道：显式 > 目标会话历史 > ID 规模推断。
+        """合成事件的来源通道：显式 > 目标会话历史 > 统一身份推断。
 
-        推断只在 QQ 会话（group / private）上做：官方协议的会话 ID 是 13 位合成
-        号，OneBot 的真实 QQ 号 <= 11 位、群号 <= 12 位。本地/插件等无通道适配器
+        推断只在 QQ 会话（group / private）上做：真实 QQ 号/群号规模 → onebot，
+        其余（官方 openid 字符串或旧合成号）→ official。本地/插件等无通道适配器
         没有 active_channels，返回 None 保持旧行为。
         """
         requested = str(channel or "").strip().casefold()
@@ -152,10 +153,9 @@ class LifecycleShutdownMixin:
                 channels = ()
             if len(channels) == 1:
                 return channels[0]
-        if not target.isdigit():
-            return None
-        real_max_digits = 12 if kind == "group" else 11
-        return "onebot" if len(target) <= real_max_digits else "official"
+        from neobot_app.bot_accounts import infer_channel
+
+        return infer_channel(target, kind=kind)
 
     async def shutdown(self) -> None:
         self._closed = True

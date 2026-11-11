@@ -37,14 +37,14 @@ def parse_switch(value: str | None) -> bool | None:
     return None
 
 
-def conv_group_id(command_ctx: Any) -> int:
-    """取群号；私聊返回 0（这些命令只在群里生效）。"""
+def conv_group_id(command_ctx: Any) -> str:
+    """取群会话 ID；私聊返回空串（这些命令只在群里生效）。
+
+    返回值是文本：OneBot 是数字群号的字符串形式，官方通道是 openid。
+    """
     if str(getattr(command_ctx, "kind", "")) != "group":
-        return 0
-    try:
-        return int(getattr(command_ctx, "conv_id", 0))
-    except (TypeError, ValueError):
-        return 0
+        return ""
+    return str(getattr(command_ctx, "conv_id", "") or "").strip()
 
 
 def command_args(command_ctx: Any) -> list[str]:

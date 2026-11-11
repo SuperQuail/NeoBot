@@ -64,7 +64,7 @@ async def groups(state: Any) -> models.Groups:
     return models.Groups(
         items=[
             models.GroupChoice(
-                group_id=row.group_id,
+                group_id=str(row.group_id),
                 name=row.group_name or str(row.group_id),
                 bot_id=bot_id,
             )
@@ -74,8 +74,9 @@ async def groups(state: Any) -> models.Groups:
     )
 
 
-async def require_group(state: Any, group_id: int) -> None:
-    if not any(item.group_id == group_id for item in (await groups(state)).items):
+async def require_group(state: Any, group_id: int | str) -> None:
+    expected = str(group_id)
+    if not any(item.group_id == expected for item in (await groups(state)).items):
         raise ActionError("group_unavailable", "机器人不在这个群中，请重新选择接收群。")
 
 

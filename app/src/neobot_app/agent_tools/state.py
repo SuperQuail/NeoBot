@@ -350,7 +350,7 @@ class StateTools:
             question = self._question(doc, question_id)
             if question["status"] not in {"pending", "interrupted"}:
                 _fail("conflict", "Question is no longer awaiting an answer")
-            if question["user_id"] is not None and question["user_id"] != context.user_id:
+            if question["user_id"] is not None and str(question["user_id"]) != str(context.user_id):
                 _fail("permission_denied", "Only the original requesting user may answer")
             if isinstance(answer, str) and len(question["questions"]) == 1:
                 answer = {question["questions"][0]["id"]: answer}
@@ -386,7 +386,7 @@ class StateTools:
             if plan["status"] != "pending":
                 _fail("conflict", "Plan is not awaiting approval; resubmit after interruption")
             if message_id is not None:
-                if plan.get("user_id") is not None and plan["user_id"] != context.user_id:
+                if plan.get("user_id") is not None and str(plan["user_id"]) != str(context.user_id):
                     _fail("permission_denied", "Only the original requesting user may approve")
                 self._receipt(context, message_id)
             plan.update(status="approved" if approved else "rejected", approved=approved)
@@ -526,7 +526,7 @@ class StateTools:
             plan = self._load(context)["plan"]
         return bool(plan and plan["status"] != "approved")
 
-    def resolve_pending_question(self, chat_flow_id: str, user_id: int, question_id: str) -> ToolContext:
+    def resolve_pending_question(self, chat_flow_id: str, user_id: int | str, question_id: str) -> ToolContext:
         """HOST ONLY cross-owner routing for an authenticated real user message.
 
         No model tool exposes this lookup. Parent must authenticate chat/user first;
@@ -535,13 +535,13 @@ class StateTools:
         """
         _text(chat_flow_id, "chat_flow_id", 256)
         _text(question_id, "question_id", 64)
-        if type(user_id) is not int:
+        if not isinstance(user_id, (int, str)) or str(user_id).strip() == "":
             _fail("not_found", "No pending question for this chat/user")
         matches = []
         with self._lock:
             for row in self._db.execute("SELECT * FROM state WHERE chat=?", (chat_flow_id,)):
                 for q in json.loads(row["document"])["questions"]:
-                    if q["question_id"] == question_id and q["user_id"] == user_id and q["status"] in {"pending", "interrupted"}:
+                    if q["question_id"] == question_id and str(q["user_id"]) == str(user_id) and q["status"] in {"pending", "interrupted"}:
                         matches.append(ToolContext(owner=row["owner"], chat_flow_id=chat_flow_id,
                             user_id=user_id, agent_id=row["agent"], parent_agent_id=q.get("parent_agent_id"),
                             depth=q.get("depth", 0), human_request=True))

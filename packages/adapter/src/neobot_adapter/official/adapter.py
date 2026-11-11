@@ -109,7 +109,6 @@ class OfficialAdapter:
         self._passive = PassiveReplyCache()
         self._media = MediaUploader(self._logger)
         self._mapper = EventMapper(
-            identity=self._identity,
             message_ids=self._message_ids,
             logger=self._logger,
         )
@@ -129,8 +128,9 @@ class OfficialAdapter:
         self._connected_event = threading.Event()
         self._ready_event = asyncio.Event()
         self._recent_messages: OrderedDict[int, dict[str, Any]] = OrderedDict()
-        self._known_users: dict[int, dict[str, Any]] = {}
-        self._known_groups: dict[int, dict[str, Any]] = {}
+        #: 官方通道的已知用户/群：键是 openid 字符串（旧合成号按迁移表解析后也会是 openid）。
+        self._known_users: dict[str, dict[str, Any]] = {}
+        self._known_groups: dict[str, dict[str, Any]] = {}
 
     # ── RuntimeAdapter 契约 ─────────────────────────────────────────
 
@@ -193,11 +193,11 @@ class OfficialAdapter:
         return self._sender
 
     @property
-    def known_users(self) -> dict[int, dict[str, Any]]:
+    def known_users(self) -> dict[str, dict[str, Any]]:
         return self._known_users
 
     @property
-    def known_groups(self) -> dict[int, dict[str, Any]]:
+    def known_groups(self) -> dict[str, dict[str, Any]]:
         return self._known_groups
 
     def get_recent_message(self, message_id: int) -> dict[str, Any] | None:
@@ -320,7 +320,7 @@ class OfficialAdapter:
         return safe_parse_model(result, response.GetGroupListResponse)
 
     async def get_group_member_list(
-        self, group_id: int, no_cache: bool = False, timeout: float = 5.0
+        self, group_id: int | str, no_cache: bool = False, timeout: float = 5.0
     ) -> response.GetGroupMemberListResponse:
         result = await self.call_api(
             "get_group_member_list",
@@ -331,8 +331,8 @@ class OfficialAdapter:
 
     async def get_group_member_info(
         self,
-        group_id: int,
-        user_id: int,
+        group_id: int | str,
+        user_id: int | str,
         no_cache: bool = False,
         timeout: float = 5.0,
     ) -> response.GetGroupMemberInfoResponse:
@@ -345,7 +345,7 @@ class OfficialAdapter:
 
     async def get_friend_msg_history(
         self,
-        user_id: int,
+        user_id: int | str,
         message_seq: int = 0,
         count: int = 20,
         reverse_order: bool = False,
@@ -365,7 +365,7 @@ class OfficialAdapter:
 
     async def get_group_msg_history(
         self,
-        group_id: int,
+        group_id: int | str,
         message_seq: int = 0,
         count: int = 20,
         reverse_order: bool = False,
@@ -392,7 +392,7 @@ class OfficialAdapter:
 
     async def send_private_msg(
         self,
-        user_id: int,
+        user_id: int | str,
         message: str | list[dict[str, Any]],
         timeout: float = 5.0,
         wait_response: bool = True,
@@ -406,7 +406,7 @@ class OfficialAdapter:
 
     async def send_group_msg(
         self,
-        group_id: int,
+        group_id: int | str,
         message: str | list[dict[str, Any]],
         timeout: float = 5.0,
         wait_response: bool = True,
@@ -571,13 +571,8 @@ class OfficialAdapter:
         self._mapper.bot_openid = openid
         if self._robot_uin:
             return
-        # READY 只带机器人 openid；在拿到 /users/@me 的 uin 前，先用它的合成号
-        # 当 self_id，保证 at 段有个稳定值。
-        try:
-            synthetic = self._identity.user_id(openid)
-        except ValueError:
-            return
-        self._mapper.self_id = synthetic
+        # 机器人 at 段固定用真 QQ 号（uin）；还没拿到 uin 时不制造假号，
+        # self_id 保持 0，由 _append_bot_at 跳过，等 /users/@me 返回后补齐。
 
     async def _publish(self, event: dict[str, Any]) -> None:
         sink = self._event_sink
@@ -603,16 +598,16 @@ class OfficialAdapter:
             while len(self._recent_messages) > _RECENT_MESSAGE_LIMIT:
                 self._recent_messages.popitem(last=False)
         sender = event.get("sender") if isinstance(event.get("sender"), dict) else {}
-        user_id = int(event.get("user_id") or 0)
-        if user_id:
-            self._known_users[user_id] = {
-                "user_id": user_id,
+        user_id = event.get("user_id")
+        if user_id not in (None, "", 0):
+            self._known_users[str(user_id)] = {
+                "user_id": str(user_id),
                 "nickname": str(sender.get("nickname") or ""),
             }
         if event.get("message_type") == "group":
-            group_id = int(event.get("group_id") or 0)
-            if group_id:
-                self._known_groups.setdefault(group_id, {"group_id": group_id, "group_name": ""})
+            group_id = event.get("group_id")
+            if group_id not in (None, "", 0):
+                self._known_groups.setdefault(str(group_id), {"group_id": str(group_id), "group_name": ""})
         official_id = str(event.get("_official_message_id") or "")
         kind = str(event.get("message_type") or "")
         if official_id and kind in {"group", "private"}:

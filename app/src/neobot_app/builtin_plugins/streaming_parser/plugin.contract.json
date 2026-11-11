@@ -13,8 +13,8 @@
                 "type": "string"
               },
               "group_id": {
-                "title": "接收群号",
-                "type": "integer"
+                "title": "接收群 ID",
+                "type": "string"
               },
               "name": {
                 "title": "群名称",
@@ -55,9 +55,9 @@
         "additionalProperties": false,
         "properties": {
           "group_id": {
-            "exclusiveMinimum": 0,
+            "maxLength": 128,
             "title": "接收通知的群",
-            "type": "integer"
+            "type": "string"
           }
         },
         "required": [
@@ -96,9 +96,9 @@
             "type": "boolean"
           },
           "group_id": {
-            "exclusiveMinimum": 0,
+            "maxLength": 128,
             "title": "接收通知的群",
-            "type": "integer"
+            "type": "string"
           },
           "inherited": {
             "title": "尚未保存群设置，使用插件默认值",
@@ -153,9 +153,9 @@
             "type": "boolean"
           },
           "group_id": {
-            "exclusiveMinimum": 0,
+            "maxLength": 128,
             "title": "接收通知的群",
-            "type": "integer"
+            "type": "string"
           }
         },
         "required": [
@@ -199,9 +199,9 @@
             "type": "boolean"
           },
           "group_id": {
-            "exclusiveMinimum": 0,
+            "maxLength": 128,
             "title": "接收通知的群",
-            "type": "integer"
+            "type": "string"
           },
           "inherited": {
             "title": "尚未保存群设置，使用插件默认值",
@@ -290,9 +290,9 @@
         "additionalProperties": false,
         "properties": {
           "group_id": {
-            "exclusiveMinimum": 0,
+            "maxLength": 128,
             "title": "接收通知的群",
-            "type": "integer"
+            "type": "string"
           },
           "target": {
             "maxLength": 256,
@@ -386,9 +386,9 @@
         "additionalProperties": false,
         "properties": {
           "group_id": {
-            "exclusiveMinimum": 0,
+            "maxLength": 128,
             "title": "接收通知的群",
-            "type": "integer"
+            "type": "string"
           },
           "target": {
             "maxLength": 256,
@@ -427,8 +427,8 @@
                 "title": "最近检查时间"
               },
               "group_id": {
-                "title": "接收群号",
-                "type": "integer"
+                "title": "接收群 ID",
+                "type": "string"
               },
               "live_status": {
                 "anyOf": [
@@ -509,8 +509,8 @@
           "group_id": {
             "anyOf": [
               {
-                "exclusiveMinimum": 0,
-                "type": "integer"
+                "maxLength": 128,
+                "type": "string"
               },
               {
                 "type": "null"
@@ -546,8 +546,8 @@
                 "title": "最近检查时间"
               },
               "group_id": {
-                "title": "接收群号",
-                "type": "integer"
+                "title": "接收群 ID",
+                "type": "string"
               },
               "live_status": {
                 "anyOf": [
@@ -624,9 +624,9 @@
         "additionalProperties": false,
         "properties": {
           "group_id": {
-            "exclusiveMinimum": 0,
+            "maxLength": 128,
             "title": "接收通知的群",
-            "type": "integer"
+            "type": "string"
           },
           "room_id": {
             "exclusiveMinimum": 0,
@@ -664,9 +664,9 @@
         "additionalProperties": false,
         "properties": {
           "group_id": {
-            "exclusiveMinimum": 0,
+            "maxLength": 128,
             "title": "接收通知的群",
-            "type": "integer"
+            "type": "string"
           },
           "push_live": {
             "title": "开播推送",
@@ -714,8 +714,8 @@
                 "title": "最近检查时间"
               },
               "group_id": {
-                "title": "接收群号",
-                "type": "integer"
+                "title": "接收群 ID",
+                "type": "string"
               },
               "live_status": {
                 "anyOf": [
@@ -791,8 +791,8 @@
           "group_id": {
             "anyOf": [
               {
-                "exclusiveMinimum": 0,
-                "type": "integer"
+                "maxLength": 128,
+                "type": "string"
               },
               {
                 "type": "null"
@@ -1005,7 +1005,7 @@
             "card_style": "minimal",
             "default_push_live": true,
             "default_push_live_end": true,
-            "group_id": 20001,
+            "group_id": "20001",
             "inherited": true
           },
           "groups.settings.update": {
@@ -1014,7 +1014,7 @@
             "card_style": "minimal",
             "default_push_live": true,
             "default_push_live_end": true,
-            "group_id": 20001,
+            "group_id": "20001",
             "inherited": false
           },
           "subscriptions.create": {
@@ -1022,7 +1022,7 @@
             "item": {
               "avatar_url": "",
               "checked_at": "2026-10-28T12:00:00Z",
-              "group_id": 20001,
+              "group_id": "20001",
               "live_status": 0,
               "name": "演示主播",
               "push_live": true,
@@ -1036,7 +1036,7 @@
             "items": [
               {
                 "bot_id": "10001",
-                "group_id": 20001,
+                "group_id": "20001",
                 "name": "演示交流组"
               }
             ]
@@ -1087,7 +1087,7 @@
             "item": {
               "avatar_url": "",
               "checked_at": "2026-10-28T12:00:00Z",
-              "group_id": 20001,
+              "group_id": "20001",
               "live_status": 0,
               "name": "演示主播",
               "push_live": true,
@@ -1104,7 +1104,7 @@
         {
           "chapter": "打开空白订阅表单",
           "example": {
-            "group_id": 0,
+            "group_id": "",
             "target": ""
           },
           "target": "view.subscriptions.group",
@@ -1113,7 +1113,7 @@
         {
           "chapter": "选择接收通知的群",
           "example": {
-            "group_id": 20001,
+            "group_id": "20001",
             "target": ""
           },
           "target": "view.subscriptions.group",
@@ -1122,7 +1122,7 @@
         {
           "chapter": "填写并识别直播间",
           "example": {
-            "group_id": 20001,
+            "group_id": "20001",
             "target": "https://live.bilibili.com/610001"
           },
           "target": "view.subscriptions.target",
@@ -1131,7 +1131,7 @@
         {
           "chapter": "预览通知",
           "example": {
-            "group_id": 20001,
+            "group_id": "20001",
             "target": "https://live.bilibili.com/610001"
           },
           "target": "view.subscriptions.preview",
@@ -1140,7 +1140,7 @@
         {
           "chapter": "确认并开始监听",
           "example": {
-            "group_id": 20001,
+            "group_id": "20001",
             "target": "https://live.bilibili.com/610001"
           },
           "target": "view.subscriptions.start",
@@ -1149,12 +1149,12 @@
         {
           "chapter": "检查保存结果",
           "example": {
-            "group_id": 20001,
+            "group_id": "20001",
             "items": [
               {
                 "avatar_url": "",
                 "checked_at": "2026-10-28T12:00:00Z",
-                "group_id": 20001,
+                "group_id": "20001",
                 "live_status": 0,
                 "name": "演示主播",
                 "push_live": true,
@@ -1172,12 +1172,12 @@
         {
           "chapter": "设置本群通知",
           "example": {
-            "group_id": 20001,
+            "group_id": "20001",
             "items": [
               {
                 "avatar_url": "",
                 "checked_at": "2026-10-28T12:00:00Z",
-                "group_id": 20001,
+                "group_id": "20001",
                 "live_status": 0,
                 "name": "演示主播",
                 "push_live": true,
@@ -1195,12 +1195,12 @@
         {
           "chapter": "确认监听健康",
           "example": {
-            "group_id": 20001,
+            "group_id": "20001",
             "items": [
               {
                 "avatar_url": "",
                 "checked_at": "2026-10-28T12:00:00Z",
-                "group_id": 20001,
+                "group_id": "20001",
                 "live_status": 0,
                 "name": "演示主播",
                 "push_live": true,

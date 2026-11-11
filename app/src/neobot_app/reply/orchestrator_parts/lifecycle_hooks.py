@@ -66,10 +66,17 @@ class LifecycleHooksMixin:
         if not isinstance(shared, AgentToolsSkill):
             return None
         user_id, message_id = getattr(message, "user_id", None), getattr(message, "message_id", None)
-        if user_id is None or message_id is None or not str(queue_key).isdigit():
+        if user_id is None or message_id is None:
             return None
+        from neobot_app.bot_accounts import identity_text
+
         flow = f"{kind}:{queue_key}"
-        context = ToolContext(owner=f"{flow}:main", chat_flow_id=flow, user_id=int(user_id), human_request=True)
+        context = ToolContext(
+            owner=f"{flow}:main",
+            chat_flow_id=flow,
+            user_id=identity_text(user_id) or None,
+            human_request=True,
+        )
         from neobot_app.message.process import event_message__to_text
         text = await event_message__to_text(message)
         return await shared.runtime.accept_human_input(context, text, str(message_id))

@@ -150,7 +150,7 @@ class PromptBuildMixin:
             try:
                 prompt = await asyncio.wait_for(
                     self._prompt_builder.build_group_chat_prompt(
-                        group_id=int(queue_key),
+                        group_id=str(queue_key),
                         message_queue=queue,
                         numbering=numbering,
                         last_reply_message_id=last_reply_message_id,
@@ -194,7 +194,7 @@ class PromptBuildMixin:
         try:
             prompt = await asyncio.wait_for(
                 self._prompt_builder.build_friend_chat_prompt(
-                    user_id=int(queue_key),
+                    user_id=str(queue_key),
                     message_queue=queue,
                     numbering=numbering,
                     last_reply_message_id=last_reply_message_id,
@@ -244,7 +244,7 @@ class PromptBuildMixin:
         bot_account = self._event_bot_account(event)
         if event.conversation_ref is not None and event.conversation_ref.kind == "group":
             return await self._prompt_builder.build_group_chat_messages(
-                group_id=int(queue_key),
+                group_id=str(queue_key),
                 message_queue=queue,
                 numbering=numbering,
                 last_reply_message_id=last_reply_message_id,
@@ -252,7 +252,7 @@ class PromptBuildMixin:
                 bot_account=bot_account,
             )
         return await self._prompt_builder.build_friend_chat_messages(
-            user_id=int(queue_key),
+            user_id=str(queue_key),
             message_queue=queue,
             numbering=numbering,
             last_reply_message_id=last_reply_message_id,

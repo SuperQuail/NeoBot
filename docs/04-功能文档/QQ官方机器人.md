@@ -28,21 +28,23 @@ NeoBot 支持两种 QQ 接入通道，并可以**同时运行**：
 
 ## 官方 ID ↔ QQ 号 / 群号映射（人工）
 
-官方 openid 与真实 QQ 号/群号没有 API 可以互转，但可以**人工**建立映射，让系统把某个通道的用户/群当作已知 QQ 身份处理：
+官方 openid **就是**该通道的本地用户/群 ID（字符串主键）；它和真实 QQ 号/群号没有 API 可以互转，但可以**人工**建立映射，让系统把某个通道的用户/群当作已知 QQ 身份（用于展示、黑白名单与管理员判定）：
+
+> 过渡说明：早期版本把 openid 派生为 13 位合成整数。现在官方通道直接使用 openid 字符串；旧合成号只通过 `data/qqbot/identities.json` 做**只读反查**（迁移/旧数据兼容），不再分配新合成号。
 
 - **管理员命令**：
   - `/linkqq <QQ号>`（管理员级别权限）：把**发送者本人**映射到真实 QQ 号（5~11 位纯数字）；也支持 `/linkqq @用户 <QQ号>` 映射被 @ 的人。这条命令写入的映射是 **trusted** 的，可用于管理员/次级管理员权限判定。官方群@事件里的 `mentions` 会按正文里 @ 标记的真实顺序解析成 at 段，所以官方通道也能用 @ 形式，且「命令在前、@ 在后」不会打乱解析；群全量消息 content 里的 @机器人 标记也会补成 bot at 段，保证群命令触发条件成立。
   - `/linkgroup <群号>`（管理员级别权限，群聊中使用）：把**当前群**映射到真实 QQ 群号（5~12 位纯数字），之后提示词/群黑白名单按真实群号识别。
-- **Agent 工具**：`user_identity__link_user_qq(user_id, qq_number[, channel])`、`user_identity__link_group_number(group_id, group_number[, channel])`，以及对应的 get/unlink。Agent 写入的映射**只影响展示**，不参与权限判定（防止模型自己把用户映射成管理员）；管理员映射必须由人类管理员用命令建立。官方群@事件的 `mentions` 会解析为被 @ 用户；官方发送侧 @ 用户必须用 markdown 内嵌 `<qqbot-at-user id="member_openid" />`（适配器会自动转 markdown，并把真实 QQ 先反查成官方合成 ID 再查 member_openid；未映射/未知 openid 直接失败，不做文本降级）；合成 ID 可先用 agent 工具建立展示映射。
-- 生效范围：提示词/用户资料/历史/通知/档案里，映射后的用户档案同时显示 `QQ:<真实号>（QQ ID:<官方合成号>）`，群显示为 `群号:<真实群号>`；好友/群黑白名单、回复黑名单只认管理员命令写入的 trusted 映射；agent 写入的映射只影响展示，不参与访问控制。管理员权限只认 trusted 用户映射。映射只影响展示与身份解析，不改资料存储主键。
-- **超级管理员**：`chat.admin_accounts` **默认留空，必须由部署者在配置/面板显式设置**；不再自动写入任何合成 ID。官方通道的号主也需要先配置管理员，之后才能用 `/linkqq` 建立 trusted 映射。`/linkqq` 写入超管 QQ 的映射只允许超管本人操作；`/unlinkqq`、`/unlinkgroup` 仅超级管理员可用。
+- **Agent 工具**：`user_identity__link_user_qq(user_id, qq_number[, channel])`、`user_identity__link_group_number(group_id, group_number[, channel])`，以及对应的 get/unlink。Agent 写入的映射**只影响展示**，不参与权限判定（防止模型自己把用户映射成管理员）；管理员映射必须由人类管理员用命令建立。官方群@事件的 `mentions` 会解析为被 @ 用户；官方发送侧 @ 用户必须用 markdown 内嵌 `<qqbot-at-user id="openid" />`（适配器直接使用 openid，不再反查合成 ID；未知/格式不对的 openid 直接失败，不做文本降级）。
+- 生效范围：提示词/用户资料/历史/通知/档案里，已映射的用户显示 `QQ:<真实号>（ID:<完整 openid>）`，群显示 `群号:<真实群号>（ID:<完整 group_openid>）`；**未映射时显示完整 openid 字符串（`ID:<openid>`，不截断）**。好友/群黑白名单、回复黑名单只认管理员命令写入的 trusted 映射；agent 写入的映射只影响展示，不参与访问控制。管理员权限只认 trusted 用户映射。映射只影响展示与身份解析，不改资料存储主键。
+- **超级管理员**：`chat.admin_accounts` **默认留空，必须由部署者在配置/面板显式设置**，配置里存的是**真实 QQ 号（数字）**；官方通道的号主需要先由管理员用 `/linkqq` 把它与真实 QQ 建立 trusted 映射，权限判定才能命中。`/linkqq` 写入超管 QQ 的映射只允许超管本人操作；`/unlinkqq`、`/unlinkgroup` 仅超级管理员可用。
 - **解绑**：机器人通道页提供「解绑官方机器人」，删除本机扫码凭据并断开；配置里显式填写的 AppID/AppSecret 优先于扫码落盘的凭据，热重载不会因为配置留空而丢掉环境变量里的凭据。
-- 存储：`data/user_qq_map.json`（原子写，v2 格式带 trusted 标记；旧格式自动读取）。映射是人工维护的，系统**不会**根据昵称/头像等猜测，也不会自动建立跨通道会话关联。
+- 存储：`data/user_qq_map.json`（原子写；新版 local ID 为文本——OneBot 数字串或官方 openid；旧格式的合成号 key 在迁移脚本里改写）。映射是人工维护的，系统**不会**根据昵称/头像等猜测，也不会自动建立跨通道会话关联。
 
 ## 身份判定与账号
 
 - 判定只在**连接建立后**进行：对每条已连接通道调用 `get_version_info`，`app_name` 为 `NeoBot-QQOfficial` 即官方通道；未连接不判定、不猜测。双待下每条通道各有一份判定结果（通道、账号、昵称）。
-- **双通道路由**：已通过 `/linkgroup` 建立群号映射、且 OneBot 与官方 bot 都在线的群，官方通道的群消息会去重交给 OneBot 处理；回复默认发 OneBot，OneBot 连接不可用时自动回落到官方通道（Conversation ID 会按映射换成官方合成群号）。
+- **双通道路由**：已通过 `/linkgroup` 建立群号映射、且 OneBot 与官方 bot 都在线的群，官方通道的群消息会去重交给 OneBot 处理；回复默认发 OneBot，OneBot 连接不可用时自动回落到官方通道（Conversation ID 会按映射换成官方的 group_openid）。
 - **双待模式下两个机器人 QQ 号都通过工具/API 获取**（`get_login_info` 等），**不读 `[bot].account`**：两个号不同，不能用一个配置值代表。消息自带 `self_id`（即对应通道的机器人号），自我发言判断、提示词、命令 @ 判定都按消息级账号处理。
 - 单通道模式保留旧行为：`[bot].account = 0` 时连接后用 API 自动回填运行期配置；`[bot].official_mode` 仍可强制官方/非官方行为。
 - 官方通道的官方行为：群消息一律按「@ 机器人」处理（官方群事件本身只推 @ 消息），提示词会注入官方机器人的能力边界；双待下只有官方通道的回复会注入该说明。
@@ -64,20 +66,29 @@ NeoBot 支持两种 QQ 接入通道，并可以**同时运行**：
 
 - **被动回复窗口**：群消息 5 分钟内最多回复 5 条，单聊 60 分钟内最多 4 条。超限/过期直接失败并写 info 日志，不再自动转主动消息；后台通知/定时任务等没有被动窗口的场景显式使用主动消息（`proactive`），失败同样只写日志/返回工具错误。
 - **文本**：普通文本一律按纯文本发送（msg_type=0），不渲染 Markdown；需要 Markdown 时显式使用 `send_official_markdown`（官方 Markdown 卡片），需要 Markdown 图片时显式使用 `send_long_reply`（我们自己的图片渲染）。
-- **发送侧 @ 用户**：必须通过 `send_official_markdown` 的官方 Markdown 卡片内嵌 `@` 发送（普通文本不支持 @）：卡片内容中的 `<qqbot-at-user id="合成ID" />` 由适配器反查 `member_openid`，`@全体成员` 用 `<qqbot-at-everyone />`。未映射/未知 openid 直接失败，不做文本降级。
+- **发送侧 @ 用户**：必须通过 `send_official_markdown` 的官方 Markdown 卡片内嵌 `@` 发送（普通文本不支持 @）：卡片内容中的 `<qqbot-at-user id="openid" />` 直接使用 openid；`@全体成员` 用 `<qqbot-at-everyone />`。openid 缺失/格式不对时直接失败，不做文本降级。
 - **图片/语音**：按官方富媒体协议先上传拿 `file_info`，再以 `msg_type=7` + `media` 发送。本地文件/base64/data/file 走分片上传；http(s) URL 只走官方 URL 转存，不做下载后分片回退（127.0.0.1 等官方拉不到的地址会直接失败并写 info 日志）。
 - **工具可见性**：官方通道隐藏并拒绝 OneBot 专属工具/技能（拍一拍、QQ 表情回应/搜索、onebot 任意 API、好友管理/合并转发、历史消息查询、跨聊天历史查询、头像解析）。发图用 `emoji_numbers`/`send_long_reply`（Markdown 图片），发语音用 `speak`，需要 Markdown 卡片时用 `send_official_markdown`，群管理用 `official_group_manage`（仅官方真实接口）。
 - **收消息**：文本、图片附件、语音 ASR/`voice_wav_url`、引用消息、`mentions` 里的被 @ 用户、`member_role`；群全量消息需要平台权限，默认只收 @ 消息；群成员加入/退出、入群申请、好友增删、机器人入群/退群、群消息接收开启/关闭、单聊主动消息开关、订阅授权状态会映射为 OneBot notice/request。
 - **白名单接口**：官方有群信息/群成员/群黑名单/批量移除接口，但多数需要内邀白名单；无权限时返回明确 failed（11253），不再 `ok + 空数据`。没有好友列表/群列表；没有历史消息接口；`get_msg` 只查最近约 200 条本地缓存。
 - **动作能力**：撤回群/单聊消息（2 分钟）、群禁言/解除禁言（最长 30 天）、群成员批量移除、入群申请审批、群信息/群成员/机器人群内状态已接入；群黑名单与成员管理白名单接口按官方 11253 返回明确失败。好友管理、合并转发、频道/子频道等官方无等价接口。失败只写日志并返回工具错误，不把错误文本发进聊天流。
-- **openid 与合成 ID**：官方只给用户/群的 openid，NeoBot 内部把它们映射成 13 位合成整数。openid 是唯一身份源头，合成号按 `(AppID, 场景, openid)` **确定性派生**并持久化反向表（`encode`/`decode`）：已有 `data/qqbot/identities.json` 映射保留，重启/文件丢失不会再按消息到达顺序重新分配；13 位十进制无法容纳 32 字符 openid，因此“可逆”依赖持久化反向表，不是纯哈希。新映射会写 INFO 日志，带 `openid_fingerprint`（AppID 加盐 hash）便于核对。单聊 `user_openid` 与群聊 `member_openid` 是不同场景 ID，同一人可能对应两个合成号；官方默认不保证跨场景/跨 AppID 唯一，真正的跨场景统一只能靠人工 `/linkqq` 真实 QQ，或平台特批的 `union_openid`。提示词/资料/历史按 ID 规模标注：真实 QQ 号显示 `QQ:`，官方合成 ID 显示 `ID:`。
-- **同一个 QQ 群在两条通道下是两条会话**：OneBot 用真实群号，官方用 group_openid 合成号。查过官方文档后确认没有可靠的关联方法：
+- **openid 是官方通道的本地 ID**：官方只给用户/群的 openid（字符串），NeoBot 直接把它作为该通道的用户/群主键（会话键、存储、工具参数都是文本）。提示词/资料/历史里官方 ID 统一显示为**完整** `ID:<openid>`（不截断，便于复制核对）；提示词里仍沿用「QQ ID / 群 ID」的说法。旧版本派生的 13 位合成号只在迁移期经 `data/qqbot/identities.json` 反查（`decode`），不再分配新合成号；迁移完成后该文件只作只读备份。单聊 `user_openid` 与群聊 `member_openid` 是不同场景 ID，同一人可能对应两个 openid；官方默认不保证跨场景/跨 AppID 唯一，真正的跨场景统一只能靠人工 `/linkqq` 真实 QQ，或平台特批的 `union_openid`。
+- **ID 类型与主键**：OneBot 通道的 user_id/group_id 仍是 int（协议原样），官方通道是 openid 字符串；插件公开 API、面板、内置插件数据库都接受两者（本地 ID 一律按文本持久化）。插件可以直接把 `IncomingEvent.user_id` 当 str/int 原值使用，禁止再 `int(openid)`。
+- **同一个 QQ 群在两条通道下是两条会话**：OneBot 用真实群号，官方用 group_openid（字符串）。查过官方文档后确认没有可靠的关联方法：
   - 群信息接口 `GET /v2/groups/{group_openid}/info` 只返回 group_openid、群名称、简介、分类、标签、成员数，不返回 QQ 群号；
   - 官方「唯一身份机制」明确写「不同的 bot(AppID) 获取到的用户 openid、群 openid、频道 openid 均不相同」，同一个群在不同 AppID 下连 openid 都不同；
   - OpenAPI 里没有 group_openid → QQ 群号 / user_openid → QQ 号 的转换接口。
 
   因此只按人工 `/linkgroup` 映射关联合法群：已映射且两通道都在线时，官方群消息去重交给 OneBot，回复默认优先 OneBot，OneBot 不可用回落官方；显式 `channel` 不被静默改投。
 - **非目标**：QQ 频道/频道私信、Webhook 模式、流式消息、消息 `keyboard` 字段（模板/自定义键盘）、ARK、互动回调；Markdown 卡片只支持内嵌 `qqbot-cmd-enter`/`qqbot-cmd-input` 指令标签。
+
+## 从合成号迁移到 openid（旧数据）
+
+- **为什么迁移**：合成号只是 13 位派生的显示视图，无法表达完整 openid；现在官方通道的主键就是 openid 字符串，插件与存储直接读原值。
+- **数据位置**：`data/qqbot/identities.json`（openid ↔ 旧合成号，迁移期只读反查源）、`data/user_qq_map.json`（真实 QQ/群号 ↔ 本地 ID 的人工映射）、本体数据库 `data/neobot.db`（会话/消息/档案/定时任务/跨聊天记录里的本地 ID 都是文本，按 `identities.json` 改写旧值）。
+- **插件私有库**：`streaming_parser` 的 `group_id` 已从 BigInteger 迁移为 TEXT（插件库 Migration v2，旧数字群号自动 CAST）；`minigame` 的用户 ID 列加宽到 128 并接受 openid（Migration v3）；其它插件按自己的迁移版本随插件升级执行。
+- **面板**：机器人/活跃用户页面显示**完整** openid（`ID:<openid>`）；openid 不是 QQ 号，页面不再为它请求 qlogo 头像，也不把它拼进 `nk=` 参数。
+- **备份**：迁移前请同时备份 `data/neobot.db`、`data/qqbot/`、`data/user_qq_map.json` 和各插件数据目录（插件库在主数据库快照之外）。恢复旧备份后，旧合成号仍可经 `identities.json` 反查使用一个发布周期；迁移完成后不要立即删除 `identities.json`。
 
 ## 排查
 

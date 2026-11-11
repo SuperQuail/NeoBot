@@ -13,6 +13,7 @@
 - 三种卡片风格：sakura / neon / minimal，默认随机。
 - 依赖复用本体 httpx/pydantic/sqlalchemy 与 Chromium 截图端口，不额外引入。
 - 群级默认生效：新订阅默认开播/下播推送按本群 /config 设置（无设置回落插件默认），不再只认全局配置。
+- 群 ID 口径：订阅按**文本会话 ID**保存（OneBot 是数字群号，官方通道是 group_openid）；插件库 `group_id` 已由 Migration v2 从整数改为 TEXT，旧订阅会在插件启动时自动转换。面板输入/接口同时接受数字和 openid，输出统一为文本。
 - 可靠性：轮询停用/重载会等待任务收尾再关库；通知逐群隔离，单群失败不影响其他群；408/429/5xx 与 3xx 重定向按可重试处理，2xx 空响应不再误判 COOKIE_EXPIRED。
 
 ## 命令（宿主命令表，/help 可查；群聊需先 @机器人，私聊直接发）

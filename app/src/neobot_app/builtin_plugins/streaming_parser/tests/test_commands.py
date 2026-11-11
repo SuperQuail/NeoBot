@@ -113,13 +113,14 @@ class TestParseSwitch:
 
 class TestConvGroupId:
     def test_group(self):
-        assert conv_group_id(FakeCommandCtx(conv_id='456')) == 456
+        assert conv_group_id(FakeCommandCtx(conv_id='456')) == "456"
 
     def test_private_is_zero(self):
-        assert conv_group_id(FakeCommandCtx(kind='private', conv_id='456')) == 0
+        assert conv_group_id(FakeCommandCtx(kind='private', conv_id='456')) == ""
 
-    def test_garbage_conv_id_is_zero(self):
-        assert conv_group_id(FakeCommandCtx(conv_id='abc')) == 0
+    def test_text_conv_id_is_preserved(self):
+        """openid 是合法文本 ID，不能当脏数据丢掉。"""
+        assert conv_group_id(FakeCommandCtx(conv_id='abc')) == "abc"
 
 
 class TestCommandArgs:

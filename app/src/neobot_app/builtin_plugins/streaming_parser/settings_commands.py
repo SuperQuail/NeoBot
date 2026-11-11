@@ -63,7 +63,7 @@ def config_lines(setting: Any, config: Any) -> list[str]:
     ]
 
 
-async def _setting_view(state: Any, group_id: int) -> Any:
+async def _setting_view(state: Any, group_id: int | str) -> Any:
     async with state.database.session() as session:
         return db.setting_view(await db.get_group_setting(session, group_id))
 
@@ -83,14 +83,14 @@ def group_defaults(config: Any) -> dict[str, Any]:
     }
 
 
-async def _ensure_setting(state: Any, group_id: int, config: Any) -> Any:
+async def _ensure_setting(state: Any, group_id: int | str, config: Any) -> Any:
     async with state.database.transaction() as session:
         return db.setting_view(
             await db.ensure_group_setting(session, group_id, group_defaults(config))
         )
 
 
-async def _set_field(state: Any, group_id: int, field: str, value: Any) -> None:
+async def _set_field(state: Any, group_id: int | str, field: str, value: Any) -> None:
     async with state.database.transaction() as session:
         setting = await db.ensure_group_setting(session, group_id, group_defaults(state.config))
         setattr(setting, field, value)
@@ -304,7 +304,7 @@ def register_settings_commands(registrar: Any, ctx: Any, state: Any) -> list[str
 
 
 async def _apply_config(
-    ctx: Any, state: Any, command_ctx: Any, group_id: int, key: str, value: str | None, config: Any
+    ctx: Any, state: Any, command_ctx: Any, group_id: int | str, key: str, value: str | None, config: Any
 ) -> None:
     """写入一项群配置并回一张卡片。"""
     from .commands import parse_switch

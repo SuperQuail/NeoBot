@@ -38,7 +38,7 @@ def build_fallback_text(
 
 
 def build_agent_prompt(
-    *, kind: str, name: str, title: str, room_id: int, group_id: int
+    *, kind: str, name: str, title: str, room_id: int, group_id: int | str
 ) -> str:
     """交给 agent 的提示词：明确告知「已经通知过」，避免它重复播报。"""
     if kind == EVENT_LIVE:
@@ -102,10 +102,10 @@ class Notifier:
         self._config = config
         self._logger = logger
 
-    def _conversation(self, group_id: int) -> Any:
+    def _conversation(self, group_id: int | str) -> Any:
         """不直接依赖 contracts：用 ctx 自己的推断方法构造会话引用。"""
         return self._ctx.conversation_from_event(
-            {"message_type": "group", "group_id": int(group_id)}
+            {"message_type": "group", "group_id": group_id}
         )
 
     async def handle_transition(self, transition: Transition) -> None:
@@ -134,7 +134,7 @@ class Notifier:
         enabled = subscription.push_live if is_live else subscription.push_live_end
         if not enabled:
             return
-        group_id = int(subscription.group_id)
+        group_id = str(subscription.group_id)
         style = await self._style_for(group_id)
         card = await self._render_card(subscription, transition, style=style)
         sent_image = False
@@ -155,13 +155,13 @@ class Notifier:
         if await self._ai_reply_enabled(group_id, is_live=is_live):
             await self._trigger_ai_reply(subscription, transition)
 
-    async def _style_for(self, group_id: int) -> str:
+    async def _style_for(self, group_id: int | str) -> str:
         async with self._database.session() as session:
             setting = db.setting_view(await db.get_group_setting(session, group_id))
         style_name = setting.card_style if setting is not None else self._config.default_card_style
         return resolve_style(style_name)
 
-    async def _ai_reply_enabled(self, group_id: int, *, is_live: bool) -> bool:
+    async def _ai_reply_enabled(self, group_id: int | str, *, is_live: bool) -> bool:
         async with self._database.session() as session:
             setting = db.setting_view(await db.get_group_setting(session, group_id))
         if setting is None:
@@ -189,7 +189,7 @@ class Notifier:
         )
         return await self._renderer.render_card(values, style=style)
 
-    async def _send_image(self, group_id: int, data: bytes) -> bool:
+    async def _send_image(self, group_id: int | str, data: bytes) -> bool:
         try:
             await self._ctx.send_image(
                 self._conversation(group_id), data=data, filename=CARD_FILENAME
@@ -199,7 +199,7 @@ class Notifier:
             log_at(self._logger, "warning", f"发送卡片失败 (群 {group_id}): {exc!r}")
             return False
 
-    async def _send_text(self, group_id: int, text: str) -> None:
+    async def _send_text(self, group_id: int | str, text: str) -> None:
         try:
             await self._ctx.send_group(group_id, text)
         except Exception as exc:
@@ -226,7 +226,7 @@ class Notifier:
         优先级：notification_hub.publish（会把通知镜像进消息队列，agent 后续轮次也能看到）
         -> reply_orchestrator.start_background_reply -> record_notification 兜底。
         """
-        group_id = int(subscription.group_id)
+        group_id = str(subscription.group_id)
         prompt = build_agent_prompt(
             kind=transition.kind,
             name=subscription.name or f"房间 {transition.room_id}",

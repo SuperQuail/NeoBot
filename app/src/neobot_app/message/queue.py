@@ -24,7 +24,7 @@ from .queue_parts.common import (
     QueueEntry,
     SelfSentToolCall,
 )
-from .queue_parts.helpers import _safe_int as _safe_int, _poke_sub_type_text
+from .queue_parts.helpers import _identity_str as _identity_str, _safe_int as _safe_int, _poke_sub_type_text
 from .queue_parts.push import _QueuePushMixin
 from .queue_parts.access import _QueueAccessMixin
 from .queue_parts.diff import _QueueDiffMixin
@@ -51,18 +51,18 @@ __all__ = [
 
 
 def is_bot_message(message: Any, bot_accounts: Iterable[Any] = ()) -> bool:
-    """消息是否来自某个 bot 账号：消息级 self_id 优先（自身回显 user_id==self_id），其次已知账号集合。"""
-    user_id = _safe_int(getattr(message, "user_id", None))
-    if not user_id:
+    """消息是否来自某个 bot 账号：消息级 self_id 优先（自身回显 user_id==self_id），其次已知账号集合。
+
+    user_id 可能是 openid 字符串（官方通道）也可能是 QQ 数字（OneBot）；比较统一按
+    字符串进行，机器人账号本身仍是真实 QQ 数字，不受 openid 化影响。
+    """
+    user_text = _identity_str(getattr(message, "user_id", None))
+    if not user_text:
         return False
-    self_id = _safe_int(getattr(message, "self_id", None))
-    if self_id and user_id == self_id:
+    self_text = _identity_str(getattr(message, "self_id", None))
+    if self_text and user_text == self_text:
         return True
-    for account in bot_accounts:
-        account_id = _safe_int(account)
-        if account_id and user_id == account_id:
-            return True
-    return False
+    return any(account_text and user_text == account_text for account_text in map(_identity_str, bot_accounts))
 
 
 class MessageQueue(
@@ -86,7 +86,7 @@ class MessageQueue(
         self_sent_weight: float = 0.1,
         bot_account: int | None = None,
         bot_accounts: set[int] | None = None,
-        reply_blacklist: set[int] | None = None,
+        reply_blacklist: set[str] | None = None,
     ) -> None:
         if max_size <= 0:
             raise ValueError("max_size must be greater than 0")
@@ -115,7 +115,7 @@ class MessageQueue(
         }
         if bot_account:
             self.bot_accounts.add(int(bot_account))
-        self._reply_blacklist = reply_blacklist or set()
+        self._reply_blacklist = {str(item) for item in (reply_blacklist or ())}
         self._queues: Dict[str, Deque[QueueEntry]] = {}
         self._stats: Dict[str, QueueStats] = {}
         self._message_counts: Dict[str, int] = {}
@@ -232,8 +232,9 @@ class MessageQueue(
 
     @staticmethod
     def _message_sender_identity(message: QueueMessage) -> str:
-        if message.user_id is not None:
-            return f"qq:{message.user_id}"
+        user_text = _identity_str(message.user_id)
+        if user_text:
+            return f"id:{user_text}"
         return f"name:{MessageQueue._message_sender_name(message)}"
 
 def create_message_queue(

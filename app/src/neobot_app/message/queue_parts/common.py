@@ -59,20 +59,22 @@ class QueueStats:
 class ReactionEntry:
     """消息上的表情回应事件。"""
 
+    #: message_id 仍是后端 int；操作者 ID 可能是官方 openid 字符串
     target_message_id: int
     emoji_id: int
-    operator_user_id: int
+    operator_user_id: int | str
     operator_name: str
 
 @dataclass
 class PokeEntry:
-    """Poke (戳一戳) event entry."""
+    """Poke (戳一戳) event entry。"""
 
-    sender_id: int
-    user_id: int
-    target_id: int
+    #: 用户/群 ID 可能是官方 openid 字符串（不做 int() 转换）
+    sender_id: int | str
+    user_id: int | str
+    target_id: int | str
     sub_type: str
-    group_id: int | None = None
+    group_id: int | str | None = None
     sender_name: str = ""
     target_name: str = ""
     action_text: str = ""

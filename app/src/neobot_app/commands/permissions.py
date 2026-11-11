@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from neobot_app.bot_accounts import identity_text
 from neobot_app.commands.model import (
     PERM_EVERYONE,
     PERM_SUB_ADMIN,
@@ -45,23 +46,30 @@ class PermissionManager:
         return result
 
     @staticmethod
-    def _candidates(user_id: int | str) -> set[int]:
-        """管理员判定同时认通道本地 ID 与管理员命令写入的 trusted 真实 QQ 号。
+    def _candidates(user_id: int | str) -> set[str]:
+        """管理员判定候选集合（字符串归一化）。
 
-        agent 工具写的映射只用于展示，不参与权限判定——避免模型自封管理员。
+        同时认通道本地 ID（QQ 号/openid 字符串）与管理员命令写入的 trusted 真实
+        QQ 号；agent 工具写的映射只用于展示，不参与权限判定——避免模型自封管理员。
         """
-        uid = int(user_id)
+        uid = identity_text(user_id)
+        if not uid:
+            return set()
         candidates = {uid}
         mapped = trusted_qq_for_user(uid)
         if mapped:
-            candidates.add(mapped)
+            candidates.add(str(mapped))
         return candidates
 
+    def _admin_keys(self, field: str) -> set[str]:
+        return {str(value) for value in self._admin_set(field)}
+
     def is_super_admin(self, user_id: int | str) -> bool:
-        return bool(self._candidates(user_id) & self.super_admins)
+        return bool(self._candidates(user_id) & self._admin_keys("admin_accounts"))
 
     def is_sub_admin(self, user_id: int | str) -> bool:
-        return bool(self._candidates(user_id) & (self.sub_admins | self.super_admins))
+        keys = self._admin_keys("sub_admin_accounts") | self._admin_keys("admin_accounts")
+        return bool(self._candidates(user_id) & keys)
 
     def can(self, user_id: int | str, level: int) -> bool:
         """用户是否具备指定权限等级。"""

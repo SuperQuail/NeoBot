@@ -29,7 +29,7 @@ from .common import (
     RecallNotice,
     SelfSentToolCall,
 )
-from .helpers import _safe_int
+from .helpers import _identity_str, _safe_int
 
 
 class _QueuePushMixin:
@@ -126,7 +126,11 @@ class _QueuePushMixin:
         )
 
     def _bot_ids(self, message: object = None) -> set[int]:
-        """判定/匹配用的 bot 账号集合：消息级 self_id 优先，其次队列登记的 bot_accounts。"""
+        """判定/匹配用的 bot 账号集合：消息级 self_id 优先，其次队列登记的 bot_accounts。
+
+        机器人账号本身始终是真实 QQ 数字（不随 openid 化改变），这里保持 int；
+        与消息 user_id（可能是 openid 字符串）比较时由 _is_bot_message 转字符串。
+        """
         ids = set(self.bot_accounts)
         if self.bot_account:
             ids.add(int(self.bot_account))
@@ -136,14 +140,17 @@ class _QueuePushMixin:
         return ids
 
     def _is_bot_message(self, message: object) -> bool:
-        """消息是否由任一 bot 账号发出（双通道时另一个 bot 的发言同样算 bot 发言）。"""
-        user_id = _safe_int(getattr(message, "user_id", None))
-        if not user_id:
+        """消息是否由任一 bot 账号发出（双通道时另一个 bot 的发言同样算 bot 发言）。
+
+        user_id 可能是官方 openid 字符串：统一按字符串比较，绝不 int() openid。
+        """
+        user_text = _identity_str(getattr(message, "user_id", None))
+        if not user_text:
             return False
-        self_id = _safe_int(getattr(message, "self_id", None))
-        if self_id and user_id == self_id:
+        self_text = _identity_str(getattr(message, "self_id", None))
+        if self_text and user_text == self_text:
             return True
-        return user_id in self._bot_ids()
+        return user_text in {str(bot_id) for bot_id in self._bot_ids()}
 
     def _compute_message_weight(self, message: QueueMessage) -> float:
         # Bot 自身发言（无论来自实时入队还是后端/本地历史灌入）统一按

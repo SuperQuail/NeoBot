@@ -1888,6 +1888,21 @@ def test_unrelated_change_keeps_message_untouched(monkeypatch) -> None:
     assert message.endswith("0 项需重启")
 
 
+def test_chat_flow_key_splits_only_first_colon_for_openid() -> None:
+    """官方 openid 可能含分隔符：只按第一个冒号切 kind:id，其余原样留给会话 ID。"""
+    from neobot_app.builtin_plugins.dashboard.api_parts.chat_flows import ChatFlowsMixin
+
+    assert ChatFlowsMixin._split_pipeline_key("group:A1B2:C3D4E5F6") == ("group", "A1B2:C3D4E5F6")
+    assert ChatFlowsMixin._split_pipeline_key("private:2F1B3C4D5E6F") == (
+        "private",
+        "2F1B3C4D5E6F",
+    )
+    assert ChatFlowsMixin._split_pipeline_key("group:", {"conversation_id": "backup"}) == (
+        "group",
+        "backup",
+    )
+
+
 def test_no_gaps_means_no_restart_hint() -> None:
     """审计后清单为空：模型变更不再多嘴「需重启」，提示随缺口出现 / 消失。"""
     from neobot_app.builtin_plugins.dashboard.api import _append_model_reload_hint

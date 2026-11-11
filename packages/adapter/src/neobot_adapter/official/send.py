@@ -19,7 +19,7 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_adapter.model import response
 from neobot_adapter.official.auth import OfficialAuthError
-from neobot_adapter.official.identity import IdentityMap, MessageIdMap
+from neobot_adapter.official.identity import IdentityMap, MessageIdMap, resolve_openid
 from neobot_adapter.official.media import MediaUploader, api_data
 from neobot_adapter.official.settings import OfficialSettings
 
@@ -35,8 +35,9 @@ _MESSAGE_ENDPOINTS = {
 }
 _MEDIA_SEGMENTS = frozenset({"image", "record", "voice", "video", "file"})
 _OFFICIAL_MARKDOWN_SEGMENT = "official_markdown"
-#: Markdown 段里允许出现的内嵌 @：id 是 13 位合成号，发送前换成 member_openid。
-_AT_USER_TAG = re.compile(r'<qqbot-at-user\s+id="(\d+)"\s*/?>')
+#: Markdown 段里允许出现的内嵌 @：id 可以是 openid（直通），也可以是迁移期的
+#: 13 位合成号（发送前按只读映射表换成 member_openid）。
+_AT_USER_TAG = re.compile(r'<qqbot-at-user\s+id="([^"]+)"\s*/?>')
 _AT_EVERYONE_TAG = re.compile(r"<qqbot-at-everyone\s*/?>")
 
 
@@ -436,7 +437,7 @@ class MessageSender:
             raise _SendFailure("@全体成员需要机器人是群管理员；当前角色不支持")
 
     def _render_markdown_mentions(self, content: str, kind: str) -> str:
-        """把 <qqbot-at-user id="合成号"> 换成 member_openid；其余官方标签原样保留。"""
+        """把 <qqbot-at-user id="..."> 规整成 member_openid；其余官方标签原样保留。"""
         has_mention = _AT_USER_TAG.search(content) is not None
         if has_mention and kind != "group":
             raise _SendFailure("单聊消息不支持 @ 用户；请直接写昵称")
@@ -444,10 +445,10 @@ class MessageSender:
             return content
 
         def replace(match: re.Match[str]) -> str:
-            synthetic = int(match.group(1))
-            openid = self._identity.openid(synthetic, "user")
+            raw = match.group(1).strip()
+            openid = resolve_openid(self._identity, raw, "user")
             if not openid:
-                raise _SendFailure(f"Markdown 中的 @ 用户 ID 无法反查 openid：{synthetic}")
+                raise _SendFailure(f"Markdown 中的 @ 用户 ID 无法解析为 openid：{raw}")
             return f'<qqbot-at-user id="{openid}" />'
 
         return _AT_USER_TAG.sub(replace, content)
@@ -478,11 +479,8 @@ class MessageSender:
         return self._message_ids.reference(synthetic)
 
     def _openid(self, conversation: ConversationRef) -> str | None:
-        try:
-            synthetic = int(str(conversation.id))
-        except (TypeError, ValueError):
-            return None
-        return self._identity.openid(synthetic, conversation.kind)
+        """ConversationRef.id 直接就是 openid；旧合成号走只读迁移表反查。"""
+        return resolve_openid(self._identity, conversation.id, conversation.kind)
 
     def _track_sent(self, body: dict[str, Any], kind: str, openid: str) -> int | None:
         official_id = _response_message_id(body)

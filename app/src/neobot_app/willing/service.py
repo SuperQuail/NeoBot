@@ -481,9 +481,11 @@ class WillingService:
             # live:<room> 是 evaluate_live 的查找键（与同号 QQ 群区分）；
             # 剥掉前缀会导致直播间系数/黑名单写进同号群聊的键上
             return value
-        if ":" in value:
-            _, value = value.split(":", 1)
-            value = value.strip()
+        # 只剥已知的 pipeline 前缀（group:/private:）：openid 本身可能含冒号，
+        # 不能见到「:」就切。
+        prefix, _sep, rest = value.partition(":")
+        if prefix in {"group", "private"} and rest.strip():
+            value = rest.strip()
         if not value:
             raise ValueError("会话 ID 不能为空")
         return value
@@ -505,7 +507,22 @@ class WillingService:
                 or getattr(self._config.chat, "group_Response_coefficient", None)
                 or {}
             )
-            return max(0.0, float(coefficients.get(str(message.group_id), 1.0)))
+            if not isinstance(coefficients, dict):
+                return 1.0
+            group_text = str(message.group_id).strip()
+            if not group_text:
+                return 1.0
+            # 配置里的系数按真实群号写；官方通道消息带 openid 时先走 trusted 映射。
+            # 同时保留按 openid 直接配置的写法（取第一个命中的 key）。
+            channel = str(getattr(message, "neobot_channel", "") or "").strip() or None
+            mapped = trusted_group_number_for(group_text, channel)
+            for key in (str(mapped) if mapped else "", group_text):
+                if key and key in coefficients:
+                    try:
+                        return max(0.0, float(coefficients[key]))
+                    except (TypeError, ValueError):
+                        return 1.0
+            return 1.0
 
         return 1.0
 

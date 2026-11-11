@@ -67,8 +67,13 @@ class _LongReplyToolsMixin:
                     },
                     ensure_ascii=False,
                 )
+            if not isinstance(raw_mention, list):
+                return json.dumps(
+                    {"ok": False, "error": "mention_qqs 必须为列表"}, ensure_ascii=False
+                )
             try:
-                mention = [int(qq) for qq in raw_mention]
+                # schema 接受字符串；@ 目标必须是真实 QQ 号（openid 请用官方 Markdown）
+                mention = [int(str(qq).strip()) for qq in raw_mention if str(qq).strip()]
             except (ValueError, TypeError):
                 return json.dumps(
                     {"ok": False, "error": "mention_qqs 必须为整数列表"}, ensure_ascii=False
@@ -156,8 +161,8 @@ class _LongReplyToolsMixin:
                             },
                             "mention_qqs": {
                                 "type": "array",
-                                "items": {"type": "integer"},
-                                "description": "可选，要 @ 的 QQ 号列表。QQ 号见群友列表里的「QQ号:...」。仅在群聊生效。系统会发送真正的 @；正文里不要再写「@昵称」或「@ QQ号」，否则会出现两个 @。",
+                                "items": {"type": ["string", "integer"]},
+                                "description": "可选，要 @ 的真实 QQ 号列表。QQ 号见群友列表里的「QQ号:...」。仅在群聊生效；openid 不能 @（官方通道请用 send_official_markdown）。系统会发送真正的 @；正文里不要再写「@昵称」或「@ QQ号」，否则会出现两个 @。",
                             },
                             "caption": {
                                 "type": "string",

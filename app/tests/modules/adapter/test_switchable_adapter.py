@@ -99,6 +99,14 @@ class _FakeBackend:
         self.method_calls.append("get_group_member_list")
         return {"status": "ok", "retcode": 0, "data": [{"group_id": group_id, "mode": self.mode}]}
 
+    async def send_private_msg(self, user_id: Any, message: Any, timeout: float = 5.0, wait_response: bool = True) -> Any:
+        self.method_calls.append(f"send_private_msg:{user_id}")
+        return response.SendMsgResponse(status="ok", data={"message_id": 1})
+
+    async def send_group_msg(self, group_id: Any, message: Any, timeout: float = 5.0, wait_response: bool = True) -> Any:
+        self.method_calls.append(f"send_group_msg:{group_id}")
+        return response.SendMsgResponse(status="ok", data={"message_id": 1})
+
 
 def _install_fake_backends(
     monkeypatch: pytest.MonkeyPatch,
@@ -616,6 +624,54 @@ def test_request_proxy_follows_event_channel_context() -> None:
     assert asyncio.run(proxy.call_api("x", {}))["source"] == "onebot"
     with channel_context("official"):
         assert asyncio.run(proxy.call_api("x", {}))["source"] == "official"
+
+
+async def test_unseen_openid_conversation_routes_to_official(monkeypatch: pytest.MonkeyPatch) -> None:
+    """没见过消息的 openid 会话按 ID 形态兜底到官方通道，而不是默认 OneBot。"""
+    created, _ = _install_fake_backends(monkeypatch)
+    adapter = SwitchableAdapter(AdapterSettings(mode="dual"))
+    await adapter.start()
+
+    openid_sent = await adapter.send(ConversationRef(kind="private", id="user-openid-abc"), "hi")
+    numeric_sent = await adapter.send(ConversationRef(kind="private", id="12345678"), "hi")
+
+    assert openid_sent.status == "ok" and numeric_sent.status == "ok"
+    assert created[1].send_calls == 1  # official：openid
+    assert created[0].send_calls == 1  # onebot：数字号
+
+
+async def test_send_private_and_group_msg_route_by_target_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """门面便捷方法无事件上下文时：openid/旧合成号 → official，真实数字号 → onebot。"""
+    created, _ = _install_fake_backends(monkeypatch)
+    adapter = SwitchableAdapter(AdapterSettings(mode="dual"))
+    await adapter.start()
+
+    await adapter.send_private_msg("user-openid-abc", "hi")
+    await adapter.send_group_msg("group-openid-abc", "hi")
+    await adapter.send_private_msg(9000000000123, "hi")  # 旧 13 位合成号仍属官方
+    await adapter.send_private_msg(123456789, "hi")
+
+    assert created[1].method_calls == [
+        "send_private_msg:user-openid-abc",
+        "send_group_msg:group-openid-abc",
+        "send_private_msg:9000000000123",
+    ]
+    assert created[0].method_calls == ["send_private_msg:123456789"]
+
+
+async def test_send_private_msg_explicit_channel_overrides_id_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created, _ = _install_fake_backends(monkeypatch)
+    adapter = SwitchableAdapter(AdapterSettings(mode="dual"))
+    await adapter.start()
+
+    await adapter.send_private_msg("user-openid-abc", "hi", channel="onebot")
+
+    assert created[0].method_calls == ["send_private_msg:user-openid-abc"]
+    assert created[1].method_calls == []
 
 
 async def test_proactive_send_only_forwarded_to_official(monkeypatch: pytest.MonkeyPatch) -> None:

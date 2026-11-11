@@ -17,17 +17,16 @@ if TYPE_CHECKING:
 
 class AgentToolsetMixin:
 
-    def _agent_conversation_ids(self, event: ReplyEvent) -> tuple[str, str, int | None]:
-        """本轮会话 kind/id 与当前用户 id（工具回调与工具集构建共用）。"""
+    def _agent_conversation_ids(self, event: ReplyEvent) -> tuple[str, str, str | None]:
+        """本轮会话 kind/id 与当前用户 id（工具回调与工具集构建共用）。
+
+        user_id 可能是官方 openid 字符串：原样按字符串透传，绝不 int()。
+        """
+        from neobot_app.bot_accounts import identity_text
+
         conv_kind = event.conversation_ref.kind if event.conversation_ref else ""
         conv_id = event.conversation_ref.id if event.conversation_ref else ""
-        current_user_id = None
-        try:
-            raw_user = getattr(event.message, "user_id", None)
-            if raw_user is not None:
-                current_user_id = int(raw_user)
-        except (TypeError, ValueError):
-            current_user_id = None
+        current_user_id = identity_text(getattr(event.message, "user_id", None)) or None
         return conv_kind, conv_id, current_user_id
 
     async def _build_agent_toolset(
@@ -174,7 +173,7 @@ class AgentToolsetMixin:
                     event_id=event.event_id,
                     error=str(exc),
                 )
-        if self._skill_manager is not None and conv_kind in {"group", "private"} and str(conv_id).isdigit():
+        if self._skill_manager is not None and conv_kind in {"group", "private"}:
             from neobot_app.skills.agent_tools_skill import AgentToolsSkill
             from neobot_app.agent_tools.contracts import ToolContext
             shared_tools = self._skill_manager.get("agent_tools")

@@ -51,12 +51,17 @@ class _QueueDiffMixin:
                 continue
             message = entry.message
             sender_id = getattr(message, "user_id", None)
-            # 回复黑名单也是访问控制：官方合成 ID 只按管理员命令写入的 trusted 映射
-            # 翻成真实 QQ 号；agent 自己写的映射只影响展示，不能把人塞进/移出黑名单
+            # 回复黑名单也是访问控制：openid/旧合成 ID 只按管理员命令写入的 trusted
+            # 映射翻成真实 QQ；agent 自己写的映射只影响展示，不能把人塞进/移出黑名单。
+            # 配置允许 openid 直接入黑名单，所以比较统一走字符串。
+            sender_text = str(sender_id) if sender_id is not None else ""
             trusted_sender = trusted_qq_for_user(sender_id) if sender_id is not None else None
-            if sender_id is not None and (
-                sender_id in self._reply_blacklist
-                or (trusted_sender is not None and trusted_sender in self._reply_blacklist)
+            if sender_text and (
+                sender_text in self._reply_blacklist
+                or (
+                    trusted_sender is not None
+                    and str(trusted_sender) in self._reply_blacklist
+                )
             ):
                 return False
             # at 目标匹配任一 bot：消息级 self_id 优先，其次队列登记的 bot_accounts

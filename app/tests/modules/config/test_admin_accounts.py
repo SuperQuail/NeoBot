@@ -107,16 +107,21 @@ def test_normalize_accounts_sorts_dedupes_and_rejects_garbage() -> None:
     assert error == ""
     assert accounts == ("10001", "10002", "10003")
 
-    for bad in ("abc", "10001; rm -rf /", "-1", "1234567890123456789012345"):
+    for bad in ("abc", "10001; rm -rf /", "-1", "a" * 200):
         accounts, error = normalize_accounts([bad])
         assert error, bad
         assert accounts == ()
+
+    # 官方 openid 也可以进管理员列表；数字仍按数值排序，openid 排在其后
+    accounts, error = normalize_accounts(["OpenId_ABC-123", 10001, "10002"])
+    assert error == ""
+    assert accounts == ("10001", "10002", "OpenId_ABC-123")
 
 
 def test_invalid_account_leaves_file_untouched(tmp_path: Path) -> None:
     path = _write(tmp_path / "config.toml", FULL_CONFIG)
 
-    result = save_sub_admin_accounts(path, ["not-a-qq"])
+    result = save_sub_admin_accounts(path, ["bad value!"])
 
     assert result.ok is False
     assert "非法" in result.error

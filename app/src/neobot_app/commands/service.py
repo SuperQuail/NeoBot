@@ -9,7 +9,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from neobot_app.bot_accounts import bot_account_for_message, primary_bot_account
+from neobot_app.bot_accounts import bot_account_for_message, identity_text, primary_bot_account
 from neobot_app.commands.builtin import build_builtin_commands
 from neobot_app.commands.model import (
     CommandContext,
@@ -19,7 +19,7 @@ from neobot_app.commands.model import (
 from neobot_app.commands.permissions import PermissionManager
 from neobot_app.commands.registry import CommandRegistry
 
-SendCallback = Callable[[str, str, str, int | None], Awaitable[Any]]
+SendCallback = Callable[[str, str, str, str | int | None], Awaitable[Any]]
 ConfigSaveCallback = Callable[[list[int]], Awaitable[ConfigSaveResult]]
 RestartCallback = Callable[[], Any]
 ConfigReloadCallback = Callable[[], Awaitable[Any]]
@@ -171,14 +171,14 @@ class CommandService:
         at_qqs = self._collect_at_qqs(message)
         text = self._message_text(message)
 
-        # 触发条件:群聊需被 @bot
+        # 触发条件:群聊需被 @bot（官方群事件只在被 @ 时推送，见 willing 同款判定）
         if kind == "group":
-            if bot_account not in at_qqs:
+            if not self._is_command_mention(message, bot_account, at_qqs):
                 return CommandHandleResult(consumed=False)
         elif kind not in ("private", "friend"):
             return CommandHandleResult(consumed=False)
 
-        user_id = int(getattr(message, "user_id", 0) or 0)
+        user_id = identity_text(getattr(message, "user_id", None))
         parsed = self._registry.match(text)
         if parsed is None:
             # 非命令形态(如"大家 /help"):移交正常管线
@@ -255,9 +255,9 @@ class CommandService:
         return {}
 
     @staticmethod
-    def _collect_at_qqs(message: Any) -> set[int]:
-        """收集消息中 at 段的 QQ 号。"""
-        result: set[int] = set()
+    def _collect_at_qqs(message: Any) -> set[str]:
+        """收集消息中 at 段的本地 ID（openid 或 QQ 号），统一按字符串返回。"""
+        result: set[str] = set()
         segments = getattr(message, "message", None)
         if not segments:
             return result
@@ -265,14 +265,17 @@ class CommandService:
             if CommandService._segment_type(segment) not in ("at", "mention"):
                 continue
             data = CommandService._segment_data(segment)
-            raw_qq = data.get("qq") or data.get("user_id")
-            try:
-                qq = int(str(raw_qq))
-            except (TypeError, ValueError):
-                continue
-            if qq > 0:
-                result.add(qq)
+            text = identity_text(data.get("qq") or data.get("user_id"))
+            if text and text != "0" and text != "all":
+                result.add(text)
         return result
+
+    @staticmethod
+    def _is_command_mention(message: Any, bot_account: int, at_qqs: set[str]) -> bool:
+        """群聊命令是否 @ 了 bot：显式 at 优先，官方通道群事件自身即 @ 事件。"""
+        if identity_text(bot_account) in at_qqs:
+            return True
+        return str(getattr(message, "neobot_channel", "") or "").strip() == "official"
 
     @staticmethod
     def _message_text(message: Any) -> str:
@@ -299,7 +302,7 @@ class CommandService:
     # ── 发送与日志 ──
 
     async def reply_to(
-        self, kind: str, conv_id: str, text: str, *, at_user_id: int | None
+        self, kind: str, conv_id: str, text: str, *, at_user_id: str | int | None
     ) -> None:
         await self._send_text(kind, conv_id, text, at_user_id=at_user_id)
 
@@ -309,7 +312,7 @@ class CommandService:
         conv_id: str,
         markdown: str,
         *,
-        at_user_id: int | None = None,
+        at_user_id: str | int | None = None,
     ) -> bool:
         """将 markdown 渲染为图片发送;成功返回 True,失败返回 False(调用方降级)。
 
@@ -339,7 +342,7 @@ class CommandService:
         conv_id: str,
         data: bytes,
         *,
-        at_user_id: int | None = None,
+        at_user_id: str | int | None = None,
         filename: str | None = None,
     ) -> bool:
         """把 PNG 字节落盘后作为图片发送;成功返回 True,失败返回 False(调用方降级)。
@@ -386,15 +389,16 @@ class CommandService:
         return target
 
     async def _send_image_path(
-        self, kind: str, conv_id: str, image_path: Any, *, at_user_id: int | None
+        self, kind: str, conv_id: str, image_path: Any, *, at_user_id: str | int | None
     ) -> bool:
         from neobot_app.utils.media_sender import prepare_image_segment
 
         from neobot_contracts.models import ConversationRef
 
         segments: list[dict[str, Any]] = []
-        if kind == "group" and at_user_id is not None:
-            segments.append({"type": "at", "data": {"qq": str(at_user_id)}})
+        at_id = identity_text(at_user_id)
+        if kind == "group" and at_id:
+            segments.append({"type": "at", "data": {"qq": at_id}})
         try:
             segments.append(prepare_image_segment(self._file_server, Path(image_path)))
         except Exception as exc:
@@ -417,7 +421,7 @@ class CommandService:
             return False
 
     async def _send_text(
-        self, kind: str, conv_id: str, text: str, *, at_user_id: int | None
+        self, kind: str, conv_id: str, text: str, *, at_user_id: str | int | None
     ) -> None:
         if self._send_callback is not None:
             await self._send_callback(kind, conv_id, text, at_user_id)
@@ -427,8 +431,9 @@ class CommandService:
         from neobot_contracts.models import ConversationRef
 
         segments: list[dict[str, Any]] = []
-        if kind == "group" and at_user_id is not None:
-            segments.append({"type": "at", "data": {"qq": str(at_user_id)}})
+        at_id = identity_text(at_user_id)
+        if kind == "group" and at_id:
+            segments.append({"type": "at", "data": {"qq": at_id}})
         if text:
             segments.append({"type": "text", "data": {"text": text}})
         if not segments:

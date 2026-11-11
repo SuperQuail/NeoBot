@@ -14,9 +14,12 @@ from neobot_app.bot_accounts import (
     bot_account_for_message,
     bot_accounts,
     display_group_id,
+    display_user_id,
     get_bot_accounts,
     group_label,
+    id_label,
     infer_channel,
+    is_bot_id,
     is_bot_message,
     is_synthetic_id,
     looks_like_real_group_number,
@@ -109,6 +112,29 @@ def test_display_labels_follow_id_scale():
     assert id_label(9000000000001) == "ID"
     assert display_user_id(9000000000001) == "ID:9000000000001"
     assert display_user_id("") == ""
+
+
+def test_openid_sender_is_not_bot_and_numeric_channel_account_matches():
+    """openid 发送者不是机器人；机器人账号仍是 QQ 数字，比较按字符串。"""
+    detector = _Detector({"onebot": 11111, "official": 22222}, primary=11111)
+    bind_bot_accounts(_config(0), detector)
+
+    assert not is_bot_message(_message(self_id=22222, user_id="OPENID-user-1"))
+    assert is_bot_message(_message(self_id=None, user_id="11111"))
+    assert not is_bot_message(_message(self_id=None, user_id="other-user"))
+    assert is_bot_id("22222", "official")
+    assert not is_bot_id("OPENID-user-1", "official")
+
+
+def test_display_labels_show_full_openid():
+    """openid 展示为 openid:<完整值>；真实 QQ/旧合成号标签不变。"""
+    assert id_label("A1B2C3-openid") == "openid"
+    assert display_user_id("A1B2C3-openid") == "openid:A1B2C3-openid"
+    assert group_label("A1B2C3-openid") == "openid"
+    assert display_group_id("A1B2C3-openid") == "openid:A1B2C3-openid"
+    assert display_user_id(123456) == "QQ:123456"
+    assert display_user_id(9000000000001) == "ID:9000000000001"
+    assert display_group_id(123456789012) == "群号:123456789012"
 
 
 def test_looks_like_real_qq_rejects_synthetic_ids():

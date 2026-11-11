@@ -20,11 +20,11 @@ from neobot_app.commands.model import (
     CommandContext,
     permission_name,
 )
-from neobot_app.bot_accounts import is_synthetic_id, looks_like_real_qq
+from neobot_app.bot_accounts import identity_text, looks_like_real_qq
 from neobot_app.user_identity import (
     link_group_number,
     link_user_qq,
-    synthetic_for_qq,
+    openid_for_qq,
     trusted_qq_for_user,
     unlink_group_number,
     unlink_user_qq,
@@ -773,7 +773,8 @@ async def _handle_link_qq(ctx: CommandContext) -> str:
     """
     message = ctx.message
     bot_account = ctx.service._bot_account(message)
-    targets = [qq for qq in ctx.at_qqs if qq != bot_account]
+    bot_id = identity_text(bot_account)
+    targets = [qq for qq in ctx.at_qqs if identity_text(qq) != bot_id]
     if len(targets) > 1:
         return "一次只能 @ 一个用户。"
     qq_args = [arg for arg in ctx.args if arg.isdigit()]
@@ -785,10 +786,10 @@ async def _handle_link_qq(ctx: CommandContext) -> str:
     qq_number = int(qq_args[0])
     if not looks_like_real_qq(qq_number, min_digits=5):
         return "QQ 号必须是 5~11 位纯数字。"
-    target = targets[0] if targets else int(ctx.user_id or 0)
+    target = targets[0] if targets else identity_text(ctx.user_id)
     if not target:
         return "无法确定要映射的用户。"
-    if target == bot_account:
+    if identity_text(target) == bot_id:
         return "不能把机器人账号映射成普通用户。"
     permissions = ctx.service.permissions
     if qq_number in permissions.super_admins and not permissions.is_super_admin(ctx.user_id):
@@ -818,22 +819,25 @@ async def _handle_unlink_qq(ctx: CommandContext) -> str:
     """解除用户与真实 QQ 号的 trusted 映射（仅超管）。"""
     message = ctx.message
     bot_account = ctx.service._bot_account(message)
-    targets = [qq for qq in ctx.at_qqs if qq != bot_account]
+    bot_id = identity_text(bot_account)
+    targets = [qq for qq in ctx.at_qqs if identity_text(qq) != bot_id]
     channel = str(getattr(message, "neobot_channel", "") or "") or None
-    target: int | None = None
+    target: str | None = None
     if targets:
-        target = targets[0]
+        target = identity_text(targets[0])
     else:
-        args = [arg for arg in ctx.args if arg.isdigit()]
+        args = [arg.strip() for arg in ctx.args if arg.strip()]
         if len(args) != 1:
             return "用法：/unlinkqq <用户ID|QQ号> 或 /unlinkqq @用户"
-        value = int(args[0])
-        if is_synthetic_id(args[0]):
-            target = value
-        else:
-            target = synthetic_for_qq(value, channel)
+        raw = identity_text(args[0])
+        if looks_like_real_qq(raw):
+            # 输入真实 QQ 号：反查已映射的本地 ID（openid / 旧合成号）
+            target = openid_for_qq(int(raw), channel) or openid_for_qq(int(raw))
             if target is None:
-                return f"没有找到 QQ {value} 对应的已映射用户"
+                return f"没有找到 QQ {raw} 对应的已映射用户"
+        else:
+            # 输入 openid / 本地用户 ID：直接解绑
+            target = raw
     ok, text = unlink_user_qq(target, channel, force=True)
     return text if ok else f"解除映射失败：{text}"
 
@@ -863,7 +867,7 @@ async def _modify_admin(ctx: CommandContext, *, add: bool) -> str:
     """
     target_qq = _extract_target_qq(ctx)
     if target_qq is not None:
-        # 官方合成 ID 已人工映射时，管理员名单统一存真实 QQ 号。
+        # 本地 ID（openid/QQ）已人工映射时，管理员名单统一存真实 QQ 号。
         target_qq = trusted_qq_for_user(target_qq) or target_qq
     if target_qq is None:
         # 参数缺失：一行提示就够，不上卡片；但仍然**不带任何号码**
@@ -979,12 +983,23 @@ async def _handle_set_password(ctx: CommandContext) -> str:
 
 
 def _extract_target_qq(ctx: CommandContext) -> int | None:
-    """从参数或 @ 段提取目标 QQ 号(排除 @bot 触发段)。"""
+    """从参数或 @ 段提取目标真实 QQ 号（排除 @bot 触发段）。
+
+    @ 段可能是 openid：只有 trusted 映射能落到真实 QQ 号；映射不到时继续看
+    显式 QQ 号参数，避免把 openid 当管理员 QQ 写进配置。
+    """
     bot_account = ctx.service._bot_account(getattr(ctx, "message", None))
+    bot_id = identity_text(bot_account)
     # 优先 @ 段(排除 bot 自己)
     for qq in sorted(ctx.at_qqs):
-        if qq != bot_account:
-            return qq
+        text = identity_text(qq)
+        if not text or text == bot_id:
+            continue
+        if looks_like_real_qq(text, min_digits=5):
+            return int(text)
+        mapped = trusted_qq_for_user(text)
+        if mapped:
+            return int(mapped)
     # 参数中的 QQ 号
     for arg in ctx.args:
         candidate = arg.strip()

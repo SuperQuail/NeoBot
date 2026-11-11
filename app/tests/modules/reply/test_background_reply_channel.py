@@ -135,15 +135,21 @@ def test_background_reply_legacy_adapter_keeps_no_channel() -> None:
     assert stub.ambient is None
 
 
-def test_background_reply_non_qq_target_keeps_no_channel() -> None:
+def test_background_reply_non_chat_target_keeps_no_channel() -> None:
+    """非 QQ 会话（直播等）不推断通道，保持旧行为。"""
     stub = _Stub(_FakeAdapter())
 
     _start(stub, kind="bilibili", conversation_id="1234")
     assert _synthetic_channel(stub) is None
 
+
+def test_background_reply_openid_target_infers_official() -> None:
+    """官方 openid 不是数字：不能按位数判 onebot，必须归到官方通道。"""
     stub = _Stub(_FakeAdapter())
-    _start(stub, conversation_id="not-a-number")
-    assert _synthetic_channel(stub) is None
+
+    _start(stub, conversation_id="A1B2C3D4E5F6-openid")
+
+    assert _synthetic_channel(stub) == "official"
 
 
 # ── 上下文与官方限制 ───────────────────────────────────────────────

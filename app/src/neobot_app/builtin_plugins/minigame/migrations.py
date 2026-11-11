@@ -134,11 +134,107 @@ async def add_profile_user_name(connection) -> None:
     )
 
 
+async def widen_user_ids(connection) -> None:
+    """v3：用户/会话 ID 列加宽到 128，容纳官方通道的 openid 字符串。
+
+    SQLite 不强制 VARCHAR 长度，但列声明要与 models 一致，同时给「对外能力
+    接受 openid」一个明确的库结构版本。列顺序不变，可用 SELECT * 搬迁。
+    """
+    tables = {
+        "mg_profile": """
+            CREATE TABLE mg_profile_v3 (
+                user_id VARCHAR(128) NOT NULL PRIMARY KEY,
+                user_name VARCHAR(128) NOT NULL DEFAULT '',
+                score INTEGER NOT NULL DEFAULT 0,
+                best_score INTEGER NOT NULL DEFAULT 0,
+                plays INTEGER NOT NULL DEFAULT 0,
+                wins INTEGER NOT NULL DEFAULT 0,
+                updated_at DATETIME NOT NULL
+            )
+        """,
+        "mg_bottle": """
+            CREATE TABLE mg_bottle_v3 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sender_id VARCHAR(128) NOT NULL DEFAULT '',
+                sender_name VARCHAR(128) NOT NULL DEFAULT '',
+                sender_avatar TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL DEFAULT '',
+                anonymous BOOLEAN NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL,
+                picked_at DATETIME,
+                picked_by VARCHAR(128) NOT NULL DEFAULT '',
+                status VARCHAR(16) NOT NULL DEFAULT 'pooled',
+                meta JSON
+            )
+        """,
+        "mg_daily": """
+            CREATE TABLE mg_daily_v3 (
+                user_id VARCHAR(128) NOT NULL,
+                game_id VARCHAR(32) NOT NULL,
+                day VARCHAR(10) NOT NULL,
+                plays INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, game_id, day)
+            )
+        """,
+        "mg_checkin": """
+            CREATE TABLE mg_checkin_v3 (
+                user_id VARCHAR(128) NOT NULL,
+                day VARCHAR(10) NOT NULL,
+                score INTEGER NOT NULL DEFAULT 0,
+                streak INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL,
+                PRIMARY KEY (user_id, day)
+            )
+        """,
+        "mg_fortune": """
+            CREATE TABLE mg_fortune_v3 (
+                user_id VARCHAR(128) NOT NULL,
+                day VARCHAR(10) NOT NULL,
+                result_key VARCHAR(32) NOT NULL DEFAULT '',
+                result_text TEXT NOT NULL DEFAULT '',
+                drawn_at DATETIME NOT NULL,
+                PRIMARY KEY (user_id, day)
+            )
+        """,
+        "mg_record": """
+            CREATE TABLE mg_record_v3 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id VARCHAR(128) NOT NULL DEFAULT '',
+                game_id VARCHAR(32) NOT NULL DEFAULT '',
+                score INTEGER NOT NULL DEFAULT 0,
+                conversation_id VARCHAR(128) NOT NULL DEFAULT '',
+                created_at DATETIME NOT NULL
+            )
+        """,
+    }
+    for table, create_sql in tables.items():
+        await connection.execute(text(create_sql))
+        await connection.execute(text(f"INSERT INTO {table}_v3 SELECT * FROM {table}"))
+        await connection.execute(text(f"DROP TABLE {table}"))
+        await connection.execute(text(f"ALTER TABLE {table}_v3 RENAME TO {table}"))
+    await connection.execute(
+        text("CREATE INDEX IF NOT EXISTS ix_mg_bottle_pool ON mg_bottle (status, sender_id)")
+    )
+    await connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_mg_bottle_picked_by "
+            "ON mg_bottle (picked_by, picked_at)"
+        )
+    )
+    await connection.execute(
+        text("CREATE INDEX IF NOT EXISTS ix_mg_record_rank ON mg_record (game_id, score DESC)")
+    )
+    await connection.execute(
+        text("CREATE INDEX IF NOT EXISTS ix_mg_record_created ON mg_record (created_at)")
+    )
+
+
 def build_migrations() -> tuple[Migration, ...]:
     """本插件数据库的迁移列表（新增结构时追加 version）。"""
     return (
         Migration(version=1, name="initial-schema", upgrade=create_initial_schema),
         Migration(version=2, name="profile-user-name", upgrade=add_profile_user_name),
+        Migration(version=3, name="widen-user-ids", upgrade=widen_user_ids),
     )
 
 
@@ -147,4 +243,5 @@ __all__ = [
     "add_profile_user_name",
     "build_migrations",
     "create_initial_schema",
+    "widen_user_ids",
 ]

@@ -27,7 +27,7 @@ PASSWORD = "NeoBot-Panel-2026"
 CONFIG_TEXT = (
     'version = "0.6.0"\n'
     "\n[chat]\n"
-    "reply_blacklist = [111]\n"
+    "reply_blacklist = [\"111\"]\n"
     "\n[chat.group_response_coefficient]\n"
     "111 = 0.5\n"
 )
@@ -83,7 +83,7 @@ def test_save_coerces_stringified_values(tmp_path: Path) -> None:
 
     saved = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert saved["chat"]["group_response_coefficient"]["111"] == 0.5
-    assert saved["chat"]["reply_blacklist"] == [123]
+    assert saved["chat"]["reply_blacklist"] == ["123"]
     assert saved["models"]["registry"][0]["settings"]["max_output_tokens"] == 2048
 
 
@@ -190,7 +190,7 @@ async def test_api_save_accepts_stringified_form(tmp_path: Path) -> None:
     assert saved.status_code == 200, saved.text
     on_disk = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert on_disk["chat"]["group_response_coefficient"]["111"] == 0.5
-    assert on_disk["chat"]["reply_blacklist"] == [123]
+    assert on_disk["chat"]["reply_blacklist"] == ["123"]
     assert on_disk["models"]["registry"][0]["settings"]["max_output_tokens"] == 2048
 
 
@@ -224,3 +224,20 @@ async def test_api_validate_and_save_agree_on_invalid_string(tmp_path: Path) -> 
     assert validated.json()["errors"] == saved.json()["errors"]
     assert saved.json()["errors"][0]["path"] == "chat.group_response_coefficient.111"
     assert "abc" not in config_path.read_text(encoding="utf-8")
+
+
+def test_openid_values_are_saved_in_console_config(tmp_path: Path) -> None:
+    """前端控制台保存原 QQ 字段时，openid 字符串必须原样持久化。"""
+    manager, config_path = _manager(tmp_path)
+    document = manager.read()
+    config = document["config"]
+    config["chat"]["reply_blacklist"] = ["OpenId_Blacklist_123"]
+    config["chat"]["admin_accounts"] = ["OpenId_Admin_456"]
+    config["chat"]["group_list"] = ["OpenId_Group_789"]
+
+    manager.save(config=config)
+
+    saved = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["chat"]["reply_blacklist"] == ["OpenId_Blacklist_123"]
+    assert saved["chat"]["admin_accounts"] == ["OpenId_Admin_456"]
+    assert saved["chat"]["group_list"] == ["OpenId_Group_789"]

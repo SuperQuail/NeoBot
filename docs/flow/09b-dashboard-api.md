@@ -191,6 +191,7 @@ flowchart LR
 |---|---|---|---|---|
 | 鉴权 | 5 | `/api/auth/{status,setup,login,logout,me}` | 只有 status 在公开集；setup/login 走预会话跨站守卫 | 密码文件 + SessionStore |
 | 概览与指标 | 10 | `/api/overview · system · bots · bot/detail · series/messages · series/latency · stats/api-calls · stats/active-users · series/usage · stats/usage` | 会话 | 内存 Metrics + psutil + 用量库 |
+| 本地 ID 口径 | — | 概览/机器人/活跃用户里的 user_id、group_id | — | 双通道下是 **int 或 openid 字符串**：Metrics 按文本 key 聚合；前端对数字显示 `QQ <id>`、其余显示完整 `ID <openid>`；qlogo 头像只对纯数字 ID 拼 URL（openid 不发第三方请求）；`kind:id` 形态的 chat_flow_id 只按第一个冒号切分，之后的 openid 原样保留 |
 | 用量与计费 | 4 | `/api/stats/usage/records · /api/config/billing · billing/reload · billing/preview` | reload 需 manage，其余只认会话 | 用量库 + Billing 服务 |
 | 日志任务服务 | 3 | `/api/logs · tasks · services` | 会话 | 内存日志缓冲 + 管理器投影 |
 | 模型库写操作 | 2 | `/api/config/models/library · /models/assignments` | manage | 写回 `[models.registry]`；带 `reload` 时经 `_append_model_reload_hint` 追加「仍需重启」把 `needs_restart_parts` 带回前端（分类表的 `needs_restart_count` 会把这件事吃掉，issue #75） |

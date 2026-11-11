@@ -145,7 +145,8 @@ class _PipelinePrivateMixin:
             try:
                 result = await asyncio.wait_for(
                     self.adapter.get_friend_msg_history(
-                        user_id=int(user_id),
+                        # user_id 可能是官方 openid 字符串：原样交给适配器，绝不 int()
+                        user_id=user_id,
                         count=count,
                         reverse_order=False,
                     ),

@@ -142,16 +142,16 @@ export default function DeployStepPanel({
           <div className="deploy-fields">
             <label className="deploy-field" htmlFor="deploy-admin">
               <span className="deploy-field-label">
-                超级管理员 QQ <span>选填</span>
+                超级管理员（QQ号或 openid）<span>选填</span>
               </span>
               <input
                 id="deploy-admin"
                 className="input"
-                inputMode="numeric"
+                inputMode="text"
                 value={draft.adminQq}
                 disabled={disabled}
                 onChange={(event) => updateDraft('adminQq', event.target.value)}
-                placeholder="接收余额不足等系统通知"
+                placeholder="QQ号或官方 openid（控制台聊天流可复制）"
               />
             </label>
             <div className="deploy-field">

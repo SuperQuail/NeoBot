@@ -115,8 +115,15 @@ class _ReplyToolsMixin:
                 return f"错误：消息编号 {reply_to} 不存在于当前上下文中（不是 [msg_id=...]；用行首编号）"
         mention: list[int] | None = None
         if raw_mention:
+            if not isinstance(raw_mention, list):
+                return f"错误：mention_qqs 必须为列表，收到 {type(raw_mention).__name__}"
             try:
-                mention = [int(qq) for qq in raw_mention]
+                # 双通道：schema 接受字符串，@ 目标必须是真实 QQ 号（openid 请用官方 Markdown）
+                mention = [
+                    int(str(qq).strip())
+                    for qq in raw_mention
+                    if str(qq).strip()
+                ]
             except (ValueError, TypeError):
                 return f"错误：mention_qqs 必须为整数列表，收到 {raw_mention}"
 
@@ -430,8 +437,8 @@ class _ReplyToolsMixin:
                         },
                         "mention_qqs": {
                             "type": "array",
-                            "items": {"type": "integer"},
-                            "description": "可选，要 @ 的 QQ 号列表（仅 OneBot 群聊）。官方通道普通文本不支持 @，需要 @ 请改用 send_official_markdown；正文里不要再额外写「@昵称」。",
+                            "items": {"type": ["string", "integer"]},
+                            "description": "可选，要 @ 的真实 QQ 号列表（仅 OneBot 群聊；openid 不能 @）。官方通道普通文本不支持 @，需要 @ 请改用 send_official_markdown；正文里不要再额外写「@昵称」。",
                         },
                         "segments": {
                             "type": "array",

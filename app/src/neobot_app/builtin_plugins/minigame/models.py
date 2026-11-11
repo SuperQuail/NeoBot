@@ -32,7 +32,8 @@ class Profile(Base):
 
     __tablename__ = "mg_profile"
 
-    user_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    #: 本地用户 ID：OneBot 是数字 QQ 号，官方通道是 openid 字符串。
+    user_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     #: 最近一次见到的昵称：榜单卡片用它代替 QQ 号（空串 = 还没见过名字，回落掩码）
     user_name: Mapped[str] = mapped_column(String(128), default="")
     score: Mapped[int] = mapped_column(Integer, default=0)
@@ -48,14 +49,14 @@ class Bottle(Base):
     __tablename__ = "mg_bottle"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    sender_id: Mapped[str] = mapped_column(String(32), default="")
+    sender_id: Mapped[str] = mapped_column(String(128), default="")
     sender_name: Mapped[str] = mapped_column(String(128), default="")
     sender_avatar: Mapped[str] = mapped_column(Text, default="")
     content: Mapped[str] = mapped_column(Text, default="")
     anonymous: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     picked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    picked_by: Mapped[str] = mapped_column(String(32), default="")
+    picked_by: Mapped[str] = mapped_column(String(128), default="")
     status: Mapped[str] = mapped_column(String(16), default="pooled")
     meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
@@ -65,7 +66,7 @@ class Daily(Base):
 
     __tablename__ = "mg_daily"
 
-    user_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     game_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     day: Mapped[str] = mapped_column(String(10), primary_key=True)
     plays: Mapped[int] = mapped_column(Integer, default=0)
@@ -76,7 +77,7 @@ class Checkin(Base):
 
     __tablename__ = "mg_checkin"
 
-    user_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     day: Mapped[str] = mapped_column(String(10), primary_key=True)
     score: Mapped[int] = mapped_column(Integer, default=0)
     streak: Mapped[int] = mapped_column(Integer, default=0)
@@ -88,7 +89,7 @@ class Fortune(Base):
 
     __tablename__ = "mg_fortune"
 
-    user_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     day: Mapped[str] = mapped_column(String(10), primary_key=True)
     result_key: Mapped[str] = mapped_column(String(32), default="")
     result_text: Mapped[str] = mapped_column(Text, default="")
@@ -101,7 +102,7 @@ class Record(Base):
     __tablename__ = "mg_record"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(String(32), default="")
+    user_id: Mapped[str] = mapped_column(String(128), default="")
     game_id: Mapped[str] = mapped_column(String(32), default="")
     score: Mapped[int] = mapped_column(Integer, default=0)
     conversation_id: Mapped[str] = mapped_column(String(64), default="")

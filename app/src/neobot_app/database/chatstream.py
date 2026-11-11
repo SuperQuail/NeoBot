@@ -614,10 +614,8 @@ class ChatStreamManager:
         )
         segments = [MessageSegment(type="text", data={"text": text})]
         if conversation.kind == "group":
-            try:
-                group_id = int(conversation.id)
-            except (TypeError, ValueError):
-                group_id = 0
+            # 会话主键可能是官方 openid 字符串：原样回填，绝不 int()
+            group_id: Any = str(conversation.id) if conversation.id else 0
             message: Any = GroupMessage(
                 message_type=MessageTypeEnum.group,
                 message_id=message_id,

@@ -1,4 +1,4 @@
-"""官方发送链路：纯文本 msg_type=0、显式 Markdown、被动回复限额与引用。
+"""官方发送链路：openid 直通、纯文本 msg_type=0、显式 Markdown、被动回复限额与引用。
 
 失败一律返回 failed 且只落 info 日志；这里同时锁死「没有自动降级/回退」：
 Markdown 被拒、被动额度用尽、媒体失败都不会改发其它形态。
@@ -99,16 +99,17 @@ def _sender(
     return sender, fake_api, identity, passive, message_ids
 
 
-def _private(identity: IdentityMap, openid: str = "user-openid") -> ConversationRef:
-    return ConversationRef(kind="private", id=str(identity.user_id(openid)))
+def _private(_identity: IdentityMap, openid: str = "user-openid") -> ConversationRef:
+    # openid 直通：ConversationRef.id 就是官方 openid（identity 仅为迁移期旧号保留）。
+    return ConversationRef(kind="private", id=openid)
 
 
-def _group(identity: IdentityMap, openid: str = "group-openid") -> ConversationRef:
-    return ConversationRef(kind="group", id=str(identity.group_id(openid)))
+def _group(_identity: IdentityMap, openid: str = "group-openid") -> ConversationRef:
+    return ConversationRef(kind="group", id=openid)
 
 
 def _remember(passive: PassiveReplyCache, conversation: ConversationRef) -> None:
-    passive.remember(conversation.kind, int(conversation.id), "ROBOT1.0_user-msg")
+    passive.remember(conversation.kind, str(conversation.id), "ROBOT1.0_user-msg")
 
 
 def _markdown(content: str) -> dict:
@@ -127,7 +128,7 @@ async def test_plain_text_is_always_msg_type_0(workdir) -> None:
 
     assert result.status == "ok"
     call = api.calls[0]
-    assert call["path"] == f"/v2/users/{identity.openid(int(conversation.id), 'private')}/messages"
+    assert call["path"] == f"/v2/users/{conversation.id}/messages"
     assert call["body"]["msg_type"] == 0
     assert call["body"]["content"] == "你好"
     assert "markdown" not in call["body"]
@@ -208,7 +209,7 @@ async def test_at_segment_is_dropped_from_plain_text(workdir) -> None:
     sender, api, identity, passive, _message_ids = _sender(workdir)
     conversation = _group(identity)
     _remember(passive, conversation)
-    member_id = identity.user_id("member-openid")
+    member_id = "member-openid"
 
     await sender.send(
         conversation,
@@ -245,7 +246,7 @@ async def test_markdown_embedded_at_user_is_rendered_to_openid(workdir) -> None:
     sender, api, identity, passive, _message_ids = _sender(workdir)
     conversation = _group(identity)
     _remember(passive, conversation)
-    member_id = identity.user_id("member-openid")
+    member_id = "member-openid"
     content = f'<qqbot-at-user id="{member_id}"> 你好 <qqbot-at-everyone /> <qqbot-cmd-input text="x" />'
 
     await sender.send(conversation, [_markdown(content)])
@@ -256,23 +257,28 @@ async def test_markdown_embedded_at_user_is_rendered_to_openid(workdir) -> None:
     assert '<qqbot-cmd-input text="x" />' in markdown
 
 
-async def test_markdown_unknown_at_user_fails_without_sending(workdir) -> None:
+async def test_markdown_legacy_synthetic_at_user_resolves_to_openid(workdir) -> None:
+    """迁移期：Markdown 里残留的 13 位合成号仍能按只读映射换成 openid。"""
+    (workdir / "qqbot").mkdir(parents=True, exist_ok=True)
+    (workdir / "qqbot" / "identities.json").write_text(
+        '{"users": {"member-openid": 9000000009999}, "groups": {}}', encoding="utf-8"
+    )
     sender, api, identity, passive, _message_ids = _sender(workdir)
     conversation = _group(identity)
     _remember(passive, conversation)
 
     result = await sender.send(conversation, [_markdown('<qqbot-at-user id="9000000009999"> 你好')])
 
-    assert result.status == "failed"
-    assert "openid" in (result.message or "")
-    assert api.calls == []
+    assert result.status == "ok"
+    markdown = api.calls[-1]["body"]["markdown"]["content"]
+    assert '<qqbot-at-user id="member-openid" />' in markdown
 
 
 async def test_markdown_at_user_in_private_fails(workdir) -> None:
     sender, api, identity, passive, _message_ids = _sender(workdir)
     conversation = _private(identity)
     _remember(passive, conversation)
-    member_id = identity.user_id("member-openid")
+    member_id = "member-openid"
 
     result = await sender.send(conversation, [_markdown(f'<qqbot-at-user id="{member_id}" /> 你好')])
 
@@ -464,10 +470,10 @@ async def test_auth_error_is_reported_as_failed_response(workdir) -> None:
     assert "token boom" in (result.message or "")
 
 
-async def test_unknown_conversation_returns_failed(workdir) -> None:
+async def test_empty_conversation_id_returns_failed(workdir) -> None:
     sender, api, _identity, _passive, _message_ids = _sender(workdir)
 
-    result = await sender.send(ConversationRef(kind="private", id="9999999999999"), "在吗")
+    result = await sender.send(ConversationRef(kind="private", id=""), "在吗")
 
     assert result.status == "failed"
     assert "openid" in (result.message or "")

@@ -58,7 +58,7 @@ class SendingMixin:
         event: ReplyEvent,
         text: str,
         reply_to_message_id: int | None = None,
-        mention_user_ids: list[int] | None = None,
+        mention_user_ids: list[int | str] | None = None,
         segments: list[str] | None = None,
         send_original: bool = False,
         images: list[int] | None = None,
@@ -180,7 +180,7 @@ class SendingMixin:
         text: str,
         conversation_kind: str,
         reply_to_message_id: int | None = None,
-        mention_user_ids: list[int] | None = None,
+        mention_user_ids: list[int | str] | None = None,
         channel: str | None = None,
     ) -> list[dict]:
         return ReplySender.build_reply_segments(

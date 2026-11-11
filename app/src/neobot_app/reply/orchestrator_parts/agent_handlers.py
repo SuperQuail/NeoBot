@@ -46,7 +46,7 @@ class AgentHandlersMixin:
         numbering: MessageNumbering,
         text: str,
         reply_to: int | None = None,
-        mention: list[int] | None = None,
+        mention: list[int | str] | None = None,
         segments: list[str] | None = None,
         send_original: bool = False,
         images: list[int] | None = None,
@@ -331,7 +331,7 @@ class AgentHandlersMixin:
             result = await self._call_api_with_timeout(
                 "group_poke",
                 {
-                    "group_id": int(conv_id),
+                    "group_id": str(conv_id),
                     "user_id": user_id,
                 },
             )
@@ -364,7 +364,7 @@ class AgentHandlersMixin:
         image_path: str,
         caption: str = "",
         reply_to: int | None = None,
-        mention: list[int] | None = None,
+        mention: list[int | str] | None = None,
         markdown: str = "",
         channel: str | None = None,
     ) -> None:

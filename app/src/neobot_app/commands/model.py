@@ -61,12 +61,12 @@ class CommandContext:
 
     service: "CommandService"
     kind: str  # group / private
-    conv_id: str
-    user_id: int
+    conv_id: str  # 会话本地 ID（OneBot 群号/QQ 号，官方通道 openid），统一按字符串处理
+    user_id: str | int
     command: Command
     raw_args: str
     args: list[str]
-    at_qqs: list[int]
+    at_qqs: list[str]  # at 目标的本地 ID 字符串（openid 或 QQ 数字字符串）
     message: Any = None
     #: 按次覆盖「结果交回复管线」：静态 Command.sync_reply 会把错误文案也交给 AI 改写，
     #: 因此 handler 只在本次确实需要 AI 生成回复时置 True（spec(5) §4.1 / D1）。

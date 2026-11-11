@@ -269,3 +269,66 @@ async def test_sub_admin_cannot_unlink_command():
     )
 
     assert "权限" in sent[-1][2]
+
+
+OPENID_ADMIN = "ADMIN-user-openid"
+OPENID_TARGET = "TARGET-user-openid"
+
+
+def _trusted_admin_openid() -> None:
+    """模拟已完成的首次绑定：管理员 openid → 真实超管 QQ（trusted）。"""
+    assert link_user_qq(OPENID_ADMIN, SUPER, trusted=True)[0]
+
+
+async def test_admin_links_openid_sender_to_qq():
+    """官方通道发送者是 openid 字符串：/linkqq 直接按 openid 建 trusted 映射。"""
+    sent: list[tuple] = []
+    service = _service(sent)
+    _trusted_admin_openid()
+
+    result = await service.handle_message(
+        _message("/linkqq 123456789", user_id=OPENID_ADMIN, at_qqs=[BOT]),
+        kind="private",
+        queue_key=OPENID_ADMIN,
+    )
+
+    assert result.consumed is True
+    assert qq_for_user(OPENID_ADMIN) == REAL_QQ
+    assert trusted_qq_for_user(OPENID_ADMIN) == REAL_QQ
+    assert "已映射" in sent[-1][2]
+
+
+async def test_super_admin_can_unlink_openid_argument():
+    """参数是 openid 字符串时直接按本地 ID 解绑，不再依赖 13 位数字判断。"""
+    sent: list[tuple] = []
+    service = _service(sent)
+    _trusted_admin_openid()
+    assert link_user_qq(OPENID_TARGET, REAL_QQ, trusted=True)[0]
+
+    result = await service.handle_message(
+        _message(f"/unlinkqq {OPENID_TARGET}", user_id=OPENID_ADMIN, at_qqs=[BOT]),
+        kind="private",
+        queue_key=OPENID_ADMIN,
+    )
+
+    assert result.consumed is True
+    assert trusted_qq_for_user(OPENID_TARGET) is None
+    assert "已移除" in sent[-1][2]
+
+
+async def test_super_admin_can_unlink_openid_by_real_qq_argument():
+    """参数是真实 QQ 号时反查 openid 映射后解绑。"""
+    sent: list[tuple] = []
+    service = _service(sent)
+    _trusted_admin_openid()
+    assert link_user_qq(OPENID_TARGET, REAL_QQ, trusted=True)[0]
+
+    result = await service.handle_message(
+        _message(f"/unlinkqq {REAL_QQ}", user_id=OPENID_ADMIN, at_qqs=[BOT]),
+        kind="private",
+        queue_key=OPENID_ADMIN,
+    )
+
+    assert result.consumed is True
+    assert trusted_qq_for_user(OPENID_TARGET) is None
+    assert "已移除" in sent[-1][2]

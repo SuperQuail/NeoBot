@@ -244,25 +244,24 @@ class ReplySender:
     def _preferred_linked_group_target(
         self, conversation_ref: ConversationRef, channel: str | None
     ) -> tuple[ConversationRef, str | None]:
-        """已 link 且两通道都在线的群：默认 OneBot，OneBot 不可用再走官方。
+        """已人工 link 且两通道都在线的群：默认 OneBot，OneBot 不可用再走官方。
 
-        群在两通道的会话 id 不同（OneBot 用真实群号，官方用合成群号），所以
-        换通道时必须同时换 ConversationRef.id。
+        同一群在两通道的本地会话 id 不同（OneBot 真实群号 / 官方 openid），所以
+        换通道时必须同时换 ConversationRef.id。映射来自 /linkgroup 的人工绑定，
+        不再由「ID 是不是纯数字」推断通道可用性（openid 不是数字）。
         """
         if conversation_ref.kind != "group" or not channel:
             return conversation_ref, channel
-        from neobot_app.user_identity import group_number_for, synthetic_for_group
+        from neobot_app.user_identity import group_number_for, openid_for_group
 
         source_channel = str(channel).strip().casefold()
         if source_channel == "onebot":
             real_group = str(conversation_ref.id).strip()
-            if not real_group.isdigit():
-                return conversation_ref, channel
         else:
             real_group = str(group_number_for(conversation_ref.id, source_channel) or "")
-        if not real_group.isdigit():
+        if not real_group:
             return conversation_ref, channel
-        official_id = synthetic_for_group(int(real_group), "official")
+        official_id = openid_for_group(real_group, "official")
         if not official_id:
             return conversation_ref, channel
         connected = getattr(self._adapter, "connected_channels", None)
@@ -333,7 +332,7 @@ class ReplySender:
         text: str,
         *,
         reply_to_message_id: int | None = None,
-        mention_user_ids: list[int] | None = None,
+        mention_user_ids: list[int | str] | None = None,
         segments: list[str] | None = None,
         send_original: bool = False,
         images: list[int] | None = None,
@@ -731,7 +730,9 @@ class ReplySender:
                 user_id=bot_qq,
                 message=message_segments,
                 raw_message=text,
-                group_id=int(conv_ref.id) if conv_ref.id else 0,
+                # 群 ID 可能是官方 openid 字符串：原样透传，绝不 int()
+                group_id=str(conv_ref.id) if conv_ref.id else 0,
+
                 sender=sender,
             )
         return PrivateMessage(
@@ -1009,22 +1010,25 @@ class ReplySender:
         text: str,
         conversation_kind: str,
         reply_to_message_id: int | None = None,
-        mention_user_ids: list[int] | None = None,
+        mention_user_ids: list[int | str] | None = None,
         channel: str | None = None,
     ) -> list[dict]:
         segments: list[dict] = []
         if mention_user_ids and conversation_kind == "group":
-            from neobot_app.user_identity import synthetic_for_qq
+            from neobot_app.bot_accounts import looks_like_real_qq
+            from neobot_app.user_identity import openid_for_qq
 
             text = _LEADING_MENTION_TEXT.sub("", text, count=1)
-            for qq in mention_user_ids:
-                target = str(qq)
-                if channel == "official":
-                    # 官方发送 @ 需要 member_openid；known 的真实 QQ 先反查
-                    # 官方合成 ID，再由适配器映射成 openid。
-                    synthetic = synthetic_for_qq(qq, channel)
-                    if synthetic:
-                        target = str(synthetic)
+            for raw in mention_user_ids:
+                # mention 参数可能是真实 QQ 数字或官方 openid 字符串：原样按字符串处理
+                target = str(raw or "").strip()
+                if not target:
+                    continue
+                if channel == "official" and looks_like_real_qq(target):
+                    # 官方 @ 需要 openid：真实 QQ 号只能通过人工绑定反查
+                    mapped = openid_for_qq(target, channel)
+                    if mapped:
+                        target = mapped
                 segments.append(
                     {
                         "type": "at",

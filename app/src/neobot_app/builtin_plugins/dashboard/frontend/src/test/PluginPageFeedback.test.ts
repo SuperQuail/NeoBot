@@ -19,7 +19,7 @@ async function pageFixture(polling = false, mode: 'live' | 'demo' = 'live') {
     message: '尚未添加订阅',
   };
   const settings = {
-    group_id: 20001,
+    group_id: '20001',
     card_style: 'minimal',
     ai_reply_live: false,
     ai_reply_live_end: false,
@@ -30,7 +30,7 @@ async function pageFixture(polling = false, mode: 'live' | 'demo' = 'live') {
   let guideListener: ((step: Record<string, unknown>) => void) | undefined;
   const notify = vi.fn().mockResolvedValue(null);
   const action = vi.fn(async (name: string): Promise<unknown> => {
-    if (name === 'subscriptions.groups') return { items: [{ group_id: 20001, name: '测试群' }] };
+    if (name === 'subscriptions.groups') return { items: [{ group_id: '20001', name: '测试群' }] };
     if (name === 'subscriptions.list') return { items: [] };
     if (name === 'subscriptions.health') return health;
     if (name === 'groups.settings.get') return { ...settings };
@@ -168,7 +168,7 @@ describe('插件页面操作反馈', () => {
     page.button('show-preview').click();
     await vi.waitFor(() =>
       expect(page.action).toHaveBeenCalledWith('subscriptions.preview', {
-        group_id: 20001,
+        group_id: '20001',
         target: 'https://live.bilibili.com/610001',
       }),
     );
@@ -262,7 +262,7 @@ describe('插件页面操作反馈', () => {
 
   it('教程退回初始表单时清空后续章节的群设置，而不是只清空群和链接', async () => {
     const page = await pageFixture(false, 'demo');
-    page.guide({ group_id: 20001, target: '' });
+    page.guide({ group_id: '20001', target: '' });
     const style = page.document.getElementById('settings-style') as HTMLSelectElement;
     const push = page.document.getElementById('settings-push-live') as HTMLInputElement;
     await vi.waitFor(() => expect(style.value).toBe('minimal'));

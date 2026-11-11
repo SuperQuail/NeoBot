@@ -72,7 +72,7 @@ class CredentialManager:
         if permissions is None or user_id in (None, "", 0, "0"):
             return False
         try:
-            return bool(permissions.is_super_admin(int(user_id)))
+            return bool(permissions.is_super_admin(user_id))
         except (TypeError, ValueError, AttributeError):
             return False
 

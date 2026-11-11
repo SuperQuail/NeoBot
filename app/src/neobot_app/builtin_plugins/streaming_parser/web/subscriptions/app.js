@@ -27,8 +27,9 @@
   let reportedBackgroundError = "";
   const disposers = [];
   const selectSync = new Map();
+  // 群 ID 用文本：OneBot 是数字群号，官方通道是 openid 字符串。
   const selection = () => ({
-    group_id: Number($("group_id").value),
+    group_id: $("group_id").value.trim(),
     target: $("target-input").value.trim(),
   });
   const key = () =>
@@ -452,7 +453,7 @@
     const target = step.target.split(".").slice(2).join(".");
     const sample = step.example || {};
     const values = {
-      group_id: Number(sample.group_id || 0),
+      group_id: sample.group_id ? String(sample.group_id) : "",
       target: sample.target || "",
     };
     const needsPreview = [

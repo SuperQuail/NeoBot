@@ -2,8 +2,8 @@
 
 官方网关把 op0 dispatch 载荷原样交给适配器（{"t": 事件类型, "d": 数据}），
 这里把它落成 OneBot 形状的 dict 交给门面的事件分发器；本模块不持有网络状态，
-也不认识 HTTP。官方只给 openid/字符串消息 ID，靠 IdentityMap / MessageIdMap
-换成 OneBot 的合成数字。
+也不认识 HTTP。官方只给 openid/字符串消息 ID：用户/群 ID 直接透传 openid，
+消息 ID 仍经 MessageIdMap 换成 OneBot 的合成 int。
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import Any
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 
-from neobot_adapter.official.identity import IdentityMap, MessageIdMap
+from neobot_adapter.official.identity import MessageIdMap
 
 #: 需要映射的消息事件；其余 dispatch（READY/RESUMED/互动事件等）由适配器自行处理。
 MESSAGE_EVENTS = frozenset({"C2C_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"})
@@ -91,12 +91,10 @@ class EventMapper:
     def __init__(
         self,
         *,
-        identity: IdentityMap,
         message_ids: MessageIdMap,
         logger: Logger | None = None,
         self_id: int = 0,
     ) -> None:
-        self._identity = identity
         self._message_ids = message_ids
         self._logger = logger if logger is not None else NullLogger()
         self._dedupe = _EventDedupe()
@@ -176,8 +174,8 @@ class EventMapper:
             member_openid = str(data.get("member_openid") or "").strip()
             if not group_openid or not member_openid:
                 return None
-            group_id = self._identity.group_id(group_openid)
-            user_id = self._identity.user_id(member_openid)
+            group_id = group_openid
+            user_id = member_openid
             return {
                 "time": timestamp,
                 "self_id": self.self_id,
@@ -201,8 +199,8 @@ class EventMapper:
                 "post_type": "request",
                 "request_type": "group",
                 "sub_type": "add",
-                "group_id": self._identity.group_id(group_openid),
-                "user_id": self._identity.user_id(member_openid),
+                "group_id": group_openid,
+                "user_id": member_openid,
                 "comment": comment,
                 "flag": str(data.get("join_request_id") or ""),
                 "_official_member_openid": member_openid,
@@ -216,7 +214,7 @@ class EventMapper:
                 "self_id": self.self_id,
                 "post_type": "notice",
                 "notice_type": "friend_add" if event_type == "FRIEND_ADD" else "friend_remove",
-                "user_id": self._identity.user_id(openid),
+                "user_id": openid,
             }
         if event_type in {"GROUP_MSG_RECEIVE", "GROUP_MSG_REJECT"}:
             group_openid = str(data.get("group_openid") or "").strip()
@@ -228,8 +226,8 @@ class EventMapper:
                 "self_id": self.self_id,
                 "post_type": "notice",
                 "notice_type": "group_msg_receive" if event_type.endswith("RECEIVE") else "group_msg_reject",
-                "group_id": self._identity.group_id(group_openid),
-                "operator_id": self._identity.user_id(operator_openid) if operator_openid else 0,
+                "group_id": group_openid,
+                "operator_id": operator_openid or 0,
             }
         if event_type in {"C2C_MSG_RECEIVE", "C2C_MSG_REJECT"}:
             openid = str(data.get("openid") or "").strip()
@@ -240,7 +238,7 @@ class EventMapper:
                 "self_id": self.self_id,
                 "post_type": "notice",
                 "notice_type": "c2c_msg_receive" if event_type.endswith("RECEIVE") else "c2c_msg_reject",
-                "user_id": self._identity.user_id(openid),
+                "user_id": openid,
             }
         if event_type == "SUBSCRIBE_MESSAGE_STATUS":
             group_openid = str(data.get("group_openid") or "").strip()
@@ -252,8 +250,8 @@ class EventMapper:
                 "self_id": self.self_id,
                 "post_type": "notice",
                 "notice_type": "subscribe_message_status",
-                "group_id": self._identity.group_id(group_openid) if group_openid else 0,
-                "user_id": self._identity.user_id(user_openid) if user_openid else 0,
+                "group_id": group_openid or 0,
+                "user_id": user_openid or 0,
                 "subscribe_results": data.get("result") if isinstance(data.get("result"), list) else [],
             }
         if event_type in {"GROUP_ADD_ROBOT", "GROUP_DEL_ROBOT"}:
@@ -266,8 +264,8 @@ class EventMapper:
                 "self_id": self.self_id,
                 "post_type": "notice",
                 "notice_type": "group_add_robot" if event_type == "GROUP_ADD_ROBOT" else "group_del_robot",
-                "group_id": self._identity.group_id(group_openid),
-                "operator_id": self._identity.user_id(operator_openid) if operator_openid else 0,
+                "group_id": group_openid,
+                "operator_id": operator_openid or 0,
             }
         return None
 
@@ -284,13 +282,12 @@ class EventMapper:
         if not openid:
             self._logger.warning("官方私聊事件缺少用户 openid，已跳过")
             return
-        user_id = self._identity.user_id(openid)
+        user_id = openid
         _append_quote(message, data)
         _append_content_with_mentions(
             message,
             data.get("content"),
             data.get("mentions"),
-            self._identity,
             bot_self_id=self.self_id,
             bot_openid=self.bot_openid,
         )
@@ -324,8 +321,8 @@ class EventMapper:
         if not group_openid or not user_openid:
             self._logger.warning("官方群聊事件缺少群或用户 openid，已跳过")
             return
-        group_id = self._identity.group_id(group_openid)
-        user_id = self._identity.user_id(user_openid)
+        group_id = group_openid
+        user_id = user_openid
         if require_at:
             # GROUP_AT_MESSAGE_CREATE 必然 @ 了机器人：OneBot 消费方按 at 段判断。
             message.append({"type": "at", "data": {"qq": self.self_id}})
@@ -334,7 +331,6 @@ class EventMapper:
             message,
             data.get("content"),
             data.get("mentions"),
-            self._identity,
             bot_self_id=self.self_id,
             bot_openid=self.bot_openid,
             unknown_is_bot=True,
@@ -372,9 +368,12 @@ def _epoch_seconds(value: Any) -> int:
     return int(time.time())
 
 
-def _nickname(author: dict[str, Any], user_id: int) -> str:
+def _nickname(author: dict[str, Any], user_id: Any) -> str:
     name = str(author.get("username") or "").strip()
-    return name or f"QQ:{user_id}"
+    if name:
+        return name
+    text = str(user_id or "")
+    return f"QQ:{text}" if text.isdigit() and len(text) <= 11 else f"ID:{text}"
 
 
 def _conversation_context(event_type: str, data: dict[str, Any]) -> tuple[str, str]:
@@ -427,7 +426,6 @@ def _append_content_with_mentions(
     message: list[dict[str, Any]],
     content: Any,
     mentions: Any,
-    identity: IdentityMap,
     *,
     bot_self_id: int = 0,
     bot_openid: str = "",
@@ -465,7 +463,7 @@ def _append_content_with_mentions(
                 _append_bot_at(message, bot_self_id)
             seen.add(openid)
         elif item is not None:
-            user_id = identity.user_id(openid)
+            user_id = openid
             name = str(item.get("username") or "").strip()
             message.append({"type": "at", "data": {"qq": str(user_id), "name": name}})
             seen.add(openid)
@@ -488,7 +486,7 @@ def _append_content_with_mentions(
             if bot_openid and openid == bot_openid:
                 _append_bot_at(message, bot_self_id)
             continue
-        user_id = identity.user_id(openid)
+        user_id = openid
         name = str(item.get("username") or "").strip()
         message.append({"type": "at", "data": {"qq": str(user_id), "name": name}})
 

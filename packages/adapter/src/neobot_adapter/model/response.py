@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any,Union
 
-from neobot_adapter.model.basic import Sex
+from neobot_adapter.model.basic import LocalId, Sex
 
 
 class BaseResponse(BaseModel):
@@ -23,7 +23,7 @@ class SendLikeResponse(BaseResponse):
 
 class FriendData(BaseModel):
     """数据模型"""
-    user_id: int = 0 # QQ 号
+    user_id: LocalId = 0 # QQ 号 / 官方 openid
     nickname: str = '' # 昵称
     remark: Optional[str] = None # 备注
     sex: Optional[Sex] = None
@@ -141,7 +141,7 @@ class SetQQProfileResponse(BaseResponse):
 
 class GroupData(BaseModel):
     """群组模型"""
-    group_id : Optional[int] = None
+    group_id : Optional[LocalId] = None
     group_name : Optional[str] = None
     group_memo : Optional[str] = None # 群介绍
     group_create_time : Optional[int] = None
@@ -149,7 +149,7 @@ class GroupData(BaseModel):
     max_member_count : Optional[int] = None
     remark_name : Optional[str] = None # 群备注
     avatar_url : Optional[str] = None
-    owner_id : Optional[int] = None
+    owner_id : Optional[LocalId] = None
     is_top : Optional[bool] = None # 是否置顶
     shut_up_all_timestamp : Optional[int] = None # 全员禁言剩余时间
     shut_up_me_timestamp : Optional[int] = None # 我被禁言剩余时间
@@ -169,8 +169,8 @@ class GetGroupInfoResponse(BaseResponse):
 
 class GroupMemberData(BaseModel):
     """群组成员模型"""
-    group_id : Optional[int] = None
-    user_id : Optional[int] = None
+    group_id : Optional[LocalId] = None
+    user_id : Optional[LocalId] = None
     nickname : Optional[str] = None
     card : Optional[str] = None
     card_or_nickname : Optional[str] = None
@@ -200,22 +200,22 @@ class GetGroupMemberInfoResponse(BaseResponse):
 class InvitedRequestsData(BaseModel):
     """群组邀请请求模型"""
     request_id : Optional[int] = None
-    group_id : Optional[int] = None
+    group_id : Optional[LocalId] = None
     group_name : Optional[str] = None
     invitor_nick : Optional[str] = None
-    invitor_uin : Optional[int] = None
+    invitor_uin : Optional[LocalId] = None
     checked : Optional[bool] = None
-    actor : Optional[int] = None
+    actor : Optional[LocalId] = None
 
 class JoinRequestsData(BaseModel):
     """群组入群请求模型"""
     request_id : Optional[int] = None
-    requester_uin : Optional[int] = None
+    requester_uin : Optional[LocalId] = None
     requester_nick : Optional[str] = None
     message : Optional[str] = None
-    group_id : Optional[int] = None
+    group_id : Optional[LocalId] = None
     checked : Optional[bool] = None
-    actor : Optional[int] = None
+    actor : Optional[LocalId] = None
 
 class GetGroupSystemMsgResponse(BaseResponse):
     """获取群组系统消息响应模型"""
@@ -223,7 +223,7 @@ class GetGroupSystemMsgResponse(BaseResponse):
 
 class TalkativeData(BaseModel):
     """当前群组龙王模型"""
-    user_id : Optional[int] = None
+    user_id : Optional[LocalId] = None
     avatar : Optional[str] = None
     nickname : Optional[str] = None
     day_count : Optional[int] = None
@@ -231,14 +231,14 @@ class TalkativeData(BaseModel):
 
 class PerformerData(BaseModel):
     """群组群聊之火模型"""
-    user_id : Optional[int] = None
+    user_id : Optional[LocalId] = None
     nickname : Optional[str] = None
     avatar : Optional[str] = None
     description : Optional[str] = None
 
 class GroupHonorInfoData(BaseModel):
     """群组荣耀信息模型"""
-    group_id : Optional[int] = None
+    group_id : Optional[LocalId] = None
     current_talkative : Optional[TalkativeData] = None
     talkative_list : Optional[List[TalkativeData]] = None
     performer_list : Optional[List[PerformerData]] = None
@@ -252,10 +252,10 @@ class GetGroupHonorInfoResponse(BaseResponse):
 
 class EssenceMsgData(BaseModel):
     """群组精华消息模型"""
-    sender_id : Optional[int] = None
+    sender_id : Optional[LocalId] = None
     sender_nick : Optional[str] = None
     sender_time : Optional[int] = None
-    operator_id : Optional[int] = None
+    operator_id : Optional[LocalId] = None
     operator_nick : Optional[str] = None
     operator_time : Optional[int] = None
     message_id : Optional[int] = None
@@ -294,7 +294,7 @@ class message(BaseModel):
 class GroupNoticeData(BaseModel):
     """群组公告模型"""
     notice_id : Optional[str] = None
-    sender_id : Optional[int] = None
+    sender_id : Optional[LocalId] = None
     publisher_time : Optional[int] = None
     message : Optional[message] = None
 
@@ -415,7 +415,7 @@ class SendMsgResponse(BaseResponse):
 
 class MessageSender(BaseModel):
     """消息发送者模型"""
-    user_id : Optional[int] = None
+    user_id : Optional[LocalId] = None
     nickname : Optional[str] = None
     card : Optional[str] = None
     role : Optional[str] = None
@@ -433,7 +433,7 @@ class BasicMessageData(BaseModel):
     path : Optional[str] = None
     result : Optional[str] = None
     file_id : Optional[str] = None
-    qq : Optional[int] = None
+    qq : Optional[LocalId] = None
     name : Optional[str] = None
 
 class MessageData(BaseModel):
@@ -444,7 +444,7 @@ class MessageData(BaseModel):
 class GetSignalMsgData(BaseModel):
     """获取消息模型"""
     self_id : Optional[int] = None
-    user_id : Optional[int] = None
+    user_id : Optional[LocalId] = None
     time : Optional[int] = None
     message_id : Optional[int] = None
     real_id : Optional[int] = None
@@ -457,7 +457,7 @@ class GetSignalMsgData(BaseModel):
     message : Optional[List[MessageData]] = None
     message_format : Optional[str] = None
     post_type : Optional[str] = None
-    group_id : Optional[int] = None
+    group_id : Optional[LocalId] = None
 
 class GetSignalMsgResponse(BaseResponse):
     """获取消息响应模型"""
@@ -544,7 +544,7 @@ class GetGroupFileSystemInfoResponse(BaseResponse):
 
 class GroupFileData(BaseModel):
     """群组文件模型"""
-    group_id : Optional[int] = None
+    group_id : Optional[LocalId] = None
     file_id : Optional[str] = None
     file_name : Optional[str] = None
     busid : Optional[int] = None
@@ -553,16 +553,16 @@ class GroupFileData(BaseModel):
     dead_time : Optional[int] = None #过期时间，为 0 永久文件
     modify_time : Optional[int] = None #最后修改时间
     download_times : Optional[int] = None
-    uploader : Optional[int] = None
+    uploader : Optional[LocalId] = None
     uploader_name : Optional[str] = None
 
 class GroupFoldersData(BaseModel):
     """群组文件目录模型"""
-    group_id : Optional[int] = None
+    group_id : Optional[LocalId] = None
     folder_id : Optional[str] = None
     folder_name : Optional[str] = None
     creat_time : Optional[int] = None
-    creator : Optional[int] = None
+    creator : Optional[LocalId] = None
     creator_name : Optional[str] = None
     total_file_count : Optional[int] = None
 
@@ -606,7 +606,6 @@ class CookieData(BaseModel):
 class GetCookiesResponse(BaseResponse):
     """Cookie 响应模型"""
     data : Optional[CookieData] = None
-
 
 
 

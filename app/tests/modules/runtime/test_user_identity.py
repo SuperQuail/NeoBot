@@ -1,4 +1,4 @@
-"""user_identity: 官方合成 ID ↔ QQ 号/群号人工映射。"""
+"""user_identity: 官方 openid（含旧合成号迁移）↔ QQ 号/群号人工映射。"""
 
 from __future__ import annotations
 
@@ -18,6 +18,9 @@ from neobot_app.user_identity import (
     id_label,
     link_group_number,
     link_user_qq,
+    openid_for_group,
+    openid_for_legacy_id,
+    openid_for_qq,
     profile_identity,
     synthetic_for_group,
     qq_for_user,
@@ -123,11 +126,11 @@ def test_group_mapping_and_display():
 def test_profile_identity_keeps_qq_and_id_labels():
     """档案身份展示：真实 QQ 号用 QQ号，合成 ID 用 QQ ID，映射后两者都给。"""
     assert profile_identity(REAL_QQ) == f"QQ号:{REAL_QQ}"
-    assert profile_identity(SYNTHETIC) == f"QQ ID:{SYNTHETIC}"
+    assert profile_identity(SYNTHETIC) == f"openid:{SYNTHETIC}"
     assert profile_identity("") == ""
 
     assert link_user_qq(SYNTHETIC, REAL_QQ, trusted=True)[0]
-    assert profile_identity(SYNTHETIC) == f"QQ:{REAL_QQ}（QQ ID:{SYNTHETIC}）"
+    assert profile_identity(SYNTHETIC) == f"QQ:{REAL_QQ}（openid:{SYNTHETIC}）"
 
 
 def test_group_mapping_validates_group_number():
@@ -182,3 +185,97 @@ def test_synthetic_for_group_reverse_lookup():
     assert link_group_number(SYNTHETIC_GROUP, REAL_GROUP, channel="official", trusted=True)[0]
     assert synthetic_for_group(REAL_GROUP, "official") == SYNTHETIC_GROUP
     assert synthetic_for_group(REAL_GROUP, "onebot") is None
+
+
+# ── openid 主键 ─────────────────────────────────────────────
+
+OPENID_USER = "A1B2C3D4-user-openid"
+OPENID_GROUP = "E5F6A7B8-group-openid"
+
+
+def test_openid_alias_key_and_reverse_lookup(tmp_path):
+    """openid 字符串直接作为 alias key 的本地 ID；反向查询按真实 QQ 号。"""
+    bind_user_identity(tmp_path)
+    assert link_user_qq(OPENID_USER, REAL_QQ, channel="official", trusted=True)[0]
+    assert link_group_number(OPENID_GROUP, REAL_GROUP, channel="official", trusted=True)[0]
+
+    assert qq_for_user(OPENID_USER) == REAL_QQ
+    assert trusted_qq_for_user(OPENID_USER) == REAL_QQ
+    assert group_number_for(OPENID_GROUP) == REAL_GROUP
+
+    assert openid_for_qq(REAL_QQ, "official") == OPENID_USER
+    assert openid_for_group(REAL_GROUP, "official") == OPENID_GROUP
+    assert openid_for_qq(REAL_QQ, "onebot") is None
+
+    saved = json.loads((tmp_path / "user_qq_map.json").read_text(encoding="utf-8"))
+    assert saved["version"] == 3
+    assert f"user:official:{OPENID_USER}" in saved["aliases"]
+    assert f"group:official:{OPENID_GROUP}" in saved["aliases"]
+
+
+def test_unmapped_openid_displays_full_value():
+    """未映射的 openid 原样显示完整值，不再折叠成合成数字。"""
+    assert id_label(OPENID_USER) == "openid"
+    assert display_user_id(OPENID_USER) == f"openid:{OPENID_USER}"
+    assert group_label(OPENID_GROUP) == "openid"
+    assert display_group_id(OPENID_GROUP) == f"openid:{OPENID_GROUP}"
+
+
+def test_v2_synthetic_alias_migrates_to_openid_via_adapter_index(tmp_path):
+    """旧 user_qq_map v2 的合成号 key 借 qqbot/identities.json 反查成 openid。"""
+    (tmp_path / "qqbot").mkdir()
+    (tmp_path / "qqbot" / "identities.json").write_text(
+        json.dumps(
+            {
+                "users": {OPENID_USER: SYNTHETIC},
+                "groups": {OPENID_GROUP: SYNTHETIC_GROUP},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "user_qq_map.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "aliases": {
+                    f"user:official:{SYNTHETIC}": {"qq": REAL_QQ, "trusted": True},
+                    f"group:official:{SYNTHETIC_GROUP}": {"qq": REAL_GROUP, "trusted": False},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    bind_user_identity(tmp_path)
+
+    # 新 key 可直接按 openid 查
+    assert qq_for_user(OPENID_USER) == REAL_QQ
+    assert trusted_qq_for_user(OPENID_USER) == REAL_QQ
+    assert group_number_for(OPENID_GROUP) == REAL_GROUP
+    # 旧合成号仍可查（运行时过渡期事件可能还是合成号）
+    assert qq_for_user(SYNTHETIC) == REAL_QQ
+    assert openid_for_legacy_id("user", SYNTHETIC) == OPENID_USER
+    assert openid_for_legacy_id("group", SYNTHETIC_GROUP) == OPENID_GROUP
+
+    saved = json.loads((tmp_path / "user_qq_map.json").read_text(encoding="utf-8"))
+    assert saved["version"] == 3
+    assert f"user:official:{OPENID_USER}" in saved["aliases"]
+    assert f"user:official:{SYNTHETIC}" not in saved["aliases"]
+    assert saved["aliases"][f"user:official:{OPENID_USER}"]["trusted"] is True
+
+
+def test_permissions_accept_openid_with_trusted_mapping_only():
+    """管理员判定：openid 经 trusted 映射才命中真实 QQ 管理员配置。"""
+    config = SimpleNamespace(
+        chat=SimpleNamespace(admin_accounts=[REAL_QQ], sub_admin_accounts=[REAL_QQ])
+    )
+    permissions = PermissionManager(config)
+
+    assert link_user_qq(OPENID_USER, REAL_QQ)[0]
+    assert permissions.is_super_admin(OPENID_USER) is False
+
+    assert link_user_qq(OPENID_USER, REAL_QQ, trusted=True)[0]
+    assert permissions.can(OPENID_USER, PERM_SUB_ADMIN) is True
+    assert permissions.is_super_admin(OPENID_USER) is True
+    # 数字字符串/openid 字符串都按字符串比较
+    assert permissions.is_super_admin(str(REAL_QQ)) is True

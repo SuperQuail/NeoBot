@@ -17,6 +17,7 @@ from neobot_contracts.platform import OFFICIAL_ADAPTER_APP_NAME
 from neobot_contracts.ports.speaking import SpeechBlocked
 
 from neobot_adapter.model import response
+from neobot_adapter.official.identity import resolve_openid
 from neobot_adapter.official.media import api_data
 from neobot_adapter.official.send import OfficialApiError
 
@@ -258,7 +259,7 @@ async def _get_group_member_list(adapter: Any, params: dict[str, Any]) -> dict[s
         if isinstance(raw_members, list):
             for item in raw_members:
                 if isinstance(item, dict):
-                    mapped = _member_entry(adapter, group_id, item)
+                    mapped = _member_entry(group_id, item)
                     if mapped is not None:
                         members.append(mapped)
         cursor = str(data.get("next_cursor") or "").strip()
@@ -269,57 +270,43 @@ async def _get_group_member_list(adapter: Any, params: dict[str, Any]) -> dict[s
 
 async def _get_group_member_info(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
     group_id, group_openid = _group_target(adapter, params)
-    user_id = _as_int(params.get("user_id"))
-    if not user_id:
-        raise _ActionFailure("缺少有效的 user_id 参数")
-    member_openid = adapter.identity.openid(user_id, "user")
-    if not member_openid:
-        raise _ActionFailure(f"无法由 user_id {user_id} 反查 member_openid")
+    member_openid = _member_openid(adapter, params.get("user_id"))
     payload = await _api(adapter).request(
         "GET",
         f"/v2/groups/{group_openid}/members/{member_openid}",
     )
-    member = _member_entry(adapter, group_id, api_data(payload))
+    member = _member_entry(group_id, api_data(payload))
     if member is None:
         raise _ActionFailure("官方群成员信息响应缺少 member_openid")
     return _ok(member)
 
 
-def _group_target(adapter: Any, params: dict[str, Any]) -> tuple[int, str]:
-    group_id = _as_int(params.get("group_id"))
-    if not group_id:
-        raise _ActionFailure("缺少有效的 group_id 参数")
+def _group_target(adapter: Any, params: dict[str, Any]) -> tuple[Any, str]:
+    """群目标参数 → (原样 group_id, group openid)；openid 直通、旧合成号查迁移表。"""
+    group_id = params.get("group_id")
     return group_id, _target_openid(adapter, group_id, "group")
 
 
 def _target_openid(adapter: Any, target: Any, kind: str) -> str:
-    try:
-        synthetic = int(target)
-    except (TypeError, ValueError) as exc:
-        raise _ActionFailure("缺少有效的 group_id/user_id 参数") from exc
-    openid = adapter.identity.openid(synthetic, kind)
+    """目标参数 → openid：openid 直通；旧 13 位合成号按迁移表反查。"""
+    openid = resolve_openid(getattr(adapter, "identity", None), target, kind)
     if not openid:
         label = "group_id" if kind == "group" else "user_id"
-        raise _ActionFailure(f"无法由 {label} {synthetic} 反查 openid（该会话未在官方事件中出现过）")
+        raise _ActionFailure(f"缺少有效的 {label} 参数（或该旧 ID 无法反查 openid）")
     return openid
 
 
 def _member_entry(
-    adapter: Any,
-    group_id: int,
+    group_id: Any,
     member: dict[str, Any],
 ) -> dict[str, Any] | None:
     member_openid = str(member.get("member_openid") or "").strip()
     if not member_openid:
         return None
-    try:
-        user_id = adapter.identity.user_id(member_openid)
-    except ValueError:
-        return None
     role = str(member.get("member_role") or "").strip().casefold()
     return {
         "group_id": group_id,
-        "user_id": user_id,
+        "user_id": member_openid,
         "nickname": str(member.get("username") or ""),
         "card": "",
         "role": role if role in _MEMBER_ROLES else "member",
@@ -335,13 +322,7 @@ _MAX_BATCH_MEMBERS = 20
 
 
 def _member_openid(adapter: Any, user_id: Any) -> str:
-    synthetic = _as_int(user_id)
-    if not synthetic:
-        raise _ActionFailure("缺少有效的 user_id 参数")
-    openid = adapter.identity.openid(synthetic, "user")
-    if not openid:
-        raise _ActionFailure(f"无法由 user_id {synthetic} 反查 member_openid")
-    return openid
+    return _target_openid(adapter, user_id, "user")
 
 
 async def _set_group_ban(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
@@ -440,13 +421,14 @@ def _recent_context(adapter: Any, message_id: int) -> tuple[str, str, float]:
         return "", "", 0.0
     message_type = str(event.get("message_type") or "")
     at = _as_float(event.get("time"))
-    if message_type == "group":
-        group_id = _as_int(event.get("group_id"))
-        return "group", adapter.identity.openid(group_id, "group") or "", at
-    if message_type == "private":
-        user_id = _as_int(event.get("user_id"))
-        return "private", adapter.identity.openid(user_id, "private") or "", at
-    return "", "", 0.0
+    if message_type not in {"group", "private"}:
+        return "", "", 0.0
+    kind = "group" if message_type == "group" else "user"
+    target = event.get("group_id") if message_type == "group" else event.get("user_id")
+    try:
+        return message_type, _target_openid(adapter, target, kind), at
+    except _ActionFailure:
+        return message_type, "", at
 
 
 # ── 本地最近消息 ────────────────────────────────────────────────────

@@ -42,7 +42,7 @@ class _CoreMixin:
         chat_context: str | None = None,
         conv_kind: str = "",
         conv_id: str = "",
-        current_user_id: int | None = None,
+        current_user_id: int | str | None = None,
         human_request: bool = False,
         agent_history: list[dict] | None = None,
         wait_cooldown_seconds: int = 60,

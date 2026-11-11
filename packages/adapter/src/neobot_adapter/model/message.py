@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any, Optional, Union, List, Literal, ClassVar
 
-from neobot_adapter.model.basic import PostMessageMessagesender, PostMessageTempSource, PostMessageSubType
+from neobot_adapter.model.basic import LocalId, PostMessageMessagesender, PostMessageTempSource, PostMessageSubType
 from pydantic import BaseModel, Field
 from neobot_adapter.model.gengeral import General
 
@@ -132,7 +132,7 @@ class Message(BaseModel):
         type: Literal[MessageType.at] = MessageType.at
         class data(BaseModel):
             """@数据结构"""
-            qq: Optional[int] = None
+            qq: Optional[LocalId] = None
             name: Optional[str] = None
 
     class rps(BaseModel):
@@ -235,7 +235,7 @@ class Message(BaseModel):
             """回复数据结构"""
             id: Optional[int] = None #回复消息 ID，必须为本群 ID
             text: Optional[str] = None #自定义回复内容，优先级比 id 引用高
-            qq: Optional[int] = None #自定义回复时的自定义 QQ
+            qq: Optional[LocalId] = None #自定义回复时的自定义 QQ
             time: Optional[int] = None #自定义回复时的自定义时间，UNIX 时间格式
             seq: Optional[int] = None #起始消息序号，可通过 get_msg 获得
 
@@ -251,14 +251,14 @@ class Message(BaseModel):
         type: Literal[MessageType.poke] = MessageType.poke
         class data(BaseModel):
             """戳一戳数据结构"""
-            qq: Optional[int] = None #戳的 QQ 号
+            qq: Optional[LocalId] = None #戳的 QQ 号
 
     class gift(BaseModel):
         """礼物结构 - 发"""
         type: Literal[MessageType.gift] = MessageType.gift
         class data(BaseModel):
             """礼物数据结构"""
-            qq: Optional[int] = None #赠送的 QQ 号
+            qq: Optional[LocalId] = None #赠送的 QQ 号
             id: Optional[gift_id] = None #礼物 ID
 
     class forward(BaseModel):
@@ -275,7 +275,7 @@ class Message(BaseModel):
             """合并转发消息节点数据结构"""
             id: Optional[int] = None #转发消息 ID
             name: Optional[ str] = None #发送者显示昵称
-            uin: Optional[int] = None #发送者 QQ
+            uin: Optional[LocalId] = None #发送者 ID
             content: Optional['Message'] = None #用于自定义消息，不支持转发套娃
             seq : Optional['Message'] = None #用于自定义消息
         """
@@ -350,7 +350,7 @@ class GeneralMessage(General):
     message_type : Optional[MessageTypeEnum] = None #消息类型
     sub_type : Optional[PostMessageSubType] = None #消息子类型
     message_id : Optional[int] = None #消息 ID
-    user_id : Optional[int] = None #发送者 QQ 号
+    user_id : Optional[LocalId] = None #发送者 ID（OneBot QQ 号 / 官方 openid）
     message : Optional[List[MessageSegment]] = None #消息内容
     raw_message : Optional[str] = None #原始消息内容
     font : Optional[int] = None #字体
@@ -359,7 +359,7 @@ class GeneralMessage(General):
 
 class PrivateMessage(GeneralMessage):
     """私聊消息数据结构"""
-    target_id : Optional[int] = None #接收者 QQ 号
+    target_id : Optional[LocalId] = None #接收者 ID（OneBot QQ 号 / 官方 openid）
     temp_source : Optional[PostMessageTempSource] = None
 
 class FastPrivateReplay(PrivateMessage):
@@ -374,7 +374,7 @@ class Anonymous(BaseModel):
 
 class GroupMessage(GeneralMessage):
     """群消息数据结构"""
-    group_id : Optional[int] = None #群号
+    group_id : Optional[LocalId] = None #群 ID（OneBot 群号 / 官方 group openid）
 
 class FastGroupReplay(GroupMessage):
     reply: Optional[Message] = None #回复内容

@@ -54,7 +54,7 @@ class ChengyuSession:
     target: int
     max_steps: int
     step_timeout_seconds: float
-    started_by: int
+    started_by: int | str
     started_at: float
     last_submit_at: float
     words: list[str] = field(default_factory=list)
@@ -353,7 +353,7 @@ class ChengyuGame(Game):
             target=target,
             max_steps=int(getattr(config, "chengyu_max_steps", 10)),
             step_timeout_seconds=float(getattr(config, "chengyu_step_timeout_seconds", 60)),
-            started_by=int(request.user_id or 0),
+            started_by=request.user_id or "",
             started_at=now,
             last_submit_at=now,
         )
@@ -379,7 +379,7 @@ class ChengyuGame(Game):
         )
 
     def can_stop(self, request: GameRequest, session: ChengyuSession) -> bool:
-        if int(request.user_id or 0) == int(session.started_by or 0):
+        if str(request.user_id or "") == str(session.started_by or ""):
             return True
         ctx = request.command_ctx
         service = getattr(ctx, "service", None) if ctx is not None else None
@@ -391,7 +391,7 @@ class ChengyuGame(Game):
         try:
             from neobot_app.commands.model import PERM_SUB_ADMIN
 
-            return bool(checker(int(request.user_id or 0), PERM_SUB_ADMIN))
+            return bool(checker(request.user_id or 0, PERM_SUB_ADMIN))
         except Exception:
             return False
 

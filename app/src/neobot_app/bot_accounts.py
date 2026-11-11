@@ -37,6 +37,14 @@ def _to_int(value: Any) -> int:
         return 0
 
 
+def identity_text(value: Any) -> str:
+    """把任意本地 ID 归一化成字符串，供业务层按字符串比较。
+
+    openid 是字母数字串、QQ 号是数字；业务侧不再依赖 int/位数，比较统一走这里。
+    """
+    return str(value or "").strip()
+
+
 class BotAccounts:
     """按「当前运行时」解析机器人 QQ 号；实现细节对调用方不可见。"""
 
@@ -127,20 +135,28 @@ class BotAccounts:
     def is_bot_message(
         self, message: Any, config: Any = None, accounts: Any = None
     ) -> bool:
-        """这条消息是不是机器人自己发的（双待下两条通道各自算自己）。"""
-        user_id = _to_int(getattr(message, "user_id", None))
-        self_id = _to_int(getattr(message, "self_id", None))
-        if self_id and user_id == self_id:
+        """这条消息是不是机器人自己发的（双待下两条通道各自算自己）。
+
+        发送者可能是 openid 字符串或 QQ 数字：统一按字符串比较，机器人账号本身
+        仍是真实 QQ 数字，不受 openid 化影响。
+        """
+        user_text = identity_text(getattr(message, "user_id", None))
+        if not user_text:
+            return False
+        self_text = identity_text(getattr(message, "self_id", None))
+        if self_text and user_text == self_text:
             return True
-        return bool(user_id) and user_id in self.all(config, accounts)
+        return user_text in {str(account) for account in self.all(config, accounts)}
 
     def is_bot_id(self, user_id: Any, channel: str | None = None, config: Any = None) -> bool:
-        uid = _to_int(user_id)
-        if not uid:
+        text = identity_text(user_id)
+        if not text:
             return False
-        if uid in self.all(config):
+        if text in {str(account) for account in self.all(config)}:
             return True
-        return bool(channel) and uid == self.for_channel(channel, config)
+        if not channel:
+            return False
+        return text == str(self.for_channel(channel, config))
 
 
 _singleton = BotAccounts()
@@ -185,13 +201,20 @@ def is_bot_id(user_id: Any, channel: str | None = None, config: Any = None) -> b
 
 
 def id_label(value: Any) -> str:
-    """用户 ID 的展示前缀：真实 QQ 号用 QQ，官方合成 ID 用 ID（群用 group_label）。"""
-    return "QQ" if looks_like_real_qq(value) else "ID"
+    """用户 ID 的展示前缀：真实 QQ 号用 QQ，openid 原样标 openid，旧合成号用 ID。"""
+    text = identity_text(value)
+    if not text:
+        return "ID"
+    if looks_like_real_qq(text):
+        return "QQ"
+    if not text.isdigit():
+        return "openid"
+    return "ID"
 
 
 def display_user_id(value: Any) -> str:
-    """把用户 ID 渲染成易读标签（QQ:123 / ID:9000…）。"""
-    text = str(value or "").strip()
+    """把用户 ID 渲染成易读标签（QQ:123 / openid:<完整 openid> / ID:9000…）。"""
+    text = identity_text(value)
     if not text:
         return ""
     return f"{id_label(text)}:{text}"
@@ -239,13 +262,20 @@ def infer_channel(value: Any, *, kind: str | None = None) -> str:
 
 
 def group_label(value: Any) -> str:
-    """群 ID 的展示前缀：真实 QQ 群号用 群号，官方合成 ID 用 群 ID。"""
-    return "群号" if looks_like_real_group_number(value) else "群 ID"
+    """群 ID 的展示前缀：真实 QQ 群号用 群号，openid 原样标 openid，旧合成号用 群 ID。"""
+    text = identity_text(value)
+    if not text:
+        return "群 ID"
+    if looks_like_real_group_number(text):
+        return "群号"
+    if not text.isdigit():
+        return "openid"
+    return "群 ID"
 
 
 def display_group_id(value: Any) -> str:
-    """把群 ID 渲染成易读标签（群号:123456 / 群 ID:9000…）。"""
-    text = str(value or "").strip()
+    """把群 ID 渲染成易读标签（群号:123456 / openid:<完整 openid> / 群 ID:9000…）。"""
+    text = identity_text(value)
     if not text:
         return ""
     return f"{group_label(text)}:{text}"
@@ -263,6 +293,7 @@ __all__ = [
     "get_bot_accounts",
     "group_label",
     "id_label",
+    "identity_text",
     "infer_channel",
     "is_bot_id",
     "is_bot_message",

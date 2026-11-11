@@ -65,12 +65,14 @@ class _MiscToolsMixin:
     async def _execute_poke_user(self, args: dict) -> str:
         if self._poke_user is None:
             return "错误：poke_user 处理器未配置"
+        raw_target = args.get("target_qq", args.get("user_id"))
         try:
-            target_qq = int(args.get("target_qq", args.get("user_id", -1)))
+            # 戳一戳是 QQ 协议能力：目标必须是真实 QQ 号（openid 无法戳）
+            target_qq = int(str(raw_target).strip())
         except (ValueError, TypeError):
-            return "错误：target_qq 必须为整数"
+            return "错误：target_qq 必须为真实 QQ 号"
         if target_qq <= 0:
-            return f"错误：target_qq 无效，收到 {args.get('target_qq', args.get('user_id'))}"
+            return f"错误：target_qq 无效，收到 {raw_target}"
         return await self._poke_user(user_id=target_qq)
 
     def _define_wait_tool(self, tools: list[ToolDefinition]) -> None:
@@ -125,8 +127,8 @@ class _MiscToolsMixin:
                     {
                         "properties": {
                             "target_qq": {
-                                "type": "integer",
-                                "description": "要戳一戳的目标 QQ 号。QQ 号见群友列表或私聊资料。",
+                                "type": ["string", "integer"],
+                                "description": "要戳一戳的目标真实 QQ 号。QQ 号见群友列表或私聊资料；openid 不能戳。",
                             },
                         },
                         "required": ["target_qq"],

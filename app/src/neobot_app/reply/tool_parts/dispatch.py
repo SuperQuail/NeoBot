@@ -107,7 +107,11 @@ class _DispatchMixin:
             from neobot_app.agent_tools.contracts import ToolContext
             lookup = getattr(self._skill_manager, "get", None)
             shared = lookup("agent_tools") if callable(lookup) else None
-            if isinstance(shared, AgentToolsSkill) and self._conv_kind in {"group", "private"} and str(self._conv_id).isdigit():
+            if (
+                isinstance(shared, AgentToolsSkill)
+                and self._conv_kind in {"group", "private"}
+                and str(self._conv_id or "").strip()
+            ):
                 flow = f"{self._conv_kind}:{self._conv_id}"
                 context = ToolContext(owner=f"{flow}:main", chat_flow_id=flow)
                 safe = {"cancel", "send_reply", "split_reply", "wait", "send_long_reply",
@@ -210,7 +214,7 @@ class _DispatchMixin:
         from neobot_app.agent_tools.contracts import ToolContext
         from neobot_app.agent_tools.invocation import CURRENT_INVOCATION, ToolInvocation
 
-        if self._conv_kind not in {"group", "private"} or not str(self._conv_id).isdigit():
+        if self._conv_kind not in {"group", "private"} or not str(self._conv_id or "").strip():
             from neobot_app.skills.agent_tools_skill import AgentToolsSkill
             lookup = getattr(self._skill_manager, "get", None)
             shared = lookup("agent_tools") if callable(lookup) else None

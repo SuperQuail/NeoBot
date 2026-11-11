@@ -61,7 +61,7 @@ _QQ_FIELDS = (
     "qq_portal_host",
 )
 _ONEBOT_FIELDS = ("reverse_ws_host", "reverse_ws_port", "reverse_ws_access_token")
-#: OneBot 形状的查询便捷方法：必须按事件来源通道选后端，不能固定委托 OneBot。
+#: OneBot 形状的便捷方法：必须按事件来源通道/目标 ID 形态选后端，不能固定委托 OneBot。
 _CHANNEL_METHODS = frozenset(
     {
         "get_friend_list",
@@ -73,6 +73,8 @@ _CHANNEL_METHODS = frozenset(
         "get_group_msg_history",
         "get_msg",
         "get_forward_msg",
+        "send_private_msg",
+        "send_group_msg",
     }
 )
 #: 查询方法失败时用哪种响应模型返回明确 failed（get_forward_msg 返回原始 dict）。
@@ -86,9 +88,24 @@ _CHANNEL_METHOD_RESPONSES: Dict[str, Any] = {
     "get_group_msg_history": response.GetHistoryMsgListResponse,
     "get_msg": response.GetSignalMsgResponse,
     "get_forward_msg": None,
+    "send_private_msg": response.SendMsgResponse,
+    "send_group_msg": response.SendMsgResponse,
 }
+
+#: 官方通道的本地 ID（openid）永远不是纯数字；旧 13 位合成号也按官方处理。
+_OFFICIAL_ID_MIN_DIGITS = 13
 #: 事件处理期（含其派生的任务）的来源通道；call_api 未显式指定时跟随它。
 _EVENT_CHANNEL: ContextVar[Optional[str]] = ContextVar("neobot_event_channel", default=None)
+
+
+def _looks_official_target(value: Any) -> bool:
+    """目标 ID 形态判断：非纯数字 openid，或 13 位及以上的旧官方合成号。"""
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if not text.isdigit():
+        return True
+    return len(text) >= _OFFICIAL_ID_MIN_DIGITS
 
 
 def _normalize_channel(channel: Any) -> Optional[str]:
@@ -624,7 +641,14 @@ class SwitchableAdapter:
 
     def _preferred_channel(self, conversation: Optional[ConversationRef]) -> str:
         # 只在官方通道出现过消息时用官方；两条都出现或从未出现都走默认通道。
-        if conversation is not None and self.channels_for_conversation(conversation) == ("official",):
+        if conversation is None:
+            return _DEFAULT_CHANNEL
+        channels = self.channels_for_conversation(conversation)
+        if channels == ("official",):
+            return "official"
+        # 没见过消息的官方 openid 会话（历史/后台任务）按 ID 形态兜底到官方：
+        # openid 非纯数字，旧 13 位合成号也属于官方。
+        if not channels and _looks_official_target(conversation.id):
             return "official"
         return _DEFAULT_CHANNEL
 
@@ -681,6 +705,12 @@ class SwitchableAdapter:
             requested = str(channel or "").strip().casefold()
             if requested in ("", "auto"):
                 requested = current_channel()
+            if not requested and name in {"send_private_msg", "send_group_msg"}:
+                # 无事件上下文（后台任务/插件直发）时按目标 ID 形态选通道：
+                # 官方 openid / 旧合成号 → official，OneBot 数字号 → onebot。
+                target = args[0] if args else kwargs.get("user_id", kwargs.get("group_id"))
+                if _looks_official_target(target):
+                    requested = "official"
             selected, error = self._select_channel(None, requested)
             if error is not None:
                 return self._method_failure(name, error)

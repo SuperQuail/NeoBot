@@ -25,6 +25,9 @@ class ChatFlowsMixin:
         """解析聊天流身份：优先 split(pipeline_key)，其次回落记录里的 conversation_kind/id。
 
         不依赖 record_prompt 是否被调用过（features/spec(3) §4.5）。
+
+        chat_flow_id 约定是 "kind:id"；官方通道的 id 是 openid 字符串，可能自带
+        分隔符，所以只按**第一个**冒号切分，其余部分原样留给 conversation_id。
         """
         key = str(pipeline_key or "").strip()
         kind = ""

@@ -801,7 +801,9 @@ class DashboardServer:
         if data:
             info["app_name"] = str(data.get("app_name") or "")
             info["app_version"] = str(data.get("app_version") or "")
-        if info["user_id"]:
+        # qlogo 只接受真实 QQ 号：官方通道的 ID 可能是 openid 字符串，
+        # 拿去请求头像必然 404 且会把 ID 发到第三方。
+        if _is_numeric_id(info["user_id"]):
             info["avatar_url"] = f"https://q1.qlogo.cn/g?b=qq&nk={info['user_id']}&s=640"
         return info
 
@@ -888,6 +890,12 @@ class DashboardServer:
             "listen_host": self.config.host,
             "base_path": self.base_path,
         }
+
+
+def _is_numeric_id(value: Any) -> bool:
+    """纯数字才是真实 QQ 号（官方 openid 是字符串，不能拿去请求 qlogo）。"""
+    text = str(value or "").strip()
+    return text.isdigit() and text != "0"
 
 
 def _unwrap(payload: Any) -> dict[str, Any]:

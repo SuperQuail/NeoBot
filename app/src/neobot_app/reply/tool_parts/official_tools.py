@@ -11,9 +11,17 @@ from neobot_app.reply.tool_parts.common import _tool_def
 
 _CONTENT_LIMIT = 4000
 _TAG_RE = re.compile(r"<[^>]*>")
-_AT_USER_RE = re.compile(r'<qqbot-at-user\s+id="(\d{13})"\s*/>')
+_AT_USER_RE = re.compile(r'<qqbot-at-user\s+id="([A-Za-z0-9_-]{1,128})"\s*/>')
 _AT_EVERYONE_RE = re.compile(r"<qqbot-at-everyone\s*/>")
 _CMD_RE = re.compile(r"<qqbot-cmd-(?:enter|input)\s+[^>]*/>")
+
+
+def _id_param(value: object) -> int | str:
+    """官方 target ID：openid 原样字符串；旧版合成号/数字保留 int（兼容旧适配器）。"""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return int(text) if text.isdigit() else text
 
 
 def _validate_markdown_tags(content: str) -> str | None:
@@ -41,7 +49,7 @@ class _OfficialToolsMixin:
                 "（send_long_reply 把 Markdown 渲染成图片）不是一回事。普通 send_reply 只发纯文本，"
                 "不会渲染 Markdown，也不能真正 @ 用户。只有需要标题、列表、引用、链接、图片、"
                 "内嵌 @ 或指令按钮时才用本工具。支持官方内嵌标签："
-                '<qqbot-at-user id="13位合成ID" />、<qqbot-at-everyone />、'
+                '<qqbot-at-user id="用户openid" />、<qqbot-at-everyone />、'
                 '<qqbot-cmd-enter text="..." />、<qqbot-cmd-input text="..." show="..." />；'
                 "群聊不支持 qqbot-cmd-enter。表格和代码块官方不支持，请改用 send_long_reply。"
                 "本工具一条消息发完，不切分、不降级；发送失败会直接返回错误，请修正参数或告知用户无法发送。",
@@ -74,8 +82,8 @@ class _OfficialToolsMixin:
                             "enum": ["robot_status", "ban", "unban", "kick", "approve_join", "reject_join"],
                             "description": "要执行的管理动作。",
                         },
-                        "group_id": {"type": "integer", "description": "官方群的合成群 ID（13 位数字）。"},
-                        "user_id": {"type": "integer", "description": "目标用户的合成 ID（13 位数字）；robot_status 不需要。"},
+                        "group_id": {"type": ["string", "integer"], "description": "官方群的本地群 ID（openid 字符串）。"},
+                        "user_id": {"type": ["string", "integer"], "description": "目标用户的本地 ID（openid 字符串）；robot_status 不需要。"},
                         "duration_seconds": {"type": "integer", "description": "禁言时长秒数；ban 必填，最长 30 天。"},
                         "flag": {"type": "string", "description": "入群申请事件里的 flag（join_request_id）；审批时传。"},
                         "reason": {"type": "string", "description": "拒绝理由；reject_join 可选。"},
@@ -92,16 +100,15 @@ class _OfficialToolsMixin:
         action = str(args.get("action") or "").strip()
         if action not in {"robot_status", "ban", "unban", "kick", "approve_join", "reject_join"}:
             return "错误：action 必须是 robot_status/ban/unban/kick/approve_join/reject_join"
-        try:
-            group_id = int(args.get("group_id"))
-        except (TypeError, ValueError):
-            return "错误：group_id 必须是官方合成群 ID 整数"
+        group_id = _id_param(args.get("group_id"))
+        if not group_id:
+            return "错误：缺少 group_id（官方群 openid）"
         params: dict[str, object] = {"group_id": group_id}
         if action != "robot_status":
-            try:
-                params["user_id"] = int(args.get("user_id"))
-            except (TypeError, ValueError):
-                return "错误：user_id 必须是官方合成用户 ID 整数"
+            user_id = _id_param(args.get("user_id"))
+            if not user_id:
+                return "错误：缺少 user_id（目标用户 openid）"
+            params["user_id"] = user_id
         if action == "ban":
             try:
                 params["duration"] = int(args.get("duration_seconds"))

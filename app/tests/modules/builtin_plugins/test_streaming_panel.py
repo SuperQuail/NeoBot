@@ -57,7 +57,7 @@ async def test_subscription_service_preserves_group_defaults_and_existing_switch
 async def test_panel_uses_live_group_directory_and_rejects_forged_group(state):
     plugin = surface(state)
     groups = await invoke(plugin, "groups", permission="read")
-    assert groups == {"items": [{"group_id": 20001, "name": "演示交流组", "bot_id": "10001"}]}
+    assert groups == {"items": [{"group_id": "20001", "name": "演示交流组", "bot_id": "10001"}]}
     with pytest.raises(ActionError) as error:
         await invoke(plugin, "create", {"group_id": 99999, "target": "1001"})
     assert error.value.code == "group_unavailable"
@@ -244,7 +244,7 @@ async def test_chat_and_panel_keep_the_same_group_defaults_and_existing_switches
 
 def group_settings_values(**changes):
     return {
-        "group_id": 20001,
+        "group_id": "20001",
         "card_style": "neon",
         "ai_reply_live": False,
         "ai_reply_live_end": True,
@@ -400,7 +400,9 @@ async def test_group_settings_get_requires_read_permission(state):
 
 
 @pytest.mark.parametrize("action", ["groups.settings.get", "groups.settings.update"])
-@pytest.mark.parametrize("group_id", [0, -1, True, "20001", 20001.0, None])
+#: 正整数/非空文本是合法 ID（数字型 query 参数会被页面编码成字符串）；
+#: 其余（0、负数、bool、float、None）必须拒绝，不能悄悄转成 "0"/"20001.0"。
+@pytest.mark.parametrize("group_id", [0, -1, True, 20001.0, None, "", "   "])
 async def test_group_settings_rejects_non_positive_or_coerced_group_ids(state, action, group_id):
     values = group_settings_values(group_id=group_id) if action.endswith("update") else {"group_id": group_id}
     with pytest.raises(ActionError) as error:

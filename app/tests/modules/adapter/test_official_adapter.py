@@ -424,8 +424,8 @@ async def test_onebot_shaped_methods_and_core_proxy(workdir, monkeypatch) -> Non
     stranger = await adapter.get_stranger_info(123)
     assert stranger.status == "failed"
 
-    # 未在官方事件中出现过的会话反查不到 openid，发送应明确失败。
-    failed = await adapter.send_group_msg(9_000_000_000_001, "你好")
+    # 空目标解析不出 openid，发送应明确失败。
+    failed = await adapter.send_group_msg("", "你好")
     assert failed.status == "failed"
 
     await adapter.stop()
@@ -478,8 +478,8 @@ async def test_group_info_and_member_apis_use_official_endpoints(workdir, monkey
     _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
     adapter = _make_adapter(workdir, [])
     await adapter.start()
-    group_id = adapter.identity.group_id("group-openid")
-    member_id = adapter.identity.user_id("member-openid")
+    group_id = "group-openid"
+    member_id = "member-openid"
 
     info = await adapter.call_api("get_group_info", {"group_id": group_id})
     assert info["status"] == "ok"
@@ -514,7 +514,7 @@ async def test_group_member_api_permission_error_is_explicit(workdir, monkeypatc
     adapter = _make_adapter(workdir, [])
     await adapter.start()
     _FakeApi.instances[0].fail_members = OfficialApiError("应用无接口访问权限", code=11253)
-    group_id = adapter.identity.group_id("group-openid")
+    group_id = "group-openid"
 
     result = await adapter.call_api("get_group_member_list", {"group_id": group_id})
 

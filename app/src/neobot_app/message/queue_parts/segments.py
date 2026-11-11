@@ -9,6 +9,8 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
+from neobot_app.user_identity import display_user_id
+
 from .common import QueueMessage
 from .helpers import _safe_int
 
@@ -163,12 +165,15 @@ class _QueueSegmentMixin:
     @staticmethod
     def _format_at_segment(data: Dict[str, object]) -> str:
         qq = data.get("qq", "未知")
-        if qq == "all":
+        if str(qq) == "all":
             return "@全体成员"
+        text = str(qq)
+        # 身份全量展示：真实 QQ 号 QQ:<号>，官方 openid openid:<完整值>
+        label = display_user_id(text) if text and text != "未知" else f"QQ:{qq}"
         name = data.get("name")
         if name:
-            return f"@{name}(QQ:{qq})"
-        return f"@QQ:{qq}"
+            return f"@{name}({label})"
+        return f"@{label}"
 
     @staticmethod
     def _normalize_inline_text(text: str) -> str:
