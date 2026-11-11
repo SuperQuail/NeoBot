@@ -585,3 +585,12 @@ def _inbound_c2c() -> dict:
             "author": {"user_openid": "user-openid-1", "username": "Alice"},
         },
     }
+
+
+def test_supports_action_capability_table(workdir) -> None:
+    adapter = adapter_module.OfficialAdapter(
+        OfficialSettings(app_id="", client_secret="", data_dir=workdir), data_dir=workdir
+    )
+    assert adapter.supports_action("set_group_ban") is True
+    assert adapter.supports_action("delete_msg") is True
+    assert adapter.supports_action("get_forward_msg") is False

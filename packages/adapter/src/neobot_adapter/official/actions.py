@@ -21,6 +21,34 @@ from neobot_adapter.official.media import api_data
 from neobot_adapter.official.send import OfficialApiError
 
 _SEND_ACTIONS = frozenset({"send_group_msg", "send_private_msg", "send_msg"})
+#: 官方适配器实际实现（或明确失败返回）的 action 集合，供插件/宿主查询能力。
+SUPPORTED_ACTIONS = frozenset(
+    {
+        "send_group_msg",
+        "send_private_msg",
+        "send_msg",
+        "get_login_info",
+        "get_version_info",
+        "get_status",
+        "get_msg",
+        "delete_msg",
+        "get_group_info",
+        "get_group_robot_status",
+        "get_group_member_list",
+        "get_group_member_info",
+        "set_group_ban",
+        "set_group_kick",
+        "set_group_add_request",
+        "set_group_whole_ban",
+        "set_group_leave",
+        "get_robot_uin_range",
+    }
+)
+
+
+def supports_action(name: str) -> bool:
+    """该 action 在官方适配器里是否有明确实现/明确失败语义。"""
+    return str(name or "").strip() in SUPPORTED_ACTIONS
 _PROTOCOL_VERSION = "qq-official-v2"
 #: 官方撤回只允许 2 分钟内的消息。
 _REVOKE_LIMIT_SECONDS = 120.0

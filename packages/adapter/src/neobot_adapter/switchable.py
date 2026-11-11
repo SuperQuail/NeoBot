@@ -402,6 +402,14 @@ class SwitchableAdapter:
 
     # ── 通道切换 ────────────────────────────────────────────────────
 
+    def supports_action(self, action: str, channel: Optional[str] = None) -> bool:
+        """查询某通道是否明确支持某个 action；无能力信息时返回 False。"""
+        name = str(action or "").strip()
+        target = _normalize_channel(channel) or current_channel() or _DEFAULT_CHANNEL
+        backend = self._backends.get(target)
+        checker = getattr(backend, "supports_action", None) if backend is not None else None
+        return bool(checker(name)) if callable(checker) else False
+
     async def switch(self, mode: str) -> tuple[bool, str]:
         """切到指定模式（含 dual）；失败时旧后端会重新启动并保持可用。"""
         target = str(mode or "").strip().casefold()

@@ -404,7 +404,13 @@ class CommandService:
             kind="group" if kind == "group" else "private", id=str(conv_id)
         )
         try:
-            await self._adapter.send(conv_ref, segments)
+            from neobot_app.reply.sender import send_response_ok
+
+            result = await self._adapter.send(conv_ref, segments)
+            if not send_response_ok(result):
+                message = getattr(result, "message", "") or getattr(result, "wording", "")
+                self._log(f"命令图片发送失败: {message or '未知错误'}")
+                return False
             return True
         except Exception as exc:
             self._log(f"命令图片发送失败: {exc}")

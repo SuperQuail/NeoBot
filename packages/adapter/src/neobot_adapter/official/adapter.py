@@ -274,6 +274,9 @@ class OfficialAdapter:
         self._bind_state = BindState()
         await self.stop()
 
+    def supports_action(self, action: str) -> bool:
+        return actions.supports_action(action)
+
     async def ensure_robot_identity(self) -> None:
         """缓存机器人自身 uin/昵称（get_login_info 与群聊 at 段都要用）。"""
         if self._robot_uin or self._api is None:
