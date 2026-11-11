@@ -2,4 +2,4 @@
 
 from neobot_modloader import Plugin
 
-plugin = Plugin("relic", version="0.1.0", description="官方插件骨架（功能规划中）")
+plugin = Plugin("relic", version="0.1.0", description="为你的QQ机器人提供增强虚拟人生，但会增加一定开销")
