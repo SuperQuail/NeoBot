@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -346,21 +345,19 @@ def test_command_service_bot_account_uses_message_self_id() -> None:
     assert service._bot_account(None) == 0
 
 
-def test_willing_official_platform_uses_message_channel() -> None:
-    """官方性按消息通道查 detector.profile_for；无通道回退主档。"""
+def test_willing_official_channel_does_not_imply_mention() -> None:
+    """官方通道不再按通道无条件判 @：无 at 段不算，at 到 bot 才算。"""
     service = object.__new__(WillingService)
     service._config = _config()
-    service._bot_detector = SimpleNamespace(
-        profile=SimpleNamespace(kind="unofficial"),
-        profile_for=lambda channel: {
-            "onebot": SimpleNamespace(kind="unofficial"),
-            "official": SimpleNamespace(kind="official"),
-        }.get(channel, SimpleNamespace(kind="unknown")),
-    )
+    service._bot_detector = None
 
-    assert service._is_official_platform(_group(50, user_id=USER_ACCOUNT, channel="official")) is True
-    assert service._is_official_platform(_group(51, user_id=USER_ACCOUNT, channel="onebot")) is False
-    assert service._is_official_platform(_group(52, user_id=USER_ACCOUNT)) is False
+    assert service.is_at_mentioned(_group(50, user_id=USER_ACCOUNT, channel="official")) is False
+    assert (
+        service.is_at_mentioned(
+            _group(51, user_id=USER_ACCOUNT, channel="official", at=ONEBOT_ACCOUNT)
+        )
+        is True
+    )
 
 
 def test_willing_mentioned_bot_prefers_message_self_id() -> None:

@@ -527,24 +527,15 @@ class WillingService:
         return 1.0
 
     def is_at_mentioned(self, message: ChatMessage) -> bool:
-        """检查机器人是否被 @提及，且配置了被@必回。"""
+        """检查机器人是否被 @提及，且配置了被@必回。
+
+        官方通道只有群 @ 事件（GROUP_AT_MESSAGE_CREATE）由适配器补上指向机器人
+        self_id 的 at 段；群全量消息（GROUP_MESSAGE_CREATE）没有 @ 时不得当成 @，
+        否则每条群消息都会触发必回。账号解析完成前用消息级 self_id 兜底。
+        """
         if not getattr(self._config.chat, "at_mention_guaranteed_reply", True):
             return False
-        # 官方群事件只会推送 @ 机器人的消息，没有 at 段也按被 @ 处理；账号解析完成前
-        # bot.account 还没填，at 段对不上，走这段兜住
-        if isinstance(message, GroupMessage) and self._is_official_platform(message):
-            return True
         return self._mentioned_bot(message)
-
-    def _is_official_platform(self, message: Any = None) -> bool:
-        """消息所在通道是否为 QQ 官方机器人协议；无通道信息时回退主档。"""
-        detector = self._bot_detector
-        if detector is None:
-            return False
-        channel = getattr(message, "neobot_channel", None)
-        lookup = getattr(detector, "profile_for", None)
-        profile = lookup(channel) if callable(lookup) else getattr(detector, "profile", None)
-        return getattr(profile, "kind", None) == "official"
 
     def _mentioned_bot(self, message: ChatMessage) -> bool:
         target = str(bot_account_for_message(message, self._config))

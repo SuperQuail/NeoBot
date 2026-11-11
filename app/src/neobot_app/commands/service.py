@@ -171,9 +171,10 @@ class CommandService:
         at_qqs = self._collect_at_qqs(message)
         text = self._message_text(message)
 
-        # 触发条件:群聊需被 @bot（官方群事件只在被 @ 时推送，见 willing 同款判定）
+        # 触发条件:群聊需被 @bot（只认显式 at 段；官方群全量消息没有 @ 时
+        # 不能当命令触发，只有 @ 事件/正文 @bot 标记会被适配器补成 at 段）
         if kind == "group":
-            if not self._is_command_mention(message, bot_account, at_qqs):
+            if not self._is_command_mention(bot_account, at_qqs):
                 return CommandHandleResult(consumed=False)
         elif kind not in ("private", "friend"):
             return CommandHandleResult(consumed=False)
@@ -271,11 +272,9 @@ class CommandService:
         return result
 
     @staticmethod
-    def _is_command_mention(message: Any, bot_account: int, at_qqs: set[str]) -> bool:
-        """群聊命令是否 @ 了 bot：显式 at 优先，官方通道群事件自身即 @ 事件。"""
-        if identity_text(bot_account) in at_qqs:
-            return True
-        return str(getattr(message, "neobot_channel", "") or "").strip() == "official"
+    def _is_command_mention(bot_account: int, at_qqs: set[str]) -> bool:
+        """群聊命令是否 @ 了 bot：只认显式 at 段。"""
+        return identity_text(bot_account) in at_qqs
 
     @staticmethod
     def _message_text(message: Any) -> str:
