@@ -140,6 +140,11 @@ def _official_platform_note(_ctx: PromptContext) -> str:
     return (
         "<官方机器人限制>\n"
         "你通过 QQ 官方机器人协议接入，只能被动回复收到的消息：不能主动私聊，也不能主动加好友或入群。\n"
+        "普通 send_reply 只发纯文本，不要在其中写 Markdown，也不能真正 @ 用户。\n"
+        "需要标题、列表、引用、链接、真实 @ 或指令按钮时，必须显式调用 send_official_markdown，"
+        "发送的是 QQ 官方「Markdown 卡片」；需要把 Markdown 渲染成图片时用 send_long_reply，"
+        "那是我们自己的「Markdown 图片」，不是官方卡片。\n"
+        "官方卡片里 @ 用户写 <qqbot-at-user id=\"合成ID\" />，@全体写 <qqbot-at-everyone />。\n"
         "群成员列表、好友列表、群资料等接口多数不可用，拿不到的信息按不知道处理，不要反复重试。\n"
         "不要调用群管理（禁言、踢人、撤回他人消息、改群名等）和好友管理（加好友、删好友、改备注等）动作。\n"
         "你看到的用户/群 ID 是开放平台的合成 ID，不是真实 QQ 号；不要拿它去搜索、加好友或拼 QQ 资料链接。\n"

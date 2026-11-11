@@ -1,6 +1,6 @@
-# 官方机器人 Markdown 工具设计
+# 官方机器人 Markdown 卡片工具设计
 
-> 状态：设计稿（未实现）　分支：`fix/official-review`　范围：官方 QQ 机器人通道（`official`），不含频道/子频道。
+> 状态：设计稿（工具已落地；术语：本工具发送的是「官方 Markdown 卡片」，不是把 Markdown 渲染成图片的「Markdown 图片」（send_long_reply））　分支：`fix/official-review`　范围：官方 QQ 机器人通道（`official`），不含频道/子频道。
 > 参考：官方 [发送群消息](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_openid_messages.post.html)、
 > [发送单聊消息](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_users_user_openid_messages.post.html)、
 > [文本交互](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/trans/text-chain.html)、

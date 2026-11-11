@@ -139,19 +139,25 @@ def _atomic_write(path: Path, text: str) -> None:
 
 
 class MessageIdMap:
-    """官方 msg_id ↔ 合成 int 的 LRU。
+    """官方 msg_id ↔ 合成 int 的 LRU（附带撤回上下文与引用索引）。
 
     官方事件里的 message_id 是字符串，而 OneBot 形状的响应/工具参数用 int；
-    只保留最近一段映射，避免长跑进程无限吃内存。
+    只保留最近一段映射，避免长跑进程无限吃内存。引用发送需要 REFIDX 索引
+    （事件里的 msg_idx / 发送响应里的 ext_info.ref_idx），撤回需要「群/单聊 +
+    openid + 时间」定位端点，因此都挂在同一个 LRU 上一起淘汰。
     """
 
     def __init__(self, max_size: int = 2000) -> None:
         self._by_official: OrderedDict[str, int] = OrderedDict()
         self._by_synthetic: dict[int, str] = {}
+        #: 合成号 -> {"kind": "group"/"private", "openid": str, "at": epoch 秒}
+        self._contexts: dict[int, dict[str, Any]] = {}
+        #: 合成号 -> 引用索引（REFIDX_...）
+        self._references: dict[int, str] = {}
         self._max_size = max(1, int(max_size))
         self._next_synthetic = 1
 
-    def next(self, official_id: str) -> int:
+    def next(self, official_id: str, *, context: dict[str, Any] | None = None) -> int:
         """官方 msg_id -> 合成 int；同一官方 id 稳定返回同一个合成号。"""
         key = str(official_id or "").strip()
         if not key:
@@ -159,14 +165,20 @@ class MessageIdMap:
         known = self._by_official.get(key)
         if known is not None:
             self._by_official.move_to_end(key)
+            if context:
+                self._contexts[known] = dict(context)
             return known
         synthetic = self._next_synthetic
         self._next_synthetic += 1
         self._by_official[key] = synthetic
         self._by_synthetic[synthetic] = key
+        if context:
+            self._contexts[synthetic] = dict(context)
         while len(self._by_official) > self._max_size:
             _, evicted = self._by_official.popitem(last=False)
             self._by_synthetic.pop(evicted, None)
+            self._contexts.pop(evicted, None)
+            self._references.pop(evicted, None)
         return synthetic
 
     def official(self, synthetic: int) -> str | None:
@@ -175,3 +187,17 @@ class MessageIdMap:
         if official_id is not None:
             self._by_official.move_to_end(official_id)
         return official_id
+
+    def context(self, synthetic: int) -> dict[str, Any] | None:
+        """合成 int -> 发送/接收上下文；用于撤回定位。"""
+        return self._contexts.get(int(synthetic))
+
+    def remember_reference(self, synthetic: int, ref_idx: str) -> None:
+        """记录该消息的引用索引，供之后 message_reference 使用。"""
+        text = str(ref_idx or "").strip()
+        if text:
+            self._references[int(synthetic)] = text
+
+    def reference(self, synthetic: int) -> str | None:
+        """合成 int -> 引用索引（REFIDX_...）；没有则返回 None。"""
+        return self._references.get(int(synthetic))

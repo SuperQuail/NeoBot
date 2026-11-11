@@ -199,6 +199,9 @@ class OfficialAdapter:
     def get_recent_message(self, message_id: int) -> dict[str, Any] | None:
         return self._recent_messages.get(int(message_id))
 
+    def forget_recent_message(self, message_id: int) -> None:
+        self._recent_messages.pop(int(message_id), None)
+
     async def start(self) -> None:
         """有凭据就直接连；没有凭据则后台拉起扫码绑定，立即返回。"""
         if self._started:
@@ -441,7 +444,6 @@ class OfficialAdapter:
         self._api = OfficialApi(self._settings, self._token_provider, self._logger)
         self._sender = MessageSender(
             api=self._api,
-            settings=self._settings,
             identity=self._identity,
             message_ids=self._message_ids,
             passive=self._passive,

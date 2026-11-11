@@ -20,6 +20,7 @@ from neobot_app.user_identity import (
     link_user_qq,
     synthetic_for_group,
     qq_for_user,
+    trusted_group_number_for,
     trusted_qq_for_user,
     unlink_group_number,
     unlink_user_qq,
@@ -107,6 +108,8 @@ def test_group_mapping_and_display():
     assert group_number_for(SYNTHETIC_GROUP) == REAL_GROUP
     assert display_group_id(SYNTHETIC_GROUP) == f"群号:{REAL_GROUP}"
     assert group_label(SYNTHETIC_GROUP) == "群号"
+    # agent 写入的群映射只影响展示，不参与 ACL 判定
+    assert trusted_group_number_for(SYNTHETIC_GROUP) is None
     assert display_group_id(8000000000003) == "群 ID:8000000000003"
     assert group_label(8000000000003) == "群 ID"
     assert unlink_group_number(SYNTHETIC_GROUP)[0]

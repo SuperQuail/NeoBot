@@ -4,7 +4,7 @@ covers:
   - app/src/neobot_app/willing/
   - app/src/neobot_app/runtime/event_pipeline.py
 verified_against: d525a5b
-verified_hash: b4d570025315
+verified_hash: f9309be9a2f7
 ---
 
 # 02b 回复意愿：概率到底怎么算出来的（逐步精确）

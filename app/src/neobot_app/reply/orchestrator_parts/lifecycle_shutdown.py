@@ -6,6 +6,11 @@ import inspect
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+
+from neobot_contracts.models import ConversationRef
+
+from neobot_adapter.switchable import channel_context
+
 from ._runtime import asyncio
 
 
@@ -18,10 +23,15 @@ class LifecycleShutdownMixin:
         content: str,
         manager_name: str = "background_drawing",
         reasons: list[str] | None = None,
+        channel: str | None = None,
     ) -> Any | None:
         """程序化启动回复管线，用于后台绘图等系统通知。
 
         当绘图完成但对应聊天流无活跃管线时，由 BackgroundDrawingManager 调用。
+
+        channel 是合成事件的来源通道（onebot / official）：后台/定时/跨聊天任务
+        不经过事件分发、拿不到派发上下文，必须在这里钉住目标会话的通道，后续
+        提示词、官方能力限制与 API 查询才按同一条通道走。
         """
         if self._closed:
             return None
@@ -59,6 +69,8 @@ class LifecycleShutdownMixin:
             )
             return None
 
+        resolved_channel = self._background_reply_channel(kind, conversation_id, channel)
+
         # 将通知内容推入消息队列作为触发消息
         @dataclass
         class _SyntheticSender:
@@ -82,8 +94,9 @@ class LifecycleShutdownMixin:
             message_seq: int = 0
             target_id: int = 0
             temp_source: int = 0
+            neobot_channel: str | None = None
 
-        synthetic_msg = _SyntheticMessage()
+        synthetic_msg = _SyntheticMessage(neobot_channel=resolved_channel)
 
         decision = WillingDecision(
             manager_name=manager_name,
@@ -92,14 +105,44 @@ class LifecycleShutdownMixin:
             reasons=tuple(reasons) if reasons else ("后台绘图任务完成通知",),
         )
 
-        return self.start_reply(
-            message=synthetic_msg,
-            queue=queue,
-            queue_key=queue_key,
-            decision=decision,
-            skip_cooldown=True,
-            background_content=content,
-        )
+        with channel_context(resolved_channel):
+            return self.start_reply(
+                message=synthetic_msg,
+                queue=queue,
+                queue_key=queue_key,
+                decision=decision,
+                skip_cooldown=True,
+                background_content=content,
+            )
+
+    def _background_reply_channel(self, kind: str, conversation_id: str, channel: str | None) -> str | None:
+        """合成事件的来源通道：显式 > 目标会话历史 > ID 规模推断。
+
+        推断只在 QQ 会话（group / private）上做：官方协议的会话 ID 是 13 位合成
+        号，OneBot 的真实 QQ 号 <= 11 位、群号 <= 12 位。本地/插件等无通道适配器
+        没有 active_channels，返回 None 保持旧行为。
+        """
+        requested = str(channel or "").strip().casefold()
+        if requested in ("onebot", "official"):
+            return requested
+        adapter = getattr(self, "_adapter", None)
+        if getattr(adapter, "active_channels", None) is None:
+            return None
+        target = str(conversation_id or "").strip()
+        if kind not in ("group", "private") or not target:
+            return None
+        seen = getattr(adapter, "channels_for_conversation", None)
+        if callable(seen):
+            try:
+                channels = tuple(str(item) for item in seen(ConversationRef(kind, target)))
+            except Exception:
+                channels = ()
+            if len(channels) == 1:
+                return channels[0]
+        if not target.isdigit():
+            return None
+        real_max_digits = 12 if kind == "group" else 11
+        return "onebot" if len(target) <= real_max_digits else "official"
 
     async def shutdown(self) -> None:
         self._closed = True

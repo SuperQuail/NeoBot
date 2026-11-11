@@ -10,8 +10,8 @@ API 可以互转（官方「唯一身份机制」：不同 AppID 的 openid 都�
 
 生效范围：
 - 提示词/资料/历史里用户显示为 QQ:<真实号>、群显示为 群号:<真实群号>；
-- 管理员名单/权限只认管理员命令写入的 trusted 映射；
-- 好友/群黑白名单、回复黑名单按真实 QQ 号/群号识别；
+- 管理员名单/权限、好友/群黑白名单、回复黑名单只认管理员命令写入的 trusted
+  映射；agent 工具写入的映射只影响展示与身份提示（trusted=False）；
 - 不改资料存储主键，映射只影响展示与身份解析。
 
 存储：<DATA_DIR>/user_qq_map.json，原子写。
@@ -142,6 +142,20 @@ class UserIdentityMap:
                 return entry
         return None
 
+    def _trusted_entry(
+        self, kind: str, local_id: Any, channel: str | None
+    ) -> dict[str, Any] | None:
+        """只找管理员命令写入的映射。
+
+        同一 ID 可能有多条通道 key，任一 trusted 命中即可：若按展示优先级取第一条，
+        agent 在另一条通道 key 写一条非 trusted 映射就能把 ACL 用的 trusted 映射遮住。
+        """
+        for key in self._keys(kind, local_id, channel):
+            entry = self._aliases.get(key)
+            if entry and entry.get("trusted"):
+                return entry
+        return None
+
     # ── 用户映射 ────────────────────────────────────────────
 
     def qq_for(
@@ -151,12 +165,12 @@ class UserIdentityMap:
         *,
         trusted_only: bool = False,
     ) -> int | None:
-        entry = self._entry(_USER, user_id, channel)
-        if not entry:
-            return None
-        if trusted_only and not entry.get("trusted"):
-            return None
-        return _to_int(entry.get("qq"))
+        entry = (
+            self._trusted_entry(_USER, user_id, channel)
+            if trusted_only
+            else self._entry(_USER, user_id, channel)
+        )
+        return _to_int(entry.get("qq")) if entry else None
 
     def trusted_qq_for(self, user_id: Any, channel: str | None = None) -> int | None:
         """只返回管理员命令写入的映射；agent 工具写入的只影响展示。"""
@@ -276,6 +290,13 @@ class UserIdentityMap:
         entry = self._entry(_GROUP, group_id, channel)
         return _to_int(entry.get("qq")) if entry else None
 
+    def trusted_group_number_for(
+        self, group_id: Any, channel: str | None = None
+    ) -> int | None:
+        """只返回管理员命令写入的群映射；agent 写入的只影响展示。"""
+        entry = self._trusted_entry(_GROUP, group_id, channel)
+        return _to_int(entry.get("qq")) if entry else None
+
     def link_group(
         self,
         group_id: Any,
@@ -294,6 +315,8 @@ class UserIdentityMap:
             return True, f"群 ID {gid} 本身就是群号，无需映射"
         key = f"{_GROUP}:{channel or _infer_channel(gid)}:{gid}"
         previous = self._aliases.get(key)
+        if previous and previous.get("trusted") and not trusted:
+            return False, "该群的映射由管理员命令建立，agent 不能修改；请联系管理员用 /linkgroup 处理"
         entry = {"qq": number, "trusted": bool(trusted) or bool(previous and previous.get("trusted"))}
         self._aliases[key] = entry
         try:
@@ -307,8 +330,11 @@ class UserIdentityMap:
         return True, f"已映射群 {gid} → 群号:{number}"
 
     def unlink_group(self, group_id: Any, channel: str | None = None) -> tuple[bool, str]:
+        keys = self._keys(_GROUP, group_id, channel)
+        if any((self._aliases.get(key) or {}).get("trusted") for key in keys):
+            return False, "该群的映射由管理员命令建立，agent 不能移除；请联系管理员处理"
         removed = False
-        for key in self._keys(_GROUP, group_id, channel):
+        for key in keys:
             if self._aliases.pop(key, None) is not None:
                 removed = True
         if not removed:
@@ -391,6 +417,10 @@ def group_number_for(group_id: Any, channel: str | None = None) -> int | None:
     return _singleton.group_number_for(group_id, channel)
 
 
+def trusted_group_number_for(group_id: Any, channel: str | None = None) -> int | None:
+    return _singleton.trusted_group_number_for(group_id, channel)
+
+
 def link_group_number(
     group_id: Any,
     group_number: Any,
@@ -435,6 +465,7 @@ __all__ = [
     "qq_for_user",
     "synthetic_for_qq",
     "synthetic_for_group",
+    "trusted_group_number_for",
     "trusted_qq_for_user",
     "unlink_group_number",
     "unlink_user_qq",

@@ -559,6 +559,18 @@ def migrate_v110_to_v111(old: dict) -> dict:
     return new
 
 
+@Config.migration(from_version="0.11.1", to_version="0.11.2")
+def migrate_v111_to_v112(old: dict) -> dict:
+    """迁移 0.11.1 -> 0.11.2：移除 qq_markdown（普通文本固定纯文本，Markdown 走显式工具）。"""
+    new: dict[str, Any] = dict(old)
+    new["version"] = "0.11.2"
+    adapter = old.get("adapter")
+    migrated = dict(adapter) if isinstance(adapter, dict) else {}
+    migrated.pop("qq_markdown", None)
+    new["adapter"] = migrated
+    return new
+
+
 def ensure_legacy_adapter_mode(data: dict) -> None:
     """没有 version 字段的更老配置：按「老配置升级」语义补 onebot mode（就地修改）。"""
     adapter = data.get("adapter")

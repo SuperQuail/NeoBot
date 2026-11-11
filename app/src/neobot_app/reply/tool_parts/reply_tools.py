@@ -54,6 +54,12 @@ class _ReplyToolsMixin:
         raw_mention = args.get("mention_qqs", args.get("mention"))
         if not raw_text.strip() and not statements and not raw_images:
             return "错误：回复内容不能为空（text、segments、emoji_numbers 至少给一个）"
+        if self._official_platform and raw_mention:
+            return (
+                "错误：官方通道普通文本不支持 Markdown 或真正的 @。"
+                "需要 @ 用户/全体或 Markdown 时，请使用 send_official_markdown 工具；"
+                "普通聊天直接发纯文本即可。"
+            )
         # 发送前清洗（根因在 role_messages：历史 assistant 消息曾被渲染成
         # 「编号: 名字: 正文」，模型照抄了这个格式）。工具层先清一遍，模型方能
         # 看到自己真正发出去的是什么；sender 侧还有同一套兜底，防止清洗后为空。
@@ -179,10 +185,9 @@ class _ReplyToolsMixin:
             # sender 侧兜底判定「清洗后什么都不剩」：绝不能不吭声地当成发过，
             # 那样模型会以为已经回复，整轮就此结束。
             return (
-                "错误：没有可发送的正文或图片，未发送（回复内容清洗后为空时不会发送空消息）。"
-                "取消本轮请直接调用 cancel 工具。"
-                "不要把消息编号、发送者名字、[msg_id=...] 这类系统标注写进正文，"
-                "也不要把思考过程/草稿当成正文；请只发送你要说的那句话，然后重试。"
+                "错误：消息未发送（正文清洗后为空，或官方通道拒绝了本次发送）。"
+                "请查看后台 info 日志中的发送错误；修正参数后重试，或告知用户当前无法发送。"
+                "不要把消息编号、发送者名字、[msg_id=...] 这类系统标注写进正文。"
             )
         self._ai_check_pending = False
         # 回执按「实际发出去的样子」给：segments 逐条（含自动切分展开），
@@ -404,8 +409,10 @@ class _ReplyToolsMixin:
                 "例如要回一句「你好呀」，text 就写 \"你好呀\"，不要写 \"12: 某群友: 你好呀\"；"
                 "要引用某条消息时用 reply_to_number 传编号，正文里不要再写一遍编号和名字。"
                 + (
-                    "官方通道注意：发图片用 emoji_numbers（或 send_long_reply 发 Markdown 图），"
-                    "发语音用 speak；官方协议不支持拍一拍、QQ 表情回应与 QQ 内置表情搜索。"
+                    "官方通道注意：普通文本是纯文本，不渲染 Markdown、也不能真正 @；"
+                    "需要 Markdown/标题/列表/引用/真实 @/指令按钮时必须用 send_official_markdown。"
+                    "发图片用 emoji_numbers（或 send_long_reply 发 Markdown 图），发语音用 speak；"
+                    "官方协议不支持拍一拍、QQ 表情回应与 QQ 内置表情搜索。"
                     if self._official_platform
                     else ""
                 ),
@@ -424,7 +431,7 @@ class _ReplyToolsMixin:
                         "mention_qqs": {
                             "type": "array",
                             "items": {"type": "integer"},
-                            "description": "可选，要 @ 的 QQ 号列表。QQ 号见群友列表里的「QQ号:...」。仅在群聊生效，由 agent 自行决定是否 @ 以及 @ 谁；仅在需要提醒通知某人时使用。系统会发送真正的 @；正文里不要再写「@昵称」或「@ QQ号」，否则会出现两个 @。正文里要称呼对方时直接写名字，不要带 @。",
+                            "description": "可选，要 @ 的 QQ 号列表（仅 OneBot 群聊）。官方通道普通文本不支持 @，需要 @ 请改用 send_official_markdown；正文里不要再额外写「@昵称」。",
                         },
                         "segments": {
                             "type": "array",

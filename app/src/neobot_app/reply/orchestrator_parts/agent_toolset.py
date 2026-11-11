@@ -93,6 +93,15 @@ class AgentToolsetMixin:
             queue_key,
             numbering,
         )
+        send_official_markdown_handler = partial(
+            self._agent_send_official_markdown_handler,
+            state,
+            event,
+            queue,
+            queue_copy,
+            queue_key,
+            numbering,
+        )
 
         reply_toolset = build_reply_toolset(
             send_reply_handler=send_reply_handler,
@@ -113,6 +122,7 @@ class AgentToolsetMixin:
             notification_hub=self._notification_hub,
             markdown_image_converter=self._markdown_image_converter,
             send_long_reply_handler=send_long_reply_handler,
+            send_official_markdown_handler=send_official_markdown_handler,
             chat_context=prompt,
             conv_kind=conv_kind,
             conv_id=conv_id,

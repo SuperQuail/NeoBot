@@ -59,6 +59,14 @@ class _LongReplyToolsMixin:
         raw_mention = args.get("mention_qqs", args.get("mention"))
         mention: list[int] | None = None
         if raw_mention:
+            if self._official_platform:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "error": "官方通道长回复图片不发送 @；需要真正的 @ 请使用 send_official_markdown",
+                    },
+                    ensure_ascii=False,
+                )
             try:
                 mention = [int(qq) for qq in raw_mention]
             except (ValueError, TypeError):
@@ -92,7 +100,16 @@ class _LongReplyToolsMixin:
             }
             if channel:
                 handler_kwargs["channel"] = channel
-            await self._send_long_reply(**handler_kwargs)
+            result = await self._send_long_reply(**handler_kwargs)
+            from neobot_app.reply.sender import send_response_ok
+
+            if not send_response_ok(result):
+                message = getattr(result, "message", "") or getattr(result, "wording", "")
+                self._logger.info("长回复图片发送失败", error=str(message))
+                return json.dumps(
+                    {"ok": False, "error": f"发送失败：{message or '未知错误'}"},
+                    ensure_ascii=False,
+                )
             self._ai_check_pending = False
         return json.dumps(
             {
@@ -100,7 +117,7 @@ class _LongReplyToolsMixin:
                 "status": "sent",
                 "image_path": image_path,
                 "caption": caption or None,
-                "message": f"已发送Markdown图片{'(预渲染)' if pre_rendered else ''}，路径：{image_path}",
+                "message": f"已发送 Markdown 图片{'(预渲染)' if pre_rendered else ''}，路径：{image_path}",
             },
             ensure_ascii=False,
         )
@@ -110,7 +127,8 @@ class _LongReplyToolsMixin:
             tools.append(
                 _tool_def(
                     "send_long_reply",
-                    "发送 Markdown 格式的长回复。这是唯一允许使用 Markdown 格式的发送方式。"
+                    "发送 Markdown 图片：把 Markdown 内容渲染成图片后发送。"
+                    "这不是官方 Markdown 卡片（send_official_markdown），官方卡片才是可点击的原生 Markdown 消息。"
                     "提供 markdown 内容时，系统自动将其转为图片发送。"
                     "如果已有预渲染的图片文件，可提供 image_path 直接发送，"
                     "此时 markdown 仅用于日志记录（仍建议提供以便追溯）。"

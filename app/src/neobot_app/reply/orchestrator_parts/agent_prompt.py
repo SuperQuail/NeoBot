@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from neobot_app.bot_accounts import bot_account_for_event
 from neobot_app.reply.event import ReplyEvent, ReplyState
-from .tool_text import _render_tool_package_index
+from .tool_text import _official_hidden_skill_names, _render_tool_package_index
 
 if TYPE_CHECKING:
     from neobot_app.message.numbering import MessageNumbering
@@ -79,19 +79,22 @@ class AgentPromptMixin:
         round_dynamic: dict[str, str] = {}
         # 注入 Skill 操作说明(一行摘要;完整说明用 skills__view_instructions 按需查看)
         if self._skill_manager is not None:
-            skill_instructions = self._skill_manager.get_instructions()
-            hidden_skill = (
-                "image_parse" if getattr(self._provider, "native_vision", False) is True
+            official_platform = self._is_official_platform(event)
+            # 当前模型用不上的视觉技能 / 官方通道整包不可用的技能都不进索引
+            hidden_skills: set[str] = {
+                "image_parse"
+                if getattr(self._provider, "native_vision", False) is True
                 else "image_context"
-            )
-            skill_instructions = "\n".join(
-                line for line in skill_instructions.splitlines()
-                if not line.startswith(f"- {hidden_skill}:")
-            )
+            }
+            if official_platform:
+                hidden_skills.update(_official_hidden_skill_names(self._skill_manager))
+            skill_instructions = self._skill_manager.get_instructions(hidden=hidden_skills)
             if skill_instructions:
                 round_dynamic["skill_instructions"] = skill_instructions
                 package_index = _render_tool_package_index(
-                    self._skill_manager, prompt_store=self._prompt_store
+                    self._skill_manager,
+                    prompt_store=self._prompt_store,
+                    official_platform=official_platform,
                 )
                 if package_index:
                     round_dynamic["tool_package_index"] = package_index

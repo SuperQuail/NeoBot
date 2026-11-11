@@ -7,6 +7,39 @@ from typing import Any
 from neobot_app.prompt.assets import text
 from neobot_app.prompt.render import render_template
 
+#: 官方通道下 dispatch 拒绝清单之外、仍依赖 OneBot 专属接口的技能工具：
+#: 历史消息查询（chat_history / cross_chat_query）用 OneBot 历史接口，而官方
+#: 协议没有该接口；头像解析依赖真实 QQ 头像，官方通道只有合成 ID、没有头像。
+_OFFICIAL_EXTRA_UNSUPPORTED_TOOLS = frozenset(
+    {
+        "chat_history__read_earlier_messages",
+        "cross_chat__cross_chat_query",
+        "user_profile__analyze_user_avatar",
+    }
+)
+
+
+def _official_tool_usable(name: str) -> bool:
+    """官方通道是否可用该工具：与 dispatch 的拒绝清单共用同一份判据。"""
+    from neobot_app.reply.tool_parts.dispatch import _official_tool_supported
+
+    return _official_tool_supported(name) and name not in _OFFICIAL_EXTRA_UNSUPPORTED_TOOLS
+
+
+def _official_hidden_skill_names(skill_manager: Any) -> frozenset[str]:
+    """官方通道下整包没有可用工具的技能：不进技能索引、工具包与说明枚举。"""
+    names = getattr(skill_manager, "skill_names", None) or []
+    tool_names = getattr(skill_manager, "skill_tool_names", None)
+    if not callable(tool_names):
+        return frozenset()
+    hidden: set[str] = set()
+    for name in names:
+        tools = list(tool_names(name) or [])
+        if tools and not any(_official_tool_usable(item) for item in tools):
+            hidden.add(str(name))
+    return frozenset(hidden)
+
+
 #: 同一个工具 + 同一组参数连续失败到这个次数后，在工具结果里附一句软提示。
 #: 刻意只提示、不短路：部署者修好环境（例如换对 QQ 版本）之后继续调用必须
 #: 真实执行，否则工具会永久不可用。
@@ -205,17 +238,28 @@ def _redacted_tool_text(value: object, limit: int = _MAX_TOOL_LOG_CHARS) -> str:
 def _safe_tool_args(args: object) -> str:
     redacted = _redact_tool_value(args, drop_internal=True)
     return _redacted_tool_text(redacted, _MAX_TOOL_LOG_CHARS)
-def _render_tool_package_index(skill_manager: Any, *, prompt_store: Any = None) -> str:
-    """把可加载工具包 + 工具名直接渲染进提示词，省掉模型先查询/看说明的一次调用。"""
+def _render_tool_package_index(
+    skill_manager: Any, *, prompt_store: Any = None, official_platform: bool = False
+) -> str:
+    """把可加载工具包 + 工具名直接渲染进提示词，省掉模型先查询/看说明的一次调用。
+
+    official_platform=True 时只列官方通道真正可用的技能与工具：整包不可用的技能
+    直接跳过，部分可用技能只列可用的工具名（与 dispatch 的执行期拒绝保持一致）。
+    """
     if skill_manager is None:
         return ""
     names = getattr(skill_manager, "deferred_skill_names", None)
     tool_names = getattr(skill_manager, "skill_tool_names", None)
     if not names or not callable(tool_names):
         return ""
+    hidden = _official_hidden_skill_names(skill_manager) if official_platform else frozenset()
     lines: list[str] = []
     for name in names:
+        if name in hidden:
+            continue
         tools = list(tool_names(name) or [])
+        if official_platform:
+            tools = [item for item in tools if _official_tool_usable(item)]
         if tools:
             entry = text(
                 "label_tool_packages",

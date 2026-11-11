@@ -42,6 +42,7 @@ class _FakeBackend:
         self.event_sink: Any = None
         self.reconfigured: list[ReverseWsSettings] = []
         self.api_calls: list[str] = []
+        self.method_calls: list[str] = []
         self.send_calls = 0
         self.core = SimpleNamespace(speaking_policy=None)
 
@@ -83,7 +84,16 @@ class _FakeBackend:
         return response.SendMsgResponse(status="ok", data={"message_id": self.send_calls})
 
     async def get_group_list(self, no_cache: bool = False, timeout: float = 5.0) -> Any:
+        self.method_calls.append("get_group_list")
         return response.GetGroupListResponse(status="ok", data=[])
+
+    async def get_msg(self, message_id: int, timeout: float = 5.0) -> Any:
+        self.method_calls.append("get_msg")
+        return {"status": "ok", "retcode": 0, "data": {"message_id": message_id, "mode": self.mode}}
+
+    async def get_group_member_list(self, group_id: int, no_cache: bool = False, timeout: float = 5.0) -> Any:
+        self.method_calls.append("get_group_member_list")
+        return {"status": "ok", "retcode": 0, "data": [{"group_id": group_id, "mode": self.mode}]}
 
 
 def _install_fake_backends(
@@ -127,7 +137,6 @@ def _config(**overrides: Any) -> Any:
         "reverse_ws_access_token": "",
         "qq_appid": "",
         "qq_client_secret": "",
-        "qq_markdown": True,
         "qq_base_url": "https://api.bot.qq.com",
         "qq_token_url": "https://api.bot.qq.com/app/getAppAccessToken",
         "qq_portal_host": "q.qq.com",

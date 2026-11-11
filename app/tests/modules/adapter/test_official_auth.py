@@ -11,7 +11,10 @@ import asyncio
 import base64
 import json
 import os
+import shutil
 import stat
+import tempfile
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -35,6 +38,17 @@ _CREATE_URL = "https://q.qq.com/lite/create_bind_task"
 _POLL_URL = "https://q.qq.com/lite/poll_bind_result"
 _NONCE = b"abcdefghijkl"
 _COMPLETED_SECRET = "bound-secret"
+
+
+@pytest.fixture
+def workdir():
+    """隔离落盘目录；pytest 的 tmp_path 用 0o700 建目录，本机沙箱下会拒绝访问。"""
+    path = Path(tempfile.gettempdir()) / f"neobot-official-{uuid.uuid4().hex}"
+    os.mkdir(path)
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 # ── 替身 ────────────────────────────────────────────────────────────
@@ -160,26 +174,24 @@ def _bind_flow_http(
 # ── OfficialSettings ────────────────────────────────────────────────
 
 
-def test_settings_from_adapter_settings_reads_qq_fields(tmp_path: Path) -> None:
+def test_settings_from_adapter_settings_reads_qq_fields(workdir: Path) -> None:
     adapter_settings = SimpleNamespace(
         qq_appid="app",
         qq_client_secret="secret",
-        qq_markdown=False,
         qq_base_url="https://api.example.com",
         qq_token_url="https://api.example.com/token",
         qq_portal_host="portal.example.com",
-        data_dir=str(tmp_path),
+        data_dir=str(workdir),
     )
 
     settings = OfficialSettings.from_adapter_settings(adapter_settings)
 
     assert settings.app_id == "app"
     assert settings.client_secret == "secret"
-    assert settings.markdown is False
     assert settings.base_url == "https://api.example.com"
     assert settings.token_url == "https://api.example.com/token"
     assert settings.portal_host == "portal.example.com"
-    assert settings.data_dir == tmp_path
+    assert settings.data_dir == workdir
     assert settings.bind_timeout_seconds == 600.0
 
 
@@ -191,35 +203,34 @@ def test_settings_from_adapter_settings_falls_back_to_defaults() -> None:
     assert settings.base_url == "https://api.bot.qq.com"
     assert settings.token_url == "https://api.bot.qq.com/app/getAppAccessToken"
     assert settings.portal_host == "q.qq.com"
-    assert settings.markdown is True
     assert settings.data_dir == Path("data")
 
 
 def test_settings_portal_host_normalizes_scheme_and_explicit_data_dir(
-    tmp_path: Path,
+    workdir: Path,
 ) -> None:
     settings = OfficialSettings.from_adapter_settings(
         SimpleNamespace(qq_portal_host="https://q.qq.com/", data_dir="ignored"),
-        data_dir=tmp_path,
+        data_dir=workdir,
     )
 
     assert settings.portal_host == "q.qq.com"
-    assert settings.data_dir == tmp_path
+    assert settings.data_dir == workdir
 
 
 # ── CredentialStore ─────────────────────────────────────────────────
 
 
 def test_credential_store_roundtrip_permissions_and_atomic_write(
-    tmp_path: Path,
+    workdir: Path,
 ) -> None:
-    store = CredentialStore(tmp_path)
+    store = CredentialStore(workdir)
     assert store.load() is None
 
     store.save("123456", "secret-value")
 
     assert store.load() == Credentials(app_id="123456", client_secret="secret-value")
-    path = tmp_path / "qqbot" / "credentials.json"
+    path = workdir / "qqbot" / "credentials.json"
     assert json.loads(path.read_text(encoding="utf-8")) == {
         "app_id": "123456",
         "client_secret": "secret-value",
@@ -234,26 +245,26 @@ def test_credential_store_roundtrip_permissions_and_atomic_write(
     store.delete()
 
 
-def test_credential_store_rejects_empty_credentials(tmp_path: Path) -> None:
-    store = CredentialStore(tmp_path)
+def test_credential_store_rejects_empty_credentials(workdir: Path) -> None:
+    store = CredentialStore(workdir)
     with pytest.raises(OfficialAuthError):
         store.save("", "secret")
     with pytest.raises(OfficialAuthError):
         store.save("123456", "  ")
 
 
-def test_credential_store_returns_none_for_corrupt_file(tmp_path: Path) -> None:
-    path = tmp_path / "qqbot" / "credentials.json"
+def test_credential_store_returns_none_for_corrupt_file(workdir: Path) -> None:
+    path = workdir / "qqbot" / "credentials.json"
     path.parent.mkdir(parents=True)
     path.write_text("not-json", encoding="utf-8")
-    assert CredentialStore(tmp_path).load() is None
+    assert CredentialStore(workdir).load() is None
 
 
 # ── TokenProvider ───────────────────────────────────────────────────
 
 
-async def test_token_provider_caches_until_80_percent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = _settings(tmp_path)
+async def test_token_provider_caches_until_80_percent(workdir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(workdir)
     http = FakeHttp()
     http.script(settings.token_url, (200, {"access_token": "tok-1", "expires_in": 100}))
     clock = SimpleNamespace(now=1000.0)
@@ -272,8 +283,8 @@ async def test_token_provider_caches_until_80_percent(tmp_path: Path, monkeypatc
     assert http.requests[0][1] == {"appId": "123456", "clientSecret": "client-secret"}
 
 
-async def test_token_provider_force_and_invalidate_refetch(tmp_path: Path) -> None:
-    settings = _settings(tmp_path)
+async def test_token_provider_force_and_invalidate_refetch(workdir: Path) -> None:
+    settings = _settings(workdir)
     http = FakeHttp(status=200, payload={"access_token": "tok", "expires_in": 7200})
     provider = TokenProvider(settings, http)
 
@@ -318,9 +329,9 @@ class _BlockingResponse:
         return False
 
 
-async def test_token_provider_single_flight(tmp_path: Path) -> None:
+async def test_token_provider_single_flight(workdir: Path) -> None:
     http = _BlockingHttp()
-    provider = TokenProvider(_settings(tmp_path), http)
+    provider = TokenProvider(_settings(workdir), http)
 
     tasks = [asyncio.create_task(provider.get_token()) for _ in range(3)]
     for _ in range(100):
@@ -333,25 +344,25 @@ async def test_token_provider_single_flight(tmp_path: Path) -> None:
     assert http.calls == 1
 
 
-async def test_token_provider_requires_credentials(tmp_path: Path) -> None:
+async def test_token_provider_requires_credentials(workdir: Path) -> None:
     provider = TokenProvider(
-        _settings(tmp_path, app_id="", client_secret=""),
+        _settings(workdir, app_id="", client_secret=""),
         FakeHttp(),
     )
     with pytest.raises(OfficialAuthError, match="AppID"):
         await provider.get_token()
 
 
-async def test_token_provider_surfaces_http_failure(tmp_path: Path) -> None:
+async def test_token_provider_surfaces_http_failure(workdir: Path) -> None:
     http = FakeHttp(status=401, payload={"message": "invalid appid"})
-    provider = TokenProvider(_settings(tmp_path), http)
+    provider = TokenProvider(_settings(workdir), http)
     with pytest.raises(OfficialAuthError, match="401"):
         await provider.get_token()
 
 
-async def test_token_provider_requires_access_token(tmp_path: Path) -> None:
+async def test_token_provider_requires_access_token(workdir: Path) -> None:
     http = FakeHttp(status=200, payload={"message": "no token"})
-    provider = TokenProvider(_settings(tmp_path), http)
+    provider = TokenProvider(_settings(workdir), http)
     with pytest.raises(OfficialAuthError, match="access token"):
         await provider.get_token()
 
@@ -383,7 +394,7 @@ def test_decrypt_secret_rejects_tampered_or_malformed_payloads() -> None:
 # ── QrBindFlow ──────────────────────────────────────────────────────
 
 
-async def test_qr_bind_flow_completes_and_persists_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_qr_bind_flow_completes_and_persists_credentials(workdir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(auth, "_POLL_INTERVAL_SECONDS", 0)
     printed: list[str] = []
     monkeypatch.setattr(auth, "_print_ascii_qr", printed.append)
@@ -394,7 +405,7 @@ async def test_qr_bind_flow_completes_and_persists_credentials(tmp_path: Path, m
     async def on_update(state: BindState) -> None:
         states.append(state)
 
-    flow = QrBindFlow(_settings(tmp_path), logger, http)
+    flow = QrBindFlow(_settings(workdir), logger, http)
     state = await flow.start(on_update)
 
     assert state.phase == "success"
@@ -405,12 +416,12 @@ async def test_qr_bind_flow_completes_and_persists_credentials(tmp_path: Path, m
     assert pending.url == "https://q.qq.com/qqbot/openclaw/connect.html?task_id=task-1&_wv=2&source=neobot"
     assert "<svg" in pending.svg
     assert pending.expires_at > 0
-    assert CredentialStore(tmp_path).load() == Credentials(app_id="888", client_secret=_COMPLETED_SECRET)
+    assert CredentialStore(workdir).load() == Credentials(app_id="888", client_secret=_COMPLETED_SECRET)
     assert any("扫码绑定" in message for message, _kw in logger.infos)
 
 
 async def test_qr_bind_flow_rebuilds_expired_qr_once_and_prints_ascii_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(auth, "_POLL_INTERVAL_SECONDS", 0)
     printed: list[str] = []
@@ -421,7 +432,7 @@ async def test_qr_bind_flow_rebuilds_expired_qr_once_and_prints_ascii_once(
     )
     states: list[BindState] = []
 
-    flow = QrBindFlow(_settings(tmp_path), FakeLogger(), http)
+    flow = QrBindFlow(_settings(workdir), FakeLogger(), http)
     state = await flow.start(states.append)
 
     assert state.phase == "success"
@@ -436,14 +447,14 @@ async def test_qr_bind_flow_rebuilds_expired_qr_once_and_prints_ascii_once(
     assert create_requests[0]["key"] == create_requests[1]["key"]
 
 
-async def test_qr_bind_flow_times_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_qr_bind_flow_times_out(workdir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(auth, "_POLL_INTERVAL_SECONDS", 0.005)
     monkeypatch.setattr(auth, "_print_ascii_qr", lambda url: None)
     http = FakeHttp(status=200, payload={"retcode": 0, "data": {"status": 1}})
     http.script(_CREATE_URL, (200, {"retcode": 0, "data": {"task_id": "task-1"}}))
     states: list[BindState] = []
 
-    flow = QrBindFlow(_settings(tmp_path, bind_timeout_seconds=0.05), FakeLogger(), http)
+    flow = QrBindFlow(_settings(workdir, bind_timeout_seconds=0.05), FakeLogger(), http)
     state = await flow.start(states.append)
 
     assert state.phase == "expired"
@@ -451,17 +462,17 @@ async def test_qr_bind_flow_times_out(tmp_path: Path, monkeypatch: pytest.Monkey
     assert [item.phase for item in states] == ["pending", "expired"]
 
 
-async def test_qr_bind_flow_reports_create_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_qr_bind_flow_reports_create_failure(workdir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     printed: list[str] = []
     monkeypatch.setattr(auth, "_print_ascii_qr", printed.append)
     http = FakeHttp(status=500, payload={"message": "portal down"})
     logger = FakeLogger()
 
-    flow = QrBindFlow(_settings(tmp_path), logger, http)
+    flow = QrBindFlow(_settings(workdir), logger, http)
     state = await flow.start()
 
     assert state.phase == "error"
     assert "HTTP 500" in state.error
     assert printed == []
     assert logger.errors
-    assert CredentialStore(tmp_path).load() is None
+    assert CredentialStore(workdir).load() is None

@@ -26,7 +26,6 @@ class AdapterSettings:
     # QQ 官方机器人协议(adapter.mode = "official")配置
     qq_appid: str = ""
     qq_client_secret: str = ""
-    qq_markdown: bool = True
     qq_base_url: str = "https://api.bot.qq.com"
     qq_token_url: str = "https://api.bot.qq.com/app/getAppAccessToken"
     qq_portal_host: str = "q.qq.com"
@@ -88,7 +87,6 @@ def _coerce_settings(settings: AdapterSettings | Any | None) -> AdapterSettings:
         ),
         qq_appid=str(getattr(settings, "qq_appid", "") or ""),
         qq_client_secret=str(getattr(settings, "qq_client_secret", "") or ""),
-        qq_markdown=bool(getattr(settings, "qq_markdown", True)),
         qq_base_url=str(
             getattr(settings, "qq_base_url", "https://api.bot.qq.com")
             or "https://api.bot.qq.com"

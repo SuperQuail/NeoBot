@@ -39,6 +39,14 @@ class _SkillToolsMixin:
             return f"Error: {exc}"
         return skill.content
 
+    def _hidden_official_skills(self) -> frozenset[str]:
+        """官方通道下整包不可用的技能：索引、枚举与说明入口都要过滤。"""
+        if not self._official_platform or self._skill_manager is None:
+            return frozenset()
+        from ..orchestrator_parts.tool_text import _official_hidden_skill_names
+
+        return _official_hidden_skill_names(self._skill_manager)
+
     def _view_skill_instructions(self, args: dict) -> str:
         """返回指定内置技能的完整操作说明(按需查看)。"""
         if self._skill_manager is None:
@@ -46,6 +54,11 @@ class _SkillToolsMixin:
         skill_name = str(args.get("skill") or "").strip()
         if not skill_name:
             return "Error: 缺少 skill 参数"
+        if skill_name in self._hidden_official_skills():
+            return (
+                f"Error: QQ 官方机器人通道不支持技能 {skill_name}"
+                "（官方协议没有等价能力，不要重试）"
+            )
         return self._skill_manager.get_skill_instructions(skill_name)
 
     def _deferred_skill_names(self) -> list[str]:
@@ -258,6 +271,9 @@ class _SkillToolsMixin:
             )
         if self._skill_manager is not None:
             skill_names = getattr(self._skill_manager, "skill_names", None) or []
+            hidden = self._hidden_official_skills()
+            if hidden:
+                skill_names = [name for name in skill_names if name not in hidden]
             if skill_names:
                 tools.append(
                     _tool_def(

@@ -11,7 +11,7 @@ from neobot_adapter.model.message import GroupMessage, MessageSegment, PrivateMe
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.bot_accounts import bot_account_for_message, bot_accounts
-from neobot_app.user_identity import group_number_for, qq_for_user
+from neobot_app.user_identity import trusted_group_number_for, trusted_qq_for_user
 from neobot_app.config.schemas.bot import BotConfig
 from neobot_app.core.paths import get_data_dir
 from neobot_app.message.queue import MessageQueue
@@ -426,10 +426,12 @@ class WillingService:
         return [item for item in rendered if item]
 
     def _is_conversation_allowed(self, conversation_type: str, queue_key: str) -> tuple[bool, str]:
+        # 黑白名单是访问控制：只认管理员命令写入的 trusted 映射，
+        # agent 自己写的映射只影响展示，不能让会话绕过/落入名单
         if conversation_type == "group":
             if self._config.message.enable_group is False:
                 return False, "group_disabled"
-            mapped_group = group_number_for(queue_key)
+            mapped_group = trusted_group_number_for(queue_key)
             return self._check_list_rule(
                 queue_key,
                 self._config.chat.group_use_black_list,
@@ -441,7 +443,7 @@ class WillingService:
 
         if self._config.message.enable_private is False:
             return False, "private_disabled"
-        mapped = qq_for_user(queue_key)
+        mapped = trusted_qq_for_user(queue_key)
         return self._check_list_rule(
             queue_key,
             self._config.chat.friend_use_black_list,

@@ -274,8 +274,8 @@ def test_send_reply_tool_schema_exposes_channel_enum():
     assert channel["enum"] == ["auto", "onebot", "official"]
     assert channel["default"] == "auto"
     mention = definition["function"]["parameters"]["properties"]["mention_qqs"]
-    assert "不要再写" in mention["description"]
-    assert "@ 后留一个空格" not in mention["description"]
+    assert "send_official_markdown" in mention["description"]
+    assert "OneBot" in mention["description"]
 
 
 # ── 提示词账号 ─────────────────────────────────────────────────────

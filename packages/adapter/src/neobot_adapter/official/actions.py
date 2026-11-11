@@ -1,32 +1,40 @@
 """官方模式的 OneBot action 分发。
 
-只映射官方接口真实具备的能力：发送、登录信息、版本信息与状态；没有等价接口的
-列表/资料查询返回 ok + 空数据/本地缓存，其余明确返回 failed + 中文原因，避免
-调用方把「官方协议做不到」误当成「暂时失败」反复重试。
+只映射官方接口真实具备的能力：发送、登录/版本/状态、群信息与群成员（官方白名单
+接口）、撤回；官方没有等价接口的列表/资料查询明确返回 failed，不再用 ok+[] 把
+「协议做不到」伪装成「查询结果为空」。
 """
 
 from __future__ import annotations
 
+import time
+from datetime import datetime
 from typing import Any
+from urllib.parse import quote
 
 from neobot_contracts.models import ConversationRef
 from neobot_contracts.platform import OFFICIAL_ADAPTER_APP_NAME
 from neobot_contracts.ports.speaking import SpeechBlocked
 
 from neobot_adapter.model import response
+from neobot_adapter.official.media import api_data
+from neobot_adapter.official.send import OfficialApiError
 
 _SEND_ACTIONS = frozenset({"send_group_msg", "send_private_msg", "send_msg"})
-_LIST_ACTIONS = frozenset(
-    {
-        "get_group_list",
-        "get_friend_list",
-        "get_group_member_list",
-        "get_group_member_info",
-        "get_stranger_info",
-        "get_robot_uin_range",
-    }
-)
 _PROTOCOL_VERSION = "qq-official-v2"
+#: 官方撤回只允许 2 分钟内的消息。
+_REVOKE_LIMIT_SECONDS = 120.0
+#: 群成员列表每页 30 条，最多翻这么多页（防止异常游标把请求拖死）。
+_MEMBER_PAGE_LIMIT = 50
+_MEMBER_ROLES = frozenset({"owner", "admin", "member"})
+_DELETE_ENDPOINTS = {
+    "group": "/v2/groups/{openid}/messages/{message_id}",
+    "private": "/v2/users/{openid}/messages/{message_id}",
+}
+
+
+class _ActionFailure(RuntimeError):
+    """参数/能力不满足；转成 failed 响应。"""
 
 
 async def dispatch(
@@ -56,15 +64,34 @@ async def dispatch(
         if name == "get_msg":
             return _get_msg(adapter, values)
         if name == "delete_msg":
-            # 官方 v2 没有撤回接口；明确失败比假装成功更安全。
-            return _failed("QQ 官方机器人协议没有消息撤回接口，delete_msg 不可用")
+            return await _delete_msg(adapter, values)
+        if name == "get_group_info":
+            return await _get_group_info(adapter, values)
+        if name == "get_group_member_list":
+            return await _get_group_member_list(adapter, values)
+        if name == "get_group_member_info":
+            return await _get_group_member_info(adapter, values)
+        if name == "get_group_list":
+            return _failed("QQ 官方机器人协议不提供群列表接口，只能从群消息得知机器人已加入的群")
+        if name == "get_friend_list":
+            return _failed("QQ 官方机器人协议不提供好友列表接口")
+        if name == "get_stranger_info":
+            return _failed("QQ 官方机器人协议不提供陌生人资料接口")
+        if name == "get_robot_uin_range":
+            # 官方模式没有 UIN 段概念；空列表是真实答案，不是占位数据。
+            return _ok([])
         if name == "get_forward_msg":
             return _failed("QQ 官方机器人协议没有合并转发消息查询接口")
-        if name in _LIST_ACTIONS:
-            return _list_data(adapter, name, values)
     except SpeechBlocked:
         # 发言策略拒绝不是接口失败，必须原样抛给调用方（与 OneBot/Local 一致）。
         raise
+    except _ActionFailure as exc:
+        return _failed(str(exc))
+    except OfficialApiError as exc:
+        detail = str(exc)
+        if exc.code is not None:
+            detail = f"{detail}（err_code={exc.code}）"
+        return _failed(f"官方接口失败：{detail}")
     except Exception as exc:
         return _failed(f"官方协议处理 {name} 失败：{type(exc).__name__}: {exc}")
     return _failed(f"官方协议模式不支持该操作：{name}（QQ 官方机器人接口没有等价能力）")
@@ -141,47 +168,155 @@ def _app_version() -> str:
         return ""
 
 
-# ── 只读列表/资料 ───────────────────────────────────────────────────
+# ── 群信息 / 群成员（官方接口） ─────────────────────────────────────
 
 
-def _list_data(adapter: Any, action: str, params: dict[str, Any]) -> dict[str, Any]:
-    if action == "get_group_list":
-        return _ok(list(adapter.known_groups.values()))
-    if action == "get_friend_list":
-        return _ok([])
-    if action == "get_group_member_list":
-        return _ok([])
-    if action == "get_group_member_info":
-        return _group_member_info(adapter, params)
-    if action == "get_stranger_info":
-        return _stranger_info(adapter, params)
-    # get_robot_uin_range：官方模式没有 UIN 段概念，空列表即可。
-    return _ok([])
-
-
-def _group_member_info(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
-    group_id = _as_int(params.get("group_id"))
-    user_id = _as_int(params.get("user_id"))
-    user = adapter.known_users.get(user_id) if user_id else None
-    if user is None:
-        return _ok(None)
+async def _get_group_info(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    group_id, group_openid = _group_target(adapter, params)
+    payload = await _api(adapter).request("GET", f"/v2/groups/{group_openid}/info")
+    data = api_data(payload)
     return _ok(
         {
             "group_id": group_id,
-            "user_id": user_id,
-            "nickname": user.get("nickname", ""),
-            "card": "",
-            "role": "member",
+            "group_name": str(data.get("group_name") or ""),
+            "group_memo": str(data.get("group_finger_memo") or ""),
+            "member_count": _as_int(data.get("group_member_num")),
         }
     )
 
 
-def _stranger_info(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+async def _get_group_member_list(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    group_id, group_openid = _group_target(adapter, params)
+    api = _api(adapter)
+    members: list[dict[str, Any]] = []
+    cursor = ""
+    for _page in range(_MEMBER_PAGE_LIMIT):
+        path = f"/v2/groups/{group_openid}/members"
+        if cursor:
+            path += f"?cursor={quote(cursor, safe='')}"
+        payload = await api.request("GET", path)
+        data = api_data(payload)
+        raw_members = data.get("members")
+        if isinstance(raw_members, list):
+            for item in raw_members:
+                if isinstance(item, dict):
+                    mapped = _member_entry(adapter, group_id, item)
+                    if mapped is not None:
+                        members.append(mapped)
+        cursor = str(data.get("next_cursor") or "").strip()
+        if not cursor:
+            break
+    return _ok(members)
+
+
+async def _get_group_member_info(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    group_id, group_openid = _group_target(adapter, params)
     user_id = _as_int(params.get("user_id"))
-    user = adapter.known_users.get(user_id) if user_id else None
-    if user is None:
-        return _ok({"user_id": user_id, "nickname": ""})
-    return _ok(dict(user))
+    if not user_id:
+        raise _ActionFailure("缺少有效的 user_id 参数")
+    member_openid = adapter.identity.openid(user_id, "user")
+    if not member_openid:
+        raise _ActionFailure(f"无法由 user_id {user_id} 反查 member_openid")
+    payload = await _api(adapter).request(
+        "GET",
+        f"/v2/groups/{group_openid}/members/{member_openid}",
+    )
+    member = _member_entry(adapter, group_id, api_data(payload))
+    if member is None:
+        raise _ActionFailure("官方群成员信息响应缺少 member_openid")
+    return _ok(member)
+
+
+def _group_target(adapter: Any, params: dict[str, Any]) -> tuple[int, str]:
+    group_id = _as_int(params.get("group_id"))
+    if not group_id:
+        raise _ActionFailure("缺少有效的 group_id 参数")
+    return group_id, _target_openid(adapter, group_id, "group")
+
+
+def _target_openid(adapter: Any, target: Any, kind: str) -> str:
+    try:
+        synthetic = int(target)
+    except (TypeError, ValueError) as exc:
+        raise _ActionFailure("缺少有效的 group_id/user_id 参数") from exc
+    openid = adapter.identity.openid(synthetic, kind)
+    if not openid:
+        label = "group_id" if kind == "group" else "user_id"
+        raise _ActionFailure(f"无法由 {label} {synthetic} 反查 openid（该会话未在官方事件中出现过）")
+    return openid
+
+
+def _member_entry(
+    adapter: Any,
+    group_id: int,
+    member: dict[str, Any],
+) -> dict[str, Any] | None:
+    member_openid = str(member.get("member_openid") or "").strip()
+    if not member_openid:
+        return None
+    try:
+        user_id = adapter.identity.user_id(member_openid)
+    except ValueError:
+        return None
+    role = str(member.get("member_role") or "").strip().casefold()
+    return {
+        "group_id": group_id,
+        "user_id": user_id,
+        "nickname": str(member.get("username") or ""),
+        "card": "",
+        "role": role if role in _MEMBER_ROLES else "member",
+        "is_robot": bool(member.get("bot")),
+        "join_time": _epoch_seconds(member.get("joined_at")),
+    }
+
+
+# ── 撤回 ────────────────────────────────────────────────────────────
+
+
+async def _delete_msg(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    message_id = _as_int(params.get("message_id"))
+    if not message_id:
+        raise _ActionFailure("缺少有效的 message_id 参数")
+    official_id = adapter.message_ids.official(message_id)
+    if not official_id:
+        raise _ActionFailure("无法定位该消息的官方 ID（非本进程收发或已超出缓存）")
+    kind = ""
+    openid = ""
+    sent_at = 0.0
+    context = adapter.message_ids.context(message_id)
+    if isinstance(context, dict):
+        kind = str(context.get("kind") or "")
+        openid = str(context.get("openid") or "")
+        sent_at = _as_float(context.get("at"))
+    if kind not in _DELETE_ENDPOINTS or not openid:
+        kind, openid, fallback_at = _recent_context(adapter, message_id)
+        sent_at = sent_at or fallback_at
+    if kind not in _DELETE_ENDPOINTS or not openid:
+        raise _ActionFailure("无法确定该消息的会话上下文，官方协议无法撤回")
+    if sent_at and time.time() - sent_at > _REVOKE_LIMIT_SECONDS:
+        raise _ActionFailure("消息发送已超过 2 分钟，官方不允许撤回")
+    path = _DELETE_ENDPOINTS[kind].format(openid=openid, message_id=official_id)
+    await _api(adapter).request("DELETE", path)
+    adapter.forget_recent_message(message_id)
+    return _ok(None)
+
+
+def _recent_context(adapter: Any, message_id: int) -> tuple[str, str, float]:
+    event = adapter.get_recent_message(message_id)
+    if not isinstance(event, dict):
+        return "", "", 0.0
+    message_type = str(event.get("message_type") or "")
+    at = _as_float(event.get("time"))
+    if message_type == "group":
+        group_id = _as_int(event.get("group_id"))
+        return "group", adapter.identity.openid(group_id, "group") or "", at
+    if message_type == "private":
+        user_id = _as_int(event.get("user_id"))
+        return "private", adapter.identity.openid(user_id, "private") or "", at
+    return "", "", 0.0
+
+
+# ── 本地最近消息 ────────────────────────────────────────────────────
 
 
 def _get_msg(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
@@ -192,10 +327,38 @@ def _get_msg(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
     return _ok(event)
 
 
+# ── 工具 ────────────────────────────────────────────────────────────
+
+
+def _api(adapter: Any) -> Any:
+    api = getattr(adapter, "api", None)
+    if api is None:
+        raise _ActionFailure("QQ 官方机器人尚未连接")
+    return api
+
+
 def _as_int(value: Any) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
+        return 0
+
+
+def _as_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _epoch_seconds(value: Any) -> int:
+    """RFC3339 → epoch 秒；解析不了返回 0。"""
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    try:
+        return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp())
+    except ValueError:
         return 0
 
 

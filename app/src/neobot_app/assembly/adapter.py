@@ -54,7 +54,6 @@ def _settings_from_config(config: Any = None) -> AdapterSettings:
         ),
         qq_appid=str(getattr(adapter_cfg, "qq_appid", "") or ""),
         qq_client_secret=str(getattr(adapter_cfg, "qq_client_secret", "") or ""),
-        qq_markdown=bool(getattr(adapter_cfg, "qq_markdown", True)),
         qq_base_url=str(
             getattr(adapter_cfg, "qq_base_url", "") or "https://api.bot.qq.com"
         ),

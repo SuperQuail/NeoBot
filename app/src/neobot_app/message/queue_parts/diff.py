@@ -8,7 +8,7 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
-from neobot_app.user_identity import qq_for_user
+from neobot_app.user_identity import trusted_qq_for_user
 
 from .common import QueueEntry, QueueEntryType, QueueMessage, RecallNotice
 
@@ -51,10 +51,12 @@ class _QueueDiffMixin:
                 continue
             message = entry.message
             sender_id = getattr(message, "user_id", None)
-            mapped_sender = qq_for_user(sender_id) if sender_id is not None else None
+            # 回复黑名单也是访问控制：官方合成 ID 只按管理员命令写入的 trusted 映射
+            # 翻成真实 QQ 号；agent 自己写的映射只影响展示，不能把人塞进/移出黑名单
+            trusted_sender = trusted_qq_for_user(sender_id) if sender_id is not None else None
             if sender_id is not None and (
                 sender_id in self._reply_blacklist
-                or (mapped_sender is not None and mapped_sender in self._reply_blacklist)
+                or (trusted_sender is not None and trusted_sender in self._reply_blacklist)
             ):
                 return False
             # at 目标匹配任一 bot：消息级 self_id 优先，其次队列登记的 bot_accounts

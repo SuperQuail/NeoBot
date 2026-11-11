@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from neobot_contracts.ports.speaking import SpeechBlocked
 
 import asyncio
 import inspect
@@ -25,6 +24,16 @@ from neobot_app.reply.postprocess import ReplySplitPreview, process_reply_text
 from neobot_app.bot_accounts import primary_bot_account
 from neobot_app.utils.media_sender import prepare_image_segment, send_image
 from neobot_app.time_context import monotonic_seconds
+
+
+def send_response_ok(result: Any) -> bool:
+    """适配器 SendMsgResponse 是否真正成功；失败响应不能被当成已发送。"""
+    if result is False or result is None:
+        return False
+    status = getattr(result, "status", None)
+    if status is None and isinstance(result, dict):
+        status = result.get("status")
+    return status != "failed"
 
 #: 模型常在正文里再写一遍「@昵称」；已经通过 mention_qqs 发真实 @ 时需要去掉，
 #: 否则客户端会出现「@唐天 @ 唐天 喵」这种重复假 @。
@@ -195,6 +204,19 @@ class ReplySender:
             pass
 
     # ── public API (also used by engine) ────────────────────────
+
+    async def send_official_markdown(
+        self, event: Any, content: str, *, reply_to_message_id: int | None = None
+    ) -> Any:
+        """发送一条官方 Markdown 消息；不切分、不降级，失败原样返回。"""
+        conv_ref = event.conversation_ref
+        if conv_ref is None:
+            raise ValueError("ReplyEvent.conversation_ref is None")
+        segments: list[dict] = []
+        if reply_to_message_id is not None:
+            segments.append({"type": "reply", "data": {"id": str(reply_to_message_id)}})
+        segments.append({"type": "official_markdown", "data": {"content": content}})
+        return await self.send_with_timeout(conv_ref, segments, channel="official")
 
     def _preferred_linked_group_target(
         self, conversation_ref: ConversationRef, channel: str | None
@@ -414,36 +436,6 @@ class ReplySender:
                     event.send_incomplete = False
                 await self._emit_self_sent_image(self_sent, conv_ref, entry.file_path, bot_account=bot_account)
                 await self._emoji_service.record_usage(image_number)
-
-        # long reply → markdown image
-        if not images and not send_original and not segments and text.strip():
-            if self._can_use_markdown_image(text):
-                try:
-                    image_path = await asyncio.wait_for(
-                        self._render_long_reply_as_image(text),
-                        timeout=_MARKDOWN_RENDER_TIMEOUT_SECONDS,
-                    )
-                    formatted_messages.append([prepare_image_segment(self._file_server, image_path)])
-                    record_delivery(await self.send_with_timeout(conv_ref, formatted_messages[-1], channel=channel))
-                    event.send_incomplete = False
-                    await self._emit_self_sent_image(
-                        self_sent,
-                        conv_ref,
-                        image_path,
-                        kind="markdown",
-                        source_note=text,
-                        bot_account=bot_account,
-                    )
-                    event.send_response = send_results[0]
-                    self._leave_sending(event, conv_ref.kind)
-                    self._debug_helper.record(
-                        "reply_sent_as_markdown_image", event, text_len=len(text), image_path=str(image_path)
-                    )
-                    return True
-                except SpeechBlocked:
-                    raise
-                except Exception as exc:
-                    self._logger.warning("Markdown 图片渲染失败，降级为文本发送", error=str(exc))
 
         # Phase C: send text (segmented, with cooldown)
         # 已经发过图片、且清洗后没有任何文字可发时，直接收尾：

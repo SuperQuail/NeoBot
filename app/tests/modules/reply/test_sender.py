@@ -225,8 +225,8 @@ async def test_send_reply_falls_back_to_text_when_markdown_render_fails():
     assert event.state == ReplyState.GENERATING
 
 
-async def test_send_reply_uses_markdown_image_when_render_succeeds(tmp_path):
-    """Markdown 渲染成功时发送图片段（不发送文本），并记录 send_response。"""
+async def test_send_reply_does_not_auto_render_markdown_image(tmp_path):
+    """普通 send_reply 不再自动把长文本转图片；想发图片请显式用 send_long_reply。"""
     png = tmp_path / "rendered.png"
     png.write_bytes(b"png-data")
     converter = FakeConverter(result=png)
@@ -240,9 +240,8 @@ async def test_send_reply_uses_markdown_image_when_render_succeeds(tmp_path):
 
     await sender.send_reply(event, long_text)
 
-    assert len(adapter.sent) == 1
-    assert adapter.sent[0][0]["type"] == "image"
-    assert event.send_response == {"status": "ok", "message_id": 1001}
+    assert adapter.sent, "普通发送必须调用 adapter.send 发文本"
+    assert adapter.sent[0][0]["type"] == "text"
 
 
 async def test_send_reply_plain_short_text_single_send():

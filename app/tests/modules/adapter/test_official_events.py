@@ -150,9 +150,7 @@ def test_mention_inside_command_keeps_token_spaces(workdir) -> None:
     types = [segment["type"] for segment in event["message"]]
     assert types == ["at", "text", "at", "text"]
     text = "".join(
-        str(segment.get("data", {}).get("text") or "")
-        for segment in event["message"]
-        if segment["type"] == "text"
+        str(segment.get("data", {}).get("text") or "") for segment in event["message"] if segment["type"] == "text"
     )
     assert text.split() == ["/linkqq", "3514733681"]
 
@@ -174,9 +172,7 @@ def test_full_group_message_with_bot_marker_gets_bot_at(workdir) -> None:
     assert event is not None
     assert {"type": "at", "data": {"qq": 1020304}} in event["message"]
     text = "".join(
-        str(segment.get("data", {}).get("text") or "")
-        for segment in event["message"]
-        if segment["type"] == "text"
+        str(segment.get("data", {}).get("text") or "") for segment in event["message"] if segment["type"] == "text"
     )
     assert text.split() == ["/linkqq", "3514733681"]
 
@@ -310,3 +306,68 @@ def test_bot_mention_in_mentions_adds_bot_at_without_content_marker(workdir) -> 
     assert event is not None
     assert {"type": "at", "data": {"qq": 1020304}} in event["message"]
     assert all(segment.get("data", {}).get("name") != "别的机器人" for segment in event["message"])
+
+
+def test_member_role_is_passed_through(workdir) -> None:
+    mapper = _mapper(workdir)
+
+    admin_event = mapper.map_message(
+        "GROUP_MESSAGE_CREATE",
+        _group_data(author={"member_openid": "m1", "username": "管理员", "member_role": "admin"}),
+    )
+    owner_event = mapper.map_message(
+        "GROUP_MESSAGE_CREATE",
+        _group_data(author={"member_openid": "m2", "username": "群主", "member_role": "owner"}),
+    )
+    unknown_event = mapper.map_message(
+        "GROUP_MESSAGE_CREATE",
+        _group_data(author={"member_openid": "m3", "username": "路人", "member_role": "weird"}),
+    )
+
+    assert admin_event is not None and admin_event["sender"]["role"] == "admin"
+    assert owner_event is not None and owner_event["sender"]["role"] == "owner"
+    assert unknown_event is not None and unknown_event["sender"]["role"] == "member"
+
+
+def test_voice_wav_url_maps_to_record_segment(workdir) -> None:
+    mapper = _mapper(workdir)
+
+    event = mapper.from_dispatch(
+        _dispatch(
+            "C2C_MESSAGE_CREATE",
+            _c2c_data(
+                content="",
+                attachments=[
+                    {
+                        "content_type": "voice",
+                        "voice_wav_url": "https://x/voice.wav",
+                        "asr_refer_text": "语音转出来的文字",
+                    }
+                ],
+            ),
+        )
+    )
+
+    assert event is not None
+    assert {"type": "record", "data": {"file": "https://x/voice.wav", "url": "https://x/voice.wav"}} in event["message"]
+    texts = [segment["data"]["text"] for segment in event["message"] if segment["type"] == "text"]
+    assert "语音转出来的文字" in texts
+
+
+def test_message_scene_msg_idx_is_remembered_for_reply_reference(workdir) -> None:
+    mapper = _mapper(workdir)
+
+    event = mapper.from_dispatch(
+        _dispatch(
+            "C2C_MESSAGE_CREATE",
+            _c2c_data(message_scene={"source": "default", "ext": ["msg_idx=REFIDX_incoming=="]}),
+        )
+    )
+
+    assert event is not None
+    synthetic = event["message_id"]
+    assert mapper._message_ids.reference(synthetic) == "REFIDX_incoming=="
+    context = mapper._message_ids.context(synthetic)
+    assert context is not None
+    assert context["kind"] == "private"
+    assert context["openid"] == "user-openid-1"

@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -75,11 +76,13 @@ class _FakeApi:
         self.settings = settings
         self.requests: list[tuple[str, str, dict]] = []
         self.closed = False
+        self.fail_members: Exception | None = None
         type(self).instances.append(self)
 
     async def request(self, method: str, path: str, *, body=None, timeout: float = 10.0) -> dict:
         self.requests.append((method, path, dict(body or {})))
-        if path == "/users/@me":
+        route = path.split("?", 1)[0]
+        if route == "/users/@me":
             return {
                 "code": 0,
                 "data": {
@@ -87,7 +90,38 @@ class _FakeApi:
                     "share_url": "https://q.qq.com/qqbot/connect?robot_uin=1020304",
                 },
             }
-        return {"code": 0, "data": {"id": "ROBOT1.0_out"}}
+        if method == "DELETE":
+            return {}
+        if route.endswith("/members"):
+            if self.fail_members is not None:
+                raise self.fail_members
+            return {
+                "members": [
+                    {
+                        "member_openid": "member-openid",
+                        "username": "小明",
+                        "member_role": "admin",
+                        "bot": False,
+                        "joined_at": "2026-01-02T03:04:05+08:00",
+                    }
+                ],
+                "next_cursor": "",
+            }
+        if route.endswith("/members/member-openid"):
+            return {
+                "member_openid": "member-openid",
+                "username": "小明",
+                "member_role": "admin",
+                "bot": False,
+                "joined_at": "2026-01-02T03:04:05+08:00",
+            }
+        if route.endswith("/info"):
+            return {
+                "group_openid": "group-openid",
+                "group_name": "测试群",
+                "group_member_num": 42,
+            }
+        return {"id": "ROBOT1.0_out", "ext_info": {"ref_idx": "REFIDX_out"}}
 
     async def close(self) -> None:
         self.closed = True
@@ -325,12 +359,13 @@ async def test_unsupported_actions_return_chinese_failure(workdir, monkeypatch) 
 
     recall = await adapter.call_api("delete_msg", {"message_id": 1})
     assert recall["status"] == "failed"
-    assert "撤回" in recall["message"]
+    assert "无法定位" in recall["message"]
 
     ranges = await adapter.call_api("get_robot_uin_range", {})
     assert ranges["data"] == []
     groups = await adapter.call_api("get_group_list", {})
-    assert groups["data"] == []
+    assert groups["status"] == "failed"
+    assert "群列表" in groups["message"]
     await adapter.stop()
 
 
@@ -383,12 +418,11 @@ async def test_onebot_shaped_methods_and_core_proxy(workdir, monkeypatch) -> Non
     assert core_proxy.is_bound is True
 
     groups = await adapter.get_group_list()
-    assert groups.status == "ok"
-    assert groups.data == []
+    assert groups.status == "failed"
+    assert "群列表" in (groups.message or "")
 
     stranger = await adapter.get_stranger_info(123)
-    assert stranger.status == "ok"
-    assert stranger.data.user_id == 123
+    assert stranger.status == "failed"
 
     # 未在官方事件中出现过的会话反查不到 openid，发送应明确失败。
     failed = await adapter.send_group_msg(9_000_000_000_001, "你好")
@@ -438,3 +472,116 @@ async def test_unbind_removes_stored_credentials(workdir) -> None:
 
     assert not store.path.exists()
     assert adapter.bound is False
+
+
+async def test_group_info_and_member_apis_use_official_endpoints(workdir, monkeypatch) -> None:
+    _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
+    adapter = _make_adapter(workdir, [])
+    await adapter.start()
+    group_id = adapter.identity.group_id("group-openid")
+    member_id = adapter.identity.user_id("member-openid")
+
+    info = await adapter.call_api("get_group_info", {"group_id": group_id})
+    assert info["status"] == "ok"
+    assert info["data"]["group_name"] == "测试群"
+    assert info["data"]["member_count"] == 42
+
+    members = await adapter.call_api("get_group_member_list", {"group_id": group_id})
+    assert members["status"] == "ok"
+    assert len(members["data"]) == 1
+    member = members["data"][0]
+    assert member["group_id"] == group_id
+    assert member["user_id"] == member_id
+    assert member["nickname"] == "小明"
+    assert member["role"] == "admin"
+    assert member["is_robot"] is False
+    assert member["join_time"] > 0
+
+    detail = await adapter.call_api("get_group_member_info", {"group_id": group_id, "user_id": member_id})
+    assert detail["status"] == "ok"
+    assert detail["data"]["role"] == "admin"
+
+    paths = [path for _method, path, _body in _FakeApi.instances[0].requests]
+    assert "/v2/groups/group-openid/info" in paths
+    assert any(path.startswith("/v2/groups/group-openid/members") for path in paths)
+    await adapter.stop()
+
+
+async def test_group_member_api_permission_error_is_explicit(workdir, monkeypatch) -> None:
+    from neobot_adapter.official.send import OfficialApiError
+
+    _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
+    adapter = _make_adapter(workdir, [])
+    await adapter.start()
+    _FakeApi.instances[0].fail_members = OfficialApiError("应用无接口访问权限", code=11253)
+    group_id = adapter.identity.group_id("group-openid")
+
+    result = await adapter.call_api("get_group_member_list", {"group_id": group_id})
+
+    assert result["status"] == "failed"
+    assert "11253" in result["message"]
+    await adapter.stop()
+
+
+async def test_delete_msg_uses_sent_message_context(workdir, monkeypatch) -> None:
+    _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
+    events: list[dict] = []
+    adapter = _make_adapter(workdir, events)
+    await adapter.start()
+    await adapter._on_event(_inbound_c2c())
+    message = next(event for event in events if event.get("post_type") == "message")
+    conversation = ConversationRef(kind="private", id=str(message["user_id"]))
+    sent = await adapter.send(conversation, "回复")
+    assert sent.status == "ok"
+
+    result = await adapter.call_api("delete_msg", {"message_id": sent.data.message_id})
+
+    assert result["status"] == "ok"
+    deletes = [path for method, path, _body in _FakeApi.instances[0].requests if method == "DELETE"]
+    assert deletes == ["/v2/users/user-openid-1/messages/ROBOT1.0_out"]
+    await adapter.stop()
+
+
+async def test_delete_msg_can_target_incoming_message(workdir, monkeypatch) -> None:
+    _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
+    events: list[dict] = []
+    adapter = _make_adapter(workdir, events)
+    await adapter.start()
+    await adapter._on_event(_inbound_c2c())
+    message = next(event for event in events if event.get("post_type") == "message")
+
+    result = await adapter.call_api("delete_msg", {"message_id": message["message_id"]})
+
+    assert result["status"] == "ok"
+    deletes = [path for method, path, _body in _FakeApi.instances[0].requests if method == "DELETE"]
+    assert deletes == ["/v2/users/user-openid-1/messages/ROBOT1.0_in"]
+    await adapter.stop()
+
+
+async def test_delete_msg_rejects_message_older_than_two_minutes(workdir, monkeypatch) -> None:
+    _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
+    adapter = _make_adapter(workdir, [])
+    synthetic = adapter.message_ids.next(
+        "ROBOT1.0_old",
+        context={"kind": "private", "openid": "user-openid", "at": time.time() - 121},
+    )
+
+    result = await adapter.call_api("delete_msg", {"message_id": synthetic})
+
+    assert result["status"] == "failed"
+    assert "2 分钟" in result["message"]
+
+
+def _inbound_c2c() -> dict:
+    return {
+        "op": 0,
+        "t": "C2C_MESSAGE_CREATE",
+        "id": "evt-message-1",
+        "s": 2,
+        "d": {
+            "id": "ROBOT1.0_in",
+            "content": "你好",
+            "timestamp": datetime.now().astimezone().isoformat(),
+            "author": {"user_openid": "user-openid-1", "username": "Alice"},
+        },
+    }

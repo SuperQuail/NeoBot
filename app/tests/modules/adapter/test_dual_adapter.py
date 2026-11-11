@@ -8,11 +8,13 @@ ensure_accounts、apply_channel_config 增删/重启、stop 全停。
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
 
 from neobot_adapter import AdapterSettings, SwitchableAdapter, create_adapter
+from neobot_adapter.switchable import channel_context, current_channel
 from neobot_contracts.models import ConversationRef
 
 from .test_switchable_adapter import _FakeBackend, _config, _install_fake_backends
@@ -202,6 +204,142 @@ async def test_dual_call_api_routes_explicit_channel(monkeypatch: pytest.MonkeyP
     assert auto["data"]["mode"] == "onebot"
     assert created[0].api_calls == ["get_group_list"]
     assert created[1].api_calls == ["get_group_list"]
+
+
+# ── 事件来源通道路由：处理中的查询不能落到默认 OneBot ──────────────
+
+
+async def test_call_api_follows_event_source_channel_inside_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, created, _ = _dual(monkeypatch)
+    await adapter.start()
+    results: list[dict[str, Any]] = []
+    ambient: list[str | None] = []
+
+    async def handler(event: dict[str, Any]) -> None:
+        ambient.append(current_channel())
+        results.append(await adapter.call_api("get_group_list", {}))
+
+    adapter.subscribe("message", handler)
+    await created[1].event_sink(_message("group", 5))
+
+    assert ambient == ["official"]
+    assert results[0]["data"]["mode"] == "official"
+    assert created[1].api_calls == ["get_group_list"]
+    assert created[0].api_calls == []
+    # 分发结束后恢复默认选路
+    assert current_channel() is None
+    assert (await adapter.call_api("get_group_list", {}))["data"]["mode"] == "onebot"
+
+
+async def test_event_channel_context_is_inherited_by_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """回复管线是事件处理里 create_task 出来的：它的查询必须仍查来源通道。"""
+    adapter, created, _ = _dual(monkeypatch)
+    await adapter.start()
+    tasks: list[asyncio.Task[Any]] = []
+
+    async def handler(event: dict[str, Any]) -> None:
+        tasks.append(asyncio.create_task(adapter.call_api("get_msg", {"message_id": 1})))
+
+    adapter.subscribe("message", handler)
+    await created[1].event_sink(_message("group", 6))
+    results = await asyncio.gather(*tasks)
+
+    assert results[0]["status"] == "ok"
+    assert created[1].api_calls == ["get_msg"]
+    assert created[0].api_calls == []
+
+
+async def test_explicit_channel_overrides_event_source_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, created, _ = _dual(monkeypatch)
+    await adapter.start()
+    results: list[dict[str, Any]] = []
+
+    async def handler(event: dict[str, Any]) -> None:
+        results.append(await adapter.call_api("get_group_list", {}, channel="onebot"))
+
+    adapter.subscribe("message", handler)
+    await created[1].event_sink(_message("group", 7))
+
+    assert results[0]["data"]["mode"] == "onebot"
+    assert created[0].api_calls == ["get_group_list"]
+    assert created[1].api_calls == []
+
+
+async def test_event_channel_disconnected_returns_failed_without_onebot_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, created, _ = _dual(monkeypatch)
+    await adapter.start()
+    created[1].connected = False
+    results: list[dict[str, Any]] = []
+
+    async def handler(event: dict[str, Any]) -> None:
+        results.append(await adapter.call_api("get_group_list", {}))
+
+    adapter.subscribe("message", handler)
+    await created[1].event_sink(_message("group", 8))
+
+    assert results[0]["status"] == "failed" and "official" in results[0]["message"]
+    assert created[0].api_calls == []
+    assert created[1].api_calls == []
+
+
+async def test_query_convenience_methods_follow_event_source_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, created, _ = _dual(monkeypatch)
+    await adapter.start()
+    got: dict[str, Any] = {}
+
+    async def handler(event: dict[str, Any]) -> None:
+        got["msg"] = await adapter.get_msg(11)
+        got["members"] = await adapter.get_group_member_list(22)
+
+    adapter.subscribe("message", handler)
+    await created[1].event_sink(_message("group", 9))
+
+    assert got["msg"]["data"]["mode"] == "official"
+    assert got["members"]["data"][0]["mode"] == "official"
+    assert created[1].method_calls == ["get_msg", "get_group_member_list"]
+    assert created[0].method_calls == []
+    # 事件上下文之外仍是默认 OneBot；显式 channel 仍可指定。
+    assert (await adapter.get_msg(11))["data"]["mode"] == "onebot"
+    assert (await adapter.get_msg(12, channel="official"))["data"]["mode"] == "official"
+
+
+async def test_query_convenience_method_returns_failed_for_unavailable_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, created, _ = _dual(monkeypatch)
+    await adapter.start()
+    created[1].connected = False
+
+    result = await adapter.get_msg(1, channel="official")
+
+    assert result.status == "failed" and "official" in (result.message or "")
+    assert created[1].method_calls == []
+
+
+async def test_channel_context_pins_queries_outside_event_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """后台/定时/跨聊天的合成事件用同一入口把通道钉进上下文。"""
+    adapter, created, _ = _dual(monkeypatch)
+    await adapter.start()
+
+    with channel_context("official"):
+        assert current_channel() == "official"
+        result = await adapter.call_api("get_msg", {"message_id": 1})
+
+    assert result["data"]["mode"] == "official"
+    assert created[1].api_calls == ["get_msg"]
+    assert current_channel() is None
 
 
 # ── 账号 ────────────────────────────────────────────────────────────

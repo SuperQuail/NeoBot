@@ -11,7 +11,16 @@ from neobot_chat.schema.types import ToolDefinition
 from neobot_app.reply.tool_parts.common import _SKILL_GUARD_BASE_TOOLS, _SKILL_INTERNAL_KEYS
 
 #: 官方 QQ 机器人协议没有等价能力的工具：官方通道下不暴露、也不允许执行。
-_OFFICIAL_HIDDEN_TOOLS = frozenset({"react_emoji", "search_qq_emoji", "poke_user"})
+_OFFICIAL_HIDDEN_TOOLS = frozenset(
+    {
+        "react_emoji",
+        "search_qq_emoji",
+        "poke_user",
+        "chat_history__read_earlier_messages",
+        "cross_chat__cross_chat_query",
+        "user_profile__analyze_user_avatar",
+    }
+)
 #: 这些技能整包依赖 OneBot/NapCat 专属能力（群管理、好友管理、合并转发、任意 API 调用）。
 _OFFICIAL_HIDDEN_SKILLS = frozenset(
     {"onebot", "group_management", "friend_management", "forward_message"}
@@ -145,6 +154,8 @@ class _DispatchMixin:
             return await self._execute_mark_scheduled_task_complete(args)
         if name == "send_long_reply":
             return await self._execute_send_long_reply(args)
+        if name == "send_official_markdown":
+            return await self._execute_official_markdown(args)
         # Markdown 技能读取（优先于 SkillManager 的 __ 路由）
         if name == "skills__read_manifest":
             return self._read_skill_manifest(args)

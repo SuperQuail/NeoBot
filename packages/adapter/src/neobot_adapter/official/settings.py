@@ -30,7 +30,6 @@ class OfficialSettings:
     base_url: str = DEFAULT_BASE_URL
     token_url: str = DEFAULT_TOKEN_URL
     portal_host: str = DEFAULT_PORTAL_HOST
-    markdown: bool = True
     data_dir: Path = field(default_factory=lambda: Path("data"))
     bind_timeout_seconds: float = DEFAULT_BIND_TIMEOUT_SECONDS
 
@@ -60,7 +59,6 @@ class OfficialSettings:
             token_url=_clean(getattr(settings, "qq_token_url", ""), DEFAULT_TOKEN_URL),
             # 配置里允许填带协议头的域名，统一成 host 供 URL 拼接使用。
             portal_host=portal_host.removeprefix("https://").removeprefix("http://").rstrip("/"),
-            markdown=bool(getattr(settings, "qq_markdown", True)),
             data_dir=Path(str(resolved_data_dir or "data")),
             bind_timeout_seconds=DEFAULT_BIND_TIMEOUT_SECONDS,
         )

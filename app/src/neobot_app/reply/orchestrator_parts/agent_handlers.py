@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from neobot_app.reply.event import ReplyState
 from neobot_app.reply.postprocess import ReplySplitPreview
+from neobot_app.reply.sender import send_response_ok
 from neobot_app.utils.media_sender import send_image
 from ._runtime import asyncio
 from .agent_state import AgentLoopState
@@ -211,6 +212,46 @@ class AgentHandlersMixin:
             lines.append(f"  ID {item['id']}: {item['name']} ({item['hint']})")
         return "\n".join(lines)
 
+    async def _agent_send_official_markdown_handler(
+        self,
+        state: AgentLoopState,
+        event: ReplyEvent,
+        queue: MessageQueue,
+        queue_copy: MessageQueue,
+        queue_key: str,
+        numbering: MessageNumbering,
+        *,
+        content: str,
+        reply_to_number: int | None = None,
+    ) -> object:
+        from neobot_app.reply.sender import send_response_ok
+
+        conv_ref = event.conversation_ref
+        if conv_ref is None:
+            return {"status": "failed", "message": "会话不存在"}
+        reply_id = numbering.get_message_id(reply_to_number) if reply_to_number is not None else None
+        before_message_id = queue.get_last_message_id(queue_key)
+        delivered = await self._sender.send_official_markdown(
+            event, content, reply_to_message_id=reply_id
+        )
+        if not send_response_ok(delivered):
+            self._logger.info(
+                "官方 Markdown 消息发送失败",
+                event_id=event.event_id,
+                error=str(getattr(delivered, "message", "") or ""),
+            )
+            return delivered
+        state.reply_sent = True
+        self._clear_unsent_marker(event)
+        event.send_response = delivered
+        self._record_reply_delivered(
+            event, queue, queue_key, before_message_id=before_message_id
+        )
+        await self._sender.record_self_sent_text(
+            self._self_sent_sink(queue, queue_copy, queue_key), conv_ref, content
+        )
+        return delivered
+
     async def _agent_speak_handler(
         self,
         state: AgentLoopState,
@@ -313,7 +354,7 @@ class AgentHandlersMixin:
                 channel=channel,
             )
             caption_delivered = await self._send_with_timeout(conv_ref, caption_segs, channel=channel)
-            if conv_ref is not None and caption_delivered is not False:
+            if conv_ref is not None and send_response_ok(caption_delivered):
                 state.reply_sent = True
                 self._clear_unsent_marker(event)
                 event.send_response = caption_delivered
@@ -344,12 +385,13 @@ class AgentHandlersMixin:
                 kind="markdown",
                 source_note=markdown,
             )
-        if image_delivered is not False or caption_delivered is not False:
+        if send_response_ok(image_delivered) or send_response_ok(caption_delivered):
             state.reply_sent = True
             self._clear_unsent_marker(event)
             event.send_response = (
-                image_delivered if image_delivered is not False else caption_delivered
+                image_delivered if send_response_ok(image_delivered) else caption_delivered
             )
             self._record_reply_delivered(
                 event, queue, queue_key, before_message_id=before_message_id
             )
+        return image_delivered if send_response_ok(image_delivered) else caption_delivered

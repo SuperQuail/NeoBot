@@ -26,9 +26,7 @@ _QUOTE_PREFIX = "[引用] "
 _QUOTE_ATTACHMENT = "[附件]"
 _VOICE_PLACEHOLDER = "[语音消息]"
 #: 官方文本里 @ 机器人的标记：<@!openid> 或 <qqbot-at-user id="openid" />。
-_MENTION_MARKUP = re.compile(
-    r'(?:<qqbot-at-user\s+id="([^"]*)"\s*/>|<@!?([^>\s]+)>)'
-)
+_MENTION_MARKUP = re.compile(r'(?:<qqbot-at-user\s+id="([^"]*)"\s*/>|<@!?([^>\s]+)>)')
 _DEDUPE_TTL_SECONDS = 300.0
 _DEDUPE_MAX_SIZE = 1000
 _VOICE_CONTENT_PREFIXES = ("voice", "audio")
@@ -111,12 +109,21 @@ class EventMapper:
         if event_type not in MESSAGE_EVENTS or not isinstance(data, dict):
             return None
         official_id = str(data.get("id") or "").strip()
+        created_at = _epoch_seconds(data.get("timestamp"))
+        kind, context_openid = _conversation_context(event_type, data)
         try:
-            message_id = self._message_ids.next(official_id) if official_id else 0
+            message_id = (
+                self._message_ids.next(
+                    official_id,
+                    context={"kind": kind, "openid": context_openid, "at": created_at},
+                )
+                if official_id
+                else 0
+            )
         except ValueError:
             message_id = 0
         event: dict[str, Any] = {
-            "time": _epoch_seconds(data.get("timestamp")),
+            "time": created_at,
             "self_id": self.self_id,
             "post_type": "message",
             "message_id": message_id,
@@ -125,6 +132,10 @@ class EventMapper:
         if official_id:
             # 被动回复要用官方 msg_id；OneBot 命令方只看到合成 int。
             event["_official_message_id"] = official_id
+        # 本条消息自身的引用索引：之后引用回复它时 message_reference 要填这个。
+        ref_idx = _own_ref_idx(data)
+        if ref_idx and message_id:
+            self._message_ids.remember_reference(message_id, ref_idx)
         message: list[dict[str, Any]] = []
         if event_type == "C2C_MESSAGE_CREATE":
             self._fill_private(event, data, message)
@@ -207,6 +218,9 @@ class EventMapper:
             unknown_is_bot=True,
         )
         _append_attachments(message, data.get("attachments"))
+        role = str(author.get("member_role") or "").strip().casefold()
+        if role not in {"owner", "admin", "member"}:
+            role = "member"
         event.update(
             {
                 "message_type": "group",
@@ -217,7 +231,7 @@ class EventMapper:
                     "user_id": user_id,
                     "nickname": _nickname(author, user_id),
                     "card": "",
-                    "role": "member",
+                    "role": role,
                 },
             }
         )
@@ -241,6 +255,30 @@ def _nickname(author: dict[str, Any], user_id: int) -> str:
     return name or f"QQ:{user_id}"
 
 
+def _conversation_context(event_type: str, data: dict[str, Any]) -> tuple[str, str]:
+    """事件的会话类型与 openid；撤回消息时用它定位官方端点。"""
+    if event_type == "C2C_MESSAGE_CREATE":
+        author = data.get("author") if isinstance(data.get("author"), dict) else {}
+        return "private", str(author.get("user_openid") or author.get("id") or "").strip()
+    group_openid = str(data.get("group_openid") or data.get("group_id") or "").strip()
+    return "group", group_openid
+
+
+def _own_ref_idx(data: dict[str, Any]) -> str:
+    """message_scene.ext 里的 msg_idx：本条消息的引用索引（REFIDX_...）。"""
+    scene = data.get("message_scene")
+    if not isinstance(scene, dict):
+        return ""
+    ext = scene.get("ext")
+    if not isinstance(ext, list):
+        return ""
+    for item in ext:
+        text = str(item)
+        if text.startswith("msg_idx="):
+            return text[len("msg_idx=") :].strip()
+    return ""
+
+
 def _append_text(message: list[dict[str, Any]], text: str) -> None:
     if text:
         message.append({"type": "text", "data": {"text": text}})
@@ -249,20 +287,14 @@ def _append_text(message: list[dict[str, Any]], text: str) -> None:
 def _mention_openid(item: Any) -> str:
     if not isinstance(item, dict):
         return ""
-    return str(
-        item.get("member_openid")
-        or item.get("id")
-        or item.get("user_openid")
-        or ""
-    ).strip()
+    return str(item.get("member_openid") or item.get("id") or item.get("user_openid") or "").strip()
 
 
 def _append_bot_at(message: list[dict[str, Any]], bot_self_id: int) -> None:
     if not bot_self_id:
         return
     if any(
-        segment.get("type") == "at"
-        and str(segment.get("data", {}).get("qq")) == str(bot_self_id)
+        segment.get("type") == "at" and str(segment.get("data", {}).get("qq")) == str(bot_self_id)
         for segment in message
     ):
         return
@@ -370,17 +402,24 @@ def _append_attachments(message: list[dict[str, Any]], attachments: Any) -> None
         if not isinstance(attachment, dict):
             continue
         url = str(attachment.get("url") or "").strip()
-        if not url:
-            continue
         content_type = str(attachment.get("content_type") or "").strip().lower()
         filename = str(attachment.get("filename") or attachment.get("name") or "")
+        is_voice = content_type.startswith(_VOICE_CONTENT_PREFIXES) or filename.endswith((".silk", ".amr", ".wav"))
+        if is_voice:
+            # 官方在 voice_wav_url 给出可播放的 WAV；有就发 record 段，ASR 文本另起一段。
+            wav_url = str(attachment.get("voice_wav_url") or "").strip()
+            if wav_url:
+                message.append({"type": "record", "data": {"file": wav_url, "url": wav_url}})
+            asr = str(attachment.get("asr_refer_text") or "").strip()
+            if asr:
+                _append_text(message, asr)
+            elif not wav_url:
+                message.append({"type": "text", "data": {"text": _VOICE_PLACEHOLDER}})
+            continue
+        if not url:
+            continue
         if content_type.startswith("image"):
             message.append({"type": "image", "data": {"file": url, "url": url}})
-        elif content_type.startswith(_VOICE_CONTENT_PREFIXES) or filename.endswith((".silk", ".amr")):
-            # 官方语音没有可直接播放的 OneBot record URL：有 ASR 文本就追加文本，
-            # 否则放一个占位，避免模型把空消息当成无事发生。
-            asr = str(attachment.get("asr_refer_text") or "").strip()
-            message.append({"type": "text", "data": {"text": asr or _VOICE_PLACEHOLDER}})
         elif content_type.startswith("video") or filename.lower().endswith(_VIDEO_FILE_SUFFIXES):
             message.append({"type": "video", "data": {"file": url, "url": url}})
         else:

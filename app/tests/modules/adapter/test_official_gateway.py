@@ -8,6 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shutil
+import tempfile
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -19,6 +23,17 @@ from neobot_adapter.official.gateway import OfficialGateway
 from neobot_adapter.official.settings import OfficialSettings
 
 _STOP = object()
+
+
+@pytest.fixture
+def workdir():
+    """隔离落盘目录；pytest 的 tmp_path 用 0o700 建目录，本机沙箱下会拒绝访问。"""
+    path = Path(tempfile.gettempdir()) / f"neobot-official-{uuid.uuid4().hex}"
+    os.mkdir(path)
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 class FakeResponse:
@@ -171,9 +186,9 @@ def _ops(ws: FakeWS, op: int) -> list[dict[str, Any]]:
 # ── 连接与 Identify / Resume ────────────────────────────────────────
 
 
-async def test_gateway_identifies_and_emits_ready(tmp_path: Path) -> None:
+async def test_gateway_identifies_and_emits_ready(workdir: Path) -> None:
     events: list[dict[str, Any]] = []
-    gateway, ws, http, urls = _make_gateway(tmp_path, on_event=events.append)
+    gateway, ws, http, urls = _make_gateway(workdir, on_event=events.append)
 
     await gateway.start()
     ws.incoming.put_nowait(_frame(10, {"heartbeat_interval": 60_000}))
@@ -205,8 +220,8 @@ async def test_gateway_identifies_and_emits_ready(tmp_path: Path) -> None:
     assert not gateway.connected
 
 
-async def test_gateway_resumes_existing_session_on_hello(tmp_path: Path) -> None:
-    gateway, ws, _http, _urls = _make_gateway(tmp_path)
+async def test_gateway_resumes_existing_session_on_hello(workdir: Path) -> None:
+    gateway, ws, _http, _urls = _make_gateway(workdir)
     gateway._session_id = "sess-9"
     gateway._last_seq = 42
 
@@ -224,8 +239,8 @@ async def test_gateway_resumes_existing_session_on_hello(tmp_path: Path) -> None
     await gateway.stop()
 
 
-async def test_gateway_heartbeats_with_last_seq(tmp_path: Path) -> None:
-    gateway, ws, _http, _urls = _make_gateway(tmp_path)
+async def test_gateway_heartbeats_with_last_seq(workdir: Path) -> None:
+    gateway, ws, _http, _urls = _make_gateway(workdir)
     await gateway.start()
     ws.incoming.put_nowait(_frame(10, {"heartbeat_interval": 40}))
     assert await _wait_for(lambda: ws.sent)
@@ -252,13 +267,13 @@ async def test_gateway_heartbeats_with_last_seq(tmp_path: Path) -> None:
         (None, "retry"),
     ],
 )
-def test_gateway_classifies_close_codes(tmp_path: Path, code: int | None, action: str) -> None:
-    gateway, _ws, _http, _urls = _make_gateway(tmp_path)
+def test_gateway_classifies_close_codes(workdir: Path, code: int | None, action: str) -> None:
+    gateway, _ws, _http, _urls = _make_gateway(workdir)
     assert gateway._classify_close(code) == action
 
 
-def test_gateway_backoff_grows_and_is_capped(tmp_path: Path) -> None:
-    gateway, _ws, _http, _urls = _make_gateway(tmp_path)
+def test_gateway_backoff_grows_and_is_capped(workdir: Path) -> None:
+    gateway, _ws, _http, _urls = _make_gateway(workdir)
 
     first = gateway._backoff_delay(0)
     later = gateway._backoff_delay(5)
@@ -268,9 +283,9 @@ def test_gateway_backoff_grows_and_is_capped(tmp_path: Path) -> None:
     assert first <= later
 
 
-async def test_gateway_invalidates_token_on_4004(tmp_path: Path) -> None:
+async def test_gateway_invalidates_token_on_4004(workdir: Path) -> None:
     token = FakeTokenProvider()
-    gateway, _ws, _http, _urls = _make_gateway(tmp_path, token=token)
+    gateway, _ws, _http, _urls = _make_gateway(workdir, token=token)
     gateway._session_id = "stale-session"
     gateway._last_seq = 9
     calls: list[int] = []
@@ -289,8 +304,8 @@ async def test_gateway_invalidates_token_on_4004(tmp_path: Path) -> None:
     assert calls
 
 
-async def test_gateway_clears_session_on_4006(tmp_path: Path) -> None:
-    gateway, _ws, _http, _urls = _make_gateway(tmp_path)
+async def test_gateway_clears_session_on_4006(workdir: Path) -> None:
+    gateway, _ws, _http, _urls = _make_gateway(workdir)
     gateway._session_id = "sess-1"
     gateway._last_seq = 3
 
@@ -306,8 +321,8 @@ async def test_gateway_clears_session_on_4006(tmp_path: Path) -> None:
     await gateway.stop()
 
 
-async def test_gateway_stops_retrying_on_fatal_close(tmp_path: Path) -> None:
-    gateway, _ws, _http, _urls = _make_gateway(tmp_path)
+async def test_gateway_stops_retrying_on_fatal_close(workdir: Path) -> None:
+    gateway, _ws, _http, _urls = _make_gateway(workdir)
     calls: list[int] = []
 
     async def failing_connect() -> None:
@@ -330,8 +345,8 @@ async def test_gateway_stops_retrying_on_fatal_close(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(("op", "clear_session"), [(7, False), (9, True)])
-async def test_gateway_op7_and_op9_raise_reconnect(tmp_path: Path, op: int, clear_session: bool) -> None:
-    gateway, _ws, _http, _urls = _make_gateway(tmp_path)
+async def test_gateway_op7_and_op9_raise_reconnect(workdir: Path, op: int, clear_session: bool) -> None:
+    gateway, _ws, _http, _urls = _make_gateway(workdir)
 
     with pytest.raises(gateway_module._Reconnect) as excinfo:
         await gateway._handle_frame(SimpleNamespace(), json.dumps(_frame(op)))
@@ -342,7 +357,7 @@ async def test_gateway_op7_and_op9_raise_reconnect(tmp_path: Path, op: int, clea
 # ── 事件回调与停止 ──────────────────────────────────────────────────
 
 
-async def test_gateway_event_handler_errors_are_isolated(tmp_path: Path) -> None:
+async def test_gateway_event_handler_errors_are_isolated(workdir: Path) -> None:
     seen: list[str] = []
     logger = FakeLogger()
 
@@ -350,7 +365,7 @@ async def test_gateway_event_handler_errors_are_isolated(tmp_path: Path) -> None
         seen.append(str(payload.get("t")))
         raise RuntimeError("handler boom")
 
-    gateway, ws, _http, _urls = _make_gateway(tmp_path, on_event=handler, logger=logger)
+    gateway, ws, _http, _urls = _make_gateway(workdir, on_event=handler, logger=logger)
     await gateway.start()
     ws.incoming.put_nowait(_frame(10, {"heartbeat_interval": 60_000}))
     ws.incoming.put_nowait(_frame(0, {}, event_type="C2C_MESSAGE_CREATE"))
@@ -363,9 +378,9 @@ async def test_gateway_event_handler_errors_are_isolated(tmp_path: Path) -> None
 
 
 async def test_gateway_wait_connected_times_out_and_stop_is_idempotent(
-    tmp_path: Path,
+    workdir: Path,
 ) -> None:
-    gateway, _ws, _http, _urls = _make_gateway(tmp_path)
+    gateway, _ws, _http, _urls = _make_gateway(workdir)
 
     assert await gateway.wait_connected(0.01) is False
 
@@ -374,9 +389,9 @@ async def test_gateway_wait_connected_times_out_and_stop_is_idempotent(
     assert not gateway.connected
 
 
-async def test_gateway_clears_connected_when_connection_ends(tmp_path: Path) -> None:
+async def test_gateway_clears_connected_when_connection_ends(workdir: Path) -> None:
     """连接结束后立即不可用，重连退避期间不能继续按 connected 选路。"""
-    gateway, ws, _http, _urls = _make_gateway(tmp_path)
+    gateway, ws, _http, _urls = _make_gateway(workdir)
     await gateway.start()
     ws.incoming.put_nowait(_frame(10, {"heartbeat_interval": 60_000}))
     ws.incoming.put_nowait(_frame(0, {"session_id": "sess-1"}, event_type="READY"))
