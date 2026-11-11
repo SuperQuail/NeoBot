@@ -231,12 +231,14 @@ def _group_action_params(action: str, args: dict) -> tuple[str, dict[str, Any]]:
         return "delete_msg", {"message_id": _require(message_id, "message_id")}
     raise ValueError(f"未知群管理动作: {action}")
 
-def _as_id(value: Any) -> str | None:
-    """群/用户本地 ID：QQ 数字与 openid 都按字符串透传。"""
+def _as_id(value: Any) -> int | str | None:
+    """群/用户本地 ID：纯数字保留 int（OneBot 协议原义），openid 原样透传。"""
     if value in (None, ""):
         return None
     text = str(value).strip()
-    return text or None
+    if not text:
+        return None
+    return int(text) if text.isdigit() else text
 
 
 def _as_int(value: Any) -> int | None:
