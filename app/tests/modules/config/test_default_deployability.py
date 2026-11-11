@@ -25,7 +25,7 @@ def test_admin_accounts_is_optional_not_required() -> None:
     chat_section = BotConfig().chat
     hint = typing.get_type_hints(type(chat_section))["admin_accounts"]
     assert type(None) in typing.get_args(hint), "admin_accounts 应为 Optional，否则会被当成必须项"
-    assert chat_section.admin_accounts == ["9000000000001"]
+    assert chat_section.admin_accounts == []
 
 
 def test_default_chat_models_use_deepseek_official_peak_pricing() -> None:

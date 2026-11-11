@@ -1,8 +1,11 @@
 """官方 openid 与 OneBot 合成数字 ID 的映射。
 
 官方事件只给 openid，而本体的会话键、存储与工具参数都沿用了 OneBot 的 int
-用户/群号；这里把 openid 换成不会与真实 QQ 号碰撞的 13 位合成号，并持久化，
-保证重启后同一 openid 仍是同一个会话对象。
+用户/群号；这里把 openid 换成不会与真实 QQ 号碰撞的 13 位合成号，并持久化。
+
+**openid 是唯一身份源头**：合成号只是确定性派生视图，encode/decode 围绕
+openid 工作；13 位十进制无法容纳 32 字符 openid，因此“可逆”依赖 identities.json
+里的反向表，而不是纯哈希。未来改字符串主键时直接使用 openid 即可。
 """
 
 from __future__ import annotations
@@ -60,6 +63,16 @@ class IdentityMap:
         """合成号 -> openid；kind 为 "group" 走群映射，其余（private/friend）走用户映射。"""
         table = self._group_openids if str(kind or "").strip().casefold() == "group" else self._user_openids
         return table.get(int(synthetic))
+
+    def encode(self, openid: str, *, kind: str = "user") -> int:
+        """规范入口：openid -> 合成号；openid 是唯一源头，合成号只是派生视图。"""
+        if str(kind or "").strip().casefold() == "group":
+            return self.group_id(openid)
+        return self.user_id(openid)
+
+    def decode(self, synthetic: int, *, kind: str = "user") -> str | None:
+        """可逆反查：合成号 -> openid；反查表随 identities.json 持久化。"""
+        return self.openid(synthetic, kind)
 
     # ── 内部 ────────────────────────────────────────────────────────
 

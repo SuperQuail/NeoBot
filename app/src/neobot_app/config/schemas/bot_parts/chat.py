@@ -312,11 +312,10 @@ class EnhancedChat(Chat):
         metadata={"description": "余额预警阈值（CNY），低于此值时发送私聊通知；默认1.0"},
     )
     admin_accounts: Optional[List[str]] = field(
-        default_factory=lambda: ["9000000000001"],
+        default_factory=list,
         metadata={
             "description": "超级管理员QQ号列表，用于接收余额不足等系统通知；仅可通过配置增减。"
-            "默认包含官方开放平台默认开发者（合成 ID 9000000000001，即第一个真实用户）；"
-            "留空也能正常启动，但相关系统通知无人接收；面板首页会给出提示"
+            "默认留空，必须由部署者显式设置；留空也能正常启动，但相关系统通知无人接收；面板首页会给出提示"
         },
     )
     sub_admin_accounts: List[str] = field(

@@ -173,3 +173,15 @@ def test_identity_map_namespace_changes_derived_ids(workdir: Path) -> None:
     one = IdentityMap(workdir / "one", namespace="app-1")
     two = IdentityMap(workdir / "two", namespace="app-2")
     assert one.user_id("same-openid") != two.user_id("same-openid")
+
+
+def test_identity_encode_decode_roundtrip(workdir: Path) -> None:
+    identities = IdentityMap(workdir, namespace="app")
+    user = identities.encode("openid-user", kind="user")
+    group = identities.encode("openid-group", kind="group")
+
+    assert identities.decode(user, kind="user") == "openid-user"
+    assert identities.decode(group, kind="group") == "openid-group"
+    assert identities.decode(user, kind="group") is None
+    assert identities.decode(group, kind="user") is None
+    assert identities.encode("openid-user", kind="user") == user
