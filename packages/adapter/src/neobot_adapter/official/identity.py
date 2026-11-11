@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -18,6 +19,8 @@ from typing import Any
 #: 用户/群两段（9.0T / 9.5T）也互不重叠，从 id 一眼能看出来源。
 _USER_BASE = 9_000_000_000_000
 _GROUP_BASE = 9_500_000_000_000
+#: 用户/群两段各 5000 亿个号，落盘映射保留旧值，新 openid 用哈希确定。
+_GROUP_SLOT = 500_000_000_000
 _IDENTITIES_DIR_NAME = "qqbot"
 _IDENTITIES_FILE_NAME = "identities.json"
 
@@ -25,7 +28,15 @@ _IDENTITIES_FILE_NAME = "identities.json"
 class IdentityMap:
     """openid ↔ 13 位合成号；落盘到 <data_dir>/qqbot/identities.json。"""
 
-    def __init__(self, data_dir: str | Path) -> None:
+    def __init__(
+        self,
+        data_dir: str | Path,
+        *,
+        namespace: str = "",
+        logger: Any | None = None,
+    ) -> None:
+        self._namespace = str(namespace or "")
+        self._logger = logger
         self._path = Path(data_dir) / _IDENTITIES_DIR_NAME / _IDENTITIES_FILE_NAME
         self._users: dict[str, int] = {}
         self._groups: dict[str, int] = {}
@@ -68,15 +79,32 @@ class IdentityMap:
         if known is not None:
             return known
         if is_group:
-            synthetic = self._next_group
-            self._next_group += 1
+            synthetic = self._stable_id("group", key, _GROUP_BASE, _GROUP_SLOT)
+            while synthetic in by_synthetic and by_synthetic[synthetic] != key:
+                synthetic = _GROUP_BASE + (synthetic - _GROUP_BASE + 1) % _GROUP_SLOT
         else:
-            synthetic = self._next_user
-            self._next_user += 1
+            synthetic = self._stable_id("user", key, _USER_BASE, _GROUP_BASE - _USER_BASE)
+            while synthetic in by_synthetic and by_synthetic[synthetic] != key:
+                synthetic = _USER_BASE + (synthetic - _USER_BASE + 1) % (_GROUP_BASE - _USER_BASE)
         by_openid[key] = synthetic
         by_synthetic[synthetic] = key
         self._persist()
+        if self._logger is not None:
+            self._logger.info(
+                "官方身份映射已分配",
+                kind="group" if is_group else "user",
+                synthetic=synthetic,
+                openid_fingerprint=hashlib.sha256(
+                    f"{self._namespace}:{label}:{key}".encode("utf-8")
+                ).hexdigest()[:12],
+            )
         return synthetic
+
+    def _stable_id(self, kind: str, openid: str, low: int, span: int) -> int:
+        """由 (AppID, 场景, openid) 确定性派生合成号；文件丢失也不会按消息顺序漂移。"""
+        raw = f"{self._namespace}:{kind}:{openid}".encode("utf-8")
+        digest = hashlib.sha256(raw).digest()
+        return low + int.from_bytes(digest[:8], "big") % span
 
     def _load(self) -> None:
         try:

@@ -100,7 +100,11 @@ class OfficialAdapter:
         self._event_sink = event_sink
         self._data_dir = Path(data_dir) if data_dir else Path(settings.data_dir)
         self._credentials = CredentialStore(self._data_dir)
-        self._identity = IdentityMap(self._data_dir)
+        self._identity = IdentityMap(
+            self._data_dir,
+            namespace=self._settings.app_id,
+            logger=self._logger,
+        )
         self._message_ids = MessageIdMap()
         self._passive = PassiveReplyCache()
         self._media = MediaUploader(self._logger)

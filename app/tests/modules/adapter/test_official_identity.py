@@ -66,8 +66,8 @@ def test_identity_map_persists_and_recovers_after_restart(workdir: Path) -> None
     assert restarted.user_id("u1") == user
     assert restarted.group_id("g1") == group
     assert restarted.openid(user, "private") == "u1"
-    # 新 openid 接着历史最大值递增，不复用旧号。
-    assert restarted.user_id("u2") == user + 1
+    # 新 openid 由 (app_id, 场景, openid) 确定性派生，不按消息顺序分配。
+    assert restarted.user_id("u2") == first.user_id("u2")
 
 
 def test_identity_map_keeps_corrupt_file_as_backup(workdir: Path) -> None:
@@ -76,7 +76,7 @@ def test_identity_map_keeps_corrupt_file_as_backup(workdir: Path) -> None:
     path.write_text("{not json", encoding="utf-8")
 
     identities = IdentityMap(workdir)
-    assert identities.user_id("u1") == _USER_MIN
+    assert _USER_MIN <= identities.user_id("u1") < _USER_MAX
     assert path.with_name(path.name + ".corrupt").read_text(encoding="utf-8") == "{not json"
 
 
@@ -98,8 +98,8 @@ def test_identity_map_ignores_invalid_persisted_entries(workdir: Path) -> None:
 
     identities = IdentityMap(workdir)
     assert identities.openid(5, "private") == "d"
-    # 非法/越界的历史值不参与下一次分配。
-    assert identities.user_id("e") == _USER_MIN
+    # 非法/越界的历史值不参与下一次分配；新 openid 落在合法用户段。
+    assert _USER_MIN <= identities.user_id("e") < _USER_MAX
 
 
 def test_message_id_map_is_stable_and_lru_bounded() -> None:
@@ -156,3 +156,20 @@ def test_message_id_map_evicts_context_and_reference_with_lru() -> None:
 def test_message_id_map_rejects_empty_official_id() -> None:
     with pytest.raises(ValueError):
         MessageIdMap().next("")
+
+
+def test_identity_map_is_deterministic_without_persistence(workdir: Path) -> None:
+    first = IdentityMap(workdir)
+    user = first.user_id("same-openid")
+    group = first.group_id("same-group")
+    # 模拟 identities.json 丢失后的全新实例：同一 openid 仍得到同一合成号。
+    shutil.rmtree(workdir / "qqbot", ignore_errors=True)
+    restarted = IdentityMap(workdir)
+    assert restarted.user_id("same-openid") == user
+    assert restarted.group_id("same-group") == group
+
+
+def test_identity_map_namespace_changes_derived_ids(workdir: Path) -> None:
+    one = IdentityMap(workdir / "one", namespace="app-1")
+    two = IdentityMap(workdir / "two", namespace="app-2")
+    assert one.user_id("same-openid") != two.user_id("same-openid")
