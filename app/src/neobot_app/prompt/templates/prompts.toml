@@ -89,7 +89,7 @@ template = '''<回复方式>
 # 总开关与子块开关都在 config.toml 的 [prompt_optimizations] 下，默认全部开启；
 # 子块顺序：cot_intro → cot_at_mention → gentle_language（见本文件后部）
 #           → cot_avoid_bot_chat → cot_no_bluffing → cot_no_game_topics
-#           → cot_no_echo_images → cot_cross_chat → cot_outro。
+#           → cot_no_echo_images → cot_cross_chat → cot_valuable_reply → cot_outro。
 # 文本逐字固定，请勿改写（包括标点与疑似笔误）。
 
 [cot_intro]
@@ -114,6 +114,9 @@ template = '''<禁止附和与解说图片>你不应该以任何形式复述或�
 
 [cot_cross_chat]
 template = '''<跨聊天交互>当你有事情需要对某个人私聊说,或者在别的群聊说,你可以使用 cross_chat 工具</跨聊天交互>'''
+
+[cot_valuable_reply]
+template = '''<有价值的回复>在实际发送回复前,你必须思考:你的回复内容是否是有意义的内容,而不是对群友话题的点评,或者无意义的附和,如果你想不到有价值的回答,直接cancel,禁止回复无意义内容</有价值的回复>'''
 
 [cot_outro]
 template = '''</cot>'''

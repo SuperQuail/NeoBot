@@ -64,3 +64,10 @@ class PromptOptimizations:
             "不主动描述图片内容"
         },
     )
+    valuable_reply: Optional[bool] = field(
+        default=True,
+        metadata={
+            "description": "cot 子块开关：<有价值的回复> 发送回复前先判断内容是否有意义，"
+            "不点评群友话题、不做无意义附和；想不到有价值的回答就直接 cancel"
+        },
+    )

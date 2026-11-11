@@ -324,6 +324,17 @@ BLOCKS: tuple[Block, ...] = (
         note="cot 子块：有事情需要对某个人私聊或在别的群聊说时用 cross_chat 工具",
     ),
     Block(
+        "cot_valuable_reply",
+        Stage.SYSTEM_PREFIX,
+        CHAT_SCOPES,
+        order=78,
+        requires=(
+            config_flag("prompt_optimizations.cot_enabled"),
+            config_flag("prompt_optimizations.valuable_reply"),
+        ),
+        note="cot 子块：发送回复前先判断内容是否有价值，无意义内容直接 cancel",
+    ),
+    Block(
         "cot_outro",
         Stage.SYSTEM_PREFIX,
         CHAT_SCOPES,
