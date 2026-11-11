@@ -232,9 +232,6 @@ class ReplySender:
     async def send_with_timeout(
         self, conversation_ref: ConversationRef, payload: object, channel: str | None = None
     ) -> Any:
-        conversation_ref, channel = self._preferred_linked_group_target(
-            conversation_ref, channel
-        )
         envelope = RuntimeEnvelope(
             kind="reply_lifecycle",
             stage="message.send.before",
@@ -302,6 +299,7 @@ class ReplySender:
         channel 为空时跟随事件来自的通道（双待模式下每个事件自带 neobot_channel）；
         显式传值优先，用于「这条回复指定用另一个框架发」。
         """
+        requested_channel = channel
         channel = channel or getattr(event, "neobot_channel", None) or None
         # 双待模式两个 bot 的 QQ 号不同：self-sent 历史优先记事件自己的账号
         bot_account = int(getattr(event, "bot_account", 0) or 0)
@@ -379,7 +377,8 @@ class ReplySender:
         conv_ref = event.conversation_ref
         if conv_ref is None:
             raise ValueError("ReplyEvent.conversation_ref is None")
-        conv_ref, channel = self._preferred_linked_group_target(conv_ref, channel)
+        if requested_channel is None:
+            conv_ref, channel = self._preferred_linked_group_target(conv_ref, channel)
 
         send_results: list[object] = []
         formatted_messages: list[list[dict]] = []
