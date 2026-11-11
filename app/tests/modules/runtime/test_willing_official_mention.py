@@ -98,3 +98,18 @@ def test_unresolved_profile_falls_back_to_at_segment_logic() -> None:
 def test_guaranteed_reply_disabled_still_respected() -> None:
     service = _service("official", _config(guaranteed=False))
     assert service.is_at_mentioned(_group_message(at_qq=_BOT_ACCOUNT)) is False
+
+
+def test_official_at_marker_counts_without_at_segment() -> None:
+    """原生 @ 事件带 official_at 标记：uin 未解析、没有 at 段也算被 @。"""
+    service = _service("official")
+    message = GroupMessage(
+        message_id=3,
+        user_id=10001,
+        group_id=123456,
+        self_id=0,
+        official_at=True,
+        message=[MessageSegment(type="text", data={"text": "在吗"})],
+        raw_message="在吗",
+    )
+    assert service.is_at_mentioned(message) is True

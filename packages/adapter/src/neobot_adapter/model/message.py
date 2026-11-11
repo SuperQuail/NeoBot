@@ -375,6 +375,7 @@ class Anonymous(BaseModel):
 class GroupMessage(GeneralMessage):
     """群消息数据结构"""
     group_id : Optional[LocalId] = None #群 ID（OneBot 群号 / 官方 group openid）
+    official_at : Optional[bool] = False # 官方通道原生 @ 事件标记（uin 未解析时也能判定被 @）
 
 class FastGroupReplay(GroupMessage):
     reply: Optional[Message] = None #回复内容

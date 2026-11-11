@@ -174,7 +174,7 @@ class CommandService:
         # 触发条件:群聊需被 @bot（只认显式 at 段；官方群全量消息没有 @ 时
         # 不能当命令触发，只有 @ 事件/正文 @bot 标记会被适配器补成 at 段）
         if kind == "group":
-            if not self._is_command_mention(bot_account, at_qqs):
+            if not self._is_command_mention(message, bot_account, at_qqs):
                 return CommandHandleResult(consumed=False)
         elif kind not in ("private", "friend"):
             return CommandHandleResult(consumed=False)
@@ -272,9 +272,11 @@ class CommandService:
         return result
 
     @staticmethod
-    def _is_command_mention(bot_account: int, at_qqs: set[str]) -> bool:
-        """群聊命令是否 @ 了 bot：只认显式 at 段。"""
-        return identity_text(bot_account) in at_qqs
+    def _is_command_mention(message: Any, bot_account: int, at_qqs: set[str]) -> bool:
+        """群聊命令是否 @ 了 bot：显式 at 段，或官方通道原生 @ 事件标记。"""
+        if identity_text(bot_account) in at_qqs:
+            return True
+        return bool(getattr(message, "official_at", False))
 
     @staticmethod
     def _message_text(message: Any) -> str:

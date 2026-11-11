@@ -343,6 +343,8 @@ class EventMapper:
             {
                 "message_type": "group",
                 "sub_type": "normal",
+                # 原生 @ 事件标记：机器 uin 未解析时 at 段 qq=0，命令层仍须判定为被 @。
+                "official_at": bool(require_at),
                 "group_id": group_id,
                 "user_id": user_id,
                 "sender": {

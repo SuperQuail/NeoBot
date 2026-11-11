@@ -535,6 +535,9 @@ class WillingService:
         """
         if not getattr(self._config.chat, "at_mention_guaranteed_reply", True):
             return False
+        # 官方通道原生 @ 事件：即使机器人 uin 未解析（at 段 qq=0）也必须算被 @。
+        if getattr(message, "official_at", False):
+            return True
         return self._mentioned_bot(message)
 
     def _mentioned_bot(self, message: ChatMessage) -> bool:

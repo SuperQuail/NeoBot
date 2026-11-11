@@ -100,6 +100,7 @@ def test_group_at_message_puts_at_segment_first(workdir) -> None:
     assert event["sender"]["role"] == "member"
     assert event["message"][0] == {"type": "at", "data": {"qq": 1020304}}
     assert event["message"][1] == {"type": "text", "data": {"text": " 在吗"}}
+    assert event["official_at"] is True
 
 
 def test_group_mentions_become_at_segments(workdir) -> None:
@@ -183,6 +184,20 @@ def test_group_plain_message_has_no_at_segment(workdir) -> None:
 
     assert event is not None
     assert event["message"] == [{"type": "text", "data": {"text": "随便聊聊"}}]
+    assert event["official_at"] is False
+
+
+def test_group_at_event_marks_official_at_even_without_robot_uin(workdir) -> None:
+    """机器人 uin 未解析（self_id=0）时，@ 事件仍要带 official_at 标记。"""
+    mapper = _mapper(workdir, self_id=0)
+
+    event = mapper.from_dispatch(
+        _dispatch("GROUP_AT_MESSAGE_CREATE", _group_data(content="<@!BOTOPENID> 在吗"))
+    )
+
+    assert event is not None
+    assert event["official_at"] is True
+    assert event["message"][0] == {"type": "at", "data": {"qq": 0}}
 
 
 def test_image_attachment_maps_to_image_segment(workdir) -> None:

@@ -173,8 +173,11 @@ class _PipelineLifecycleMixin:
     def _official_message_mentions_bot(self, message: Any) -> bool:
         """官方消息是否显式 @ 了官方 bot：@ 事件/正文 @bot 由适配器补成 at 段。
 
-        与 willing 的 @ 判定同源：at 段 qq 等于消息级 self_id（缺省回退通道账号）。
+        与 willing 的 @ 判定同源：原生 @ 事件带 official_at 标记（uin 未解析时
+        at 段 qq=0）；其余按 at 段 qq 等于消息级 self_id（缺省回退通道账号）。
         """
+        if getattr(message, "official_at", False):
+            return True
         target = str(bot_account_for_message(message, getattr(self, "_config", None)))
         if not target or target == "0":
             return False

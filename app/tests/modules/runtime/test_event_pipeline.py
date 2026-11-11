@@ -1109,6 +1109,14 @@ def test_linked_group_official_at_bot_message_kept_when_onebot_connected(
         # 没有 at 的普通消息：仍被去重
         assert pipeline._is_linked_group_duplicate(parsed(event["message"])) is True
 
+        # 原生 @ 事件标记（机器人 uin 未解析时 at 段 qq=0）：不丢
+        assert (
+            pipeline._is_linked_group_duplicate(
+                safe_parse_model({**event, "official_at": True}, GroupMessage)
+            )
+            is False
+        )
+
         # 显式 @ 官方 bot（@ 事件/正文 @bot 由适配器补 at 段）：不丢，按官方通道处理
         assert (
             pipeline._is_linked_group_duplicate(
