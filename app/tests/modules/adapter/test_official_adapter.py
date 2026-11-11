@@ -352,7 +352,7 @@ async def test_unsupported_actions_return_chinese_failure(workdir, monkeypatch) 
     adapter = _make_adapter(workdir, [])
     await adapter.start()
 
-    response = await adapter.call_api("set_group_ban", {"group_id": 1, "user_id": 2})
+    response = await adapter.call_api("set_group_card", {"group_id": 1, "user_id": 2, "card": "x"})
 
     assert response["status"] == "failed"
     assert "不支持" in response["message"]

@@ -19,6 +19,12 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 
 #: OneBot 消息段类型 → 官方 file_type（1 图片 / 2 视频 / 3 语音 / 4 文件）。
 _FILE_TYPES = {"image": 1, "video": 2, "record": 3, "voice": 3, "file": 4}
+#: 官方接口明确支持的扩展名；其它扩展名在发送前失败，不赌平台转码。
+_ALLOWED_EXTENSIONS = {
+    1: frozenset({"png", "jpg", "jpeg", "gif", "webp", "bmp"}),
+    2: frozenset({"mp4"}),
+    3: frozenset({"silk", "slk", "mp3", "wav", "ogg"}),
+}
 _ENDPOINTS = {"group": "/v2/groups/{openid}", "private": "/v2/users/{openid}"}
 #: 40093001 是官方分片接口的临时错误，可重试；40093002 是当日配额用尽。
 _RETRYABLE_CODE = 40093001
@@ -52,6 +58,23 @@ def api_data(body: dict[str, Any]) -> dict[str, Any]:
     """官方 HTTP 响应取 data 段；部分接口直接返回对象本身。"""
     data = body.get("data")
     return data if isinstance(data, dict) else body
+
+
+def _validate_extension(source: str, file_name: str, file_type: int) -> None:
+    """有扩展名时按官方支持列表预检；无扩展名/任意文件交给平台。"""
+    allowed = _ALLOWED_EXTENSIONS.get(file_type)
+    if not allowed:
+        return
+    suffix = Path(file_name).suffix if file_name else ""
+    if not suffix:
+        candidate = urlparse(source).path if source.startswith(("http://", "https://")) else source
+        suffix = Path(unquote(candidate)).suffix
+    ext = suffix.lstrip(".").strip().casefold()
+    if ext and ext not in allowed:
+        raise MediaUploadError(
+            f"官方富媒体不支持 .{ext} 格式（file_type={file_type}，允许：{', '.join(sorted(allowed))}）"
+        )
+
 
 
 class MediaUploader:
@@ -89,6 +112,7 @@ class MediaUploader:
         source = str(source or "").strip()
         if not source:
             raise MediaUploadError("富媒体来源为空")
+        _validate_extension(source, file_name, file_type)
         cache_key = (kind, openid, file_type, source)
         cached = self._cache_get(cache_key)
         if cached is not None:

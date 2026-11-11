@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -67,10 +67,22 @@ async def dispatch(
             return await _delete_msg(adapter, values)
         if name == "get_group_info":
             return await _get_group_info(adapter, values)
+        if name == "get_group_robot_status":
+            return await _get_group_robot_status(adapter, values)
         if name == "get_group_member_list":
             return await _get_group_member_list(adapter, values)
         if name == "get_group_member_info":
             return await _get_group_member_info(adapter, values)
+        if name == "set_group_ban":
+            return await _set_group_ban(adapter, values)
+        if name == "set_group_kick":
+            return await _set_group_kick(adapter, values)
+        if name == "set_group_add_request":
+            return await _set_group_add_request(adapter, values)
+        if name == "set_group_whole_ban":
+            return _failed("QQ 官方机器人没有设置全员禁言的写接口（只提供查询）")
+        if name == "set_group_leave":
+            return _failed("QQ 官方机器人没有主动退群接口")
         if name == "get_group_list":
             return _failed("QQ 官方机器人协议不提供群列表接口，只能从群消息得知机器人已加入的群")
         if name == "get_friend_list":
@@ -185,6 +197,21 @@ async def _get_group_info(adapter: Any, params: dict[str, Any]) -> dict[str, Any
     )
 
 
+async def _get_group_robot_status(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    group_id, group_openid = _group_target(adapter, params)
+    payload = await _api(adapter).request("GET", f"/v2/groups/{group_openid}/bot_state")
+    data = api_data(payload)
+    return _ok(
+        {
+            "group_id": group_id,
+            "member_role": str(data.get("member_role") or ""),
+            "allow_proactive_msg": bool(data.get("allow_proactive_msg")),
+            "recv_msg_setting": str(data.get("recv_msg_setting") or ""),
+            "joined_at": str(data.get("joined_at") or ""),
+        }
+    )
+
+
 async def _get_group_member_list(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
     group_id, group_openid = _group_target(adapter, params)
     api = _api(adapter)
@@ -268,6 +295,81 @@ def _member_entry(
         "is_robot": bool(member.get("bot")),
         "join_time": _epoch_seconds(member.get("joined_at")),
     }
+
+
+# ── 群管理（官方真实接口） ─────────────────────────────────────────
+
+_MAX_MUTE_SECONDS = 30 * 24 * 3600
+_MAX_BATCH_MEMBERS = 20
+
+
+def _member_openid(adapter: Any, user_id: Any) -> str:
+    synthetic = _as_int(user_id)
+    if not synthetic:
+        raise _ActionFailure("缺少有效的 user_id 参数")
+    openid = adapter.identity.openid(synthetic, "user")
+    if not openid:
+        raise _ActionFailure(f"无法由 user_id {synthetic} 反查 member_openid")
+    return openid
+
+
+async def _set_group_ban(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    group_id, group_openid = _group_target(adapter, params)
+    member_openid = _member_openid(adapter, params.get("user_id"))
+    duration = _as_int(params.get("duration"))
+    if duration < 0:
+        raise _ActionFailure("duration 不能为负数")
+    if duration == 0:
+        member = {"op": "del", "member_openid": member_openid, "mute_expire_at": ""}
+    else:
+        if duration > _MAX_MUTE_SECONDS:
+            raise _ActionFailure("官方单次禁言最长 30 天")
+        expire_at = (datetime.now(timezone.utc) + timedelta(seconds=duration)).isoformat()
+        member = {"op": "add", "member_openid": member_openid, "mute_expire_at": expire_at}
+    await _api(adapter).request(
+        "POST",
+        f"/v2/groups/{group_openid}/restrict_chat_setting",
+        body={"members": [member]},
+    )
+    return _ok(None)
+
+
+async def _set_group_kick(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    _group_id, group_openid = _group_target(adapter, params)
+    member_openid = _member_openid(adapter, params.get("user_id"))
+    body: dict[str, Any] = {"member_openids": [member_openid]}
+    if bool(params.get("reject_add_request")):
+        body["add_to_member_blacklist"] = True
+    payload = await _api(adapter).request(
+        "POST",
+        f"/v2/groups/{group_openid}/batch_remove_members",
+        body=body,
+    )
+    data = api_data(payload)
+    if str(data.get("remove_members_result") or "") != "success":
+        raise _ActionFailure(f"官方批量移除成员未成功：{data.get('remove_members_result') or 'unknown'}")
+    return _ok(None)
+
+
+async def _set_group_add_request(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    _group_id, group_openid = _group_target(adapter, params)
+    member_openid = _member_openid(adapter, params.get("user_id"))
+    approve = params.get("approve")
+    if approve is None:
+        raise _ActionFailure("缺少 approve 参数")
+    body: dict[str, Any] = {"op": "approve" if bool(approve) else "decline"}
+    flag = str(params.get("flag") or "").strip()
+    if flag:
+        body["join_request_id"] = flag
+    reason = str(params.get("reason") or "").strip()
+    if reason and not bool(approve):
+        body["reject_reason"] = reason
+    await _api(adapter).request(
+        "POST",
+        f"/v2/groups/{group_openid}/approval_join_request/{member_openid}",
+        body=body,
+    )
+    return _ok(None)
 
 
 # ── 撤回 ────────────────────────────────────────────────────────────

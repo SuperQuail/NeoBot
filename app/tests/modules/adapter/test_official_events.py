@@ -371,3 +371,51 @@ def test_message_scene_msg_idx_is_remembered_for_reply_reference(workdir) -> Non
     assert context is not None
     assert context["kind"] == "private"
     assert context["openid"] == "user-openid-1"
+
+
+def test_group_member_add_maps_to_notice(workdir) -> None:
+    mapper = _mapper(workdir)
+    event = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_MEMBER_ADD",
+            {"timestamp": 1784276757, "group_openid": "group-openid-1", "member_openid": "member-openid-2"},
+        )
+    )
+    assert event is not None
+    assert event["post_type"] == "notice"
+    assert event["notice_type"] == "group_increase"
+    assert event["group_id"] == mapper._identity.group_id("group-openid-1")
+    assert event["user_id"] == mapper._identity.user_id("member-openid-2")
+
+
+def test_group_join_request_maps_to_request(workdir) -> None:
+    mapper = _mapper(workdir)
+    event = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_JOIN_REQUEST",
+            {
+                "group_openid": "group-openid-1",
+                "join_request_id": "req-1",
+                "member_openid": "member-openid-3",
+                "username": "申请人",
+                "apply_at": "2026-08-05T16:21:40+08:00",
+                "verify_info": {"method": "verify_message", "verify_message": "放我进去"},
+            },
+        )
+    )
+    assert event is not None
+    assert event["post_type"] == "request"
+    assert event["request_type"] == "group"
+    assert event["flag"] == "req-1"
+    assert event["comment"] == "放我进去"
+    assert event["_official_member_openid"] == "member-openid-3"
+
+
+def test_friend_add_maps_to_notice(workdir) -> None:
+    mapper = _mapper(workdir)
+    event = mapper.from_dispatch(
+        _dispatch("FRIEND_ADD", {"timestamp": 1784570523, "openid": "user-openid-9", "scene": 1001})
+    )
+    assert event is not None
+    assert event["notice_type"] == "friend_add"
+    assert event["user_id"] == mapper._identity.user_id("user-openid-9")

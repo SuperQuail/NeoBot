@@ -208,9 +208,9 @@ class UserIdentityMap:
             return False, f"保存映射失败: {exc}"
         return True, f"已映射 {uid} → QQ:{qq_number}"
 
-    def unlink(self, user_id: Any, channel: str | None = None) -> tuple[bool, str]:
+    def unlink(self, user_id: Any, channel: str | None = None, *, force: bool = False) -> tuple[bool, str]:
         keys = self._keys(_USER, user_id, channel)
-        if any((self._aliases.get(key) or {}).get("trusted") for key in keys):
+        if not force and any((self._aliases.get(key) or {}).get("trusted") for key in keys):
             return False, "该用户的映射由管理员命令建立，agent 不能移除；请联系管理员处理"
         removed = False
         for key in keys:
@@ -329,9 +329,9 @@ class UserIdentityMap:
             return False, f"保存映射失败: {exc}"
         return True, f"已映射群 {gid} → 群号:{number}"
 
-    def unlink_group(self, group_id: Any, channel: str | None = None) -> tuple[bool, str]:
+    def unlink_group(self, group_id: Any, channel: str | None = None, *, force: bool = False) -> tuple[bool, str]:
         keys = self._keys(_GROUP, group_id, channel)
-        if any((self._aliases.get(key) or {}).get("trusted") for key in keys):
+        if not force and any((self._aliases.get(key) or {}).get("trusted") for key in keys):
             return False, "该群的映射由管理员命令建立，agent 不能移除；请联系管理员处理"
         removed = False
         for key in keys:
@@ -401,8 +401,10 @@ def link_user_qq(
     return _singleton.link(user_id, qq, channel, trusted=trusted)
 
 
-def unlink_user_qq(user_id: Any, channel: str | None = None) -> tuple[bool, str]:
-    return _singleton.unlink(user_id, channel)
+def unlink_user_qq(
+    user_id: Any, channel: str | None = None, *, force: bool = False
+) -> tuple[bool, str]:
+    return _singleton.unlink(user_id, channel, force=force)
 
 
 def display_user_id(user_id: Any, channel: str | None = None) -> str:
@@ -431,8 +433,10 @@ def link_group_number(
     return _singleton.link_group(group_id, group_number, channel, trusted=trusted)
 
 
-def unlink_group_number(group_id: Any, channel: str | None = None) -> tuple[bool, str]:
-    return _singleton.unlink_group(group_id, channel)
+def unlink_group_number(
+    group_id: Any, channel: str | None = None, *, force: bool = False
+) -> tuple[bool, str]:
+    return _singleton.unlink_group(group_id, channel, force=force)
 
 
 def synthetic_for_qq(qq: Any, channel: str | None = None) -> int | None:

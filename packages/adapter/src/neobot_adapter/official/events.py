@@ -20,6 +20,18 @@ from neobot_adapter.official.identity import IdentityMap, MessageIdMap
 
 #: 需要映射的消息事件；其余 dispatch（READY/RESUMED/互动事件等）由适配器自行处理。
 MESSAGE_EVENTS = frozenset({"C2C_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"})
+#: 非消息事件：映射成 OneBot notice/request，供插件与通知层消费。
+NOTICE_EVENTS = frozenset(
+    {
+        "GROUP_MEMBER_ADD",
+        "GROUP_MEMBER_REMOVE",
+        "GROUP_JOIN_REQUEST",
+        "FRIEND_ADD",
+        "FRIEND_DEL",
+        "GROUP_ADD_ROBOT",
+        "GROUP_DEL_ROBOT",
+    }
+)
 
 _QUOTED_MESSAGE_TYPE = 103
 _QUOTE_PREFIX = "[引用] "
@@ -93,7 +105,7 @@ class EventMapper:
         if not isinstance(payload, dict):
             return None
         event_type = str(payload.get("t") or "")
-        if event_type not in MESSAGE_EVENTS:
+        if event_type not in MESSAGE_EVENTS and event_type not in NOTICE_EVENTS:
             return None
         data = payload.get("d")
         if not isinstance(data, dict):
@@ -102,6 +114,8 @@ class EventMapper:
         if event_id and self._dedupe.is_duplicate(event_id):
             self._logger.debug("官方重复事件已跳过", event=event_type, event_id=event_id)
             return None
+        if event_type in NOTICE_EVENTS:
+            return self.map_notice(event_type, data)
         return self.map_message(event_type, data)
 
     def map_message(self, event_type: str, data: dict[str, Any]) -> dict[str, Any] | None:
@@ -148,6 +162,71 @@ class EventMapper:
             str(segment.get("data", {}).get("text") or "") for segment in message if segment.get("type") == "text"
         )
         return event
+
+    def map_notice(self, event_type: str, data: dict[str, Any]) -> dict[str, Any]:
+        """官方非消息事件 → OneBot notice/request；缺少 openid 时返回 None。"""
+        timestamp = _epoch_seconds(data.get("timestamp"))
+        if event_type in {"GROUP_MEMBER_ADD", "GROUP_MEMBER_REMOVE"}:
+            group_openid = str(data.get("group_openid") or "").strip()
+            member_openid = str(data.get("member_openid") or "").strip()
+            if not group_openid or not member_openid:
+                return None
+            group_id = self._identity.group_id(group_openid)
+            user_id = self._identity.user_id(member_openid)
+            return {
+                "time": timestamp,
+                "self_id": self.self_id,
+                "post_type": "notice",
+                "notice_type": "group_increase" if event_type.endswith("ADD") else "group_decrease",
+                "sub_type": "approve" if event_type.endswith("ADD") else "leave",
+                "group_id": group_id,
+                "user_id": user_id,
+                "operator_id": 0,
+            }
+        if event_type == "GROUP_JOIN_REQUEST":
+            group_openid = str(data.get("group_openid") or "").strip()
+            member_openid = str(data.get("member_openid") or "").strip()
+            if not group_openid or not member_openid:
+                return None
+            verify = data.get("verify_info") if isinstance(data.get("verify_info"), dict) else {}
+            comment = str(verify.get("verify_message") or data.get("username") or "").strip()
+            return {
+                "time": _epoch_seconds(data.get("apply_at")),
+                "self_id": self.self_id,
+                "post_type": "request",
+                "request_type": "group",
+                "sub_type": "add",
+                "group_id": self._identity.group_id(group_openid),
+                "user_id": self._identity.user_id(member_openid),
+                "comment": comment,
+                "flag": str(data.get("join_request_id") or ""),
+                "_official_member_openid": member_openid,
+            }
+        if event_type in {"FRIEND_ADD", "FRIEND_DEL"}:
+            openid = str(data.get("openid") or "").strip()
+            if not openid:
+                return None
+            return {
+                "time": timestamp,
+                "self_id": self.self_id,
+                "post_type": "notice",
+                "notice_type": "friend_add" if event_type == "FRIEND_ADD" else "friend_remove",
+                "user_id": self._identity.user_id(openid),
+            }
+        if event_type in {"GROUP_ADD_ROBOT", "GROUP_DEL_ROBOT"}:
+            group_openid = str(data.get("group_openid") or "").strip()
+            operator_openid = str(data.get("op_member_openid") or "").strip()
+            if not group_openid:
+                return None
+            return {
+                "time": timestamp,
+                "self_id": self.self_id,
+                "post_type": "notice",
+                "notice_type": "group_add_robot" if event_type == "GROUP_ADD_ROBOT" else "group_del_robot",
+                "group_id": self._identity.group_id(group_openid),
+                "operator_id": self._identity.user_id(operator_openid) if operator_openid else 0,
+            }
+        return None
 
     # ── 私聊 ────────────────────────────────────────────────────────
 

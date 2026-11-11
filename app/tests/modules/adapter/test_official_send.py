@@ -49,10 +49,13 @@ class _FakeApi:
         self._failure = failure
         self._failure_on = failure_on
         self._sent = 0
+        self.bot_role = "admin"
 
     async def request(self, method: str, path: str, *, body=None, timeout: float = 10.0) -> dict:
         index = len(self.calls)
         self.calls.append({"method": method, "path": path, "body": dict(body or {})})
+        if method == "GET" and path.endswith("/bot_state"):
+            return {"member_role": self.bot_role}
         if self._failure is not None and self._failure_on in (None, index):
             raise self._failure
         self._sent += 1
@@ -247,7 +250,7 @@ async def test_markdown_embedded_at_user_is_rendered_to_openid(workdir) -> None:
 
     await sender.send(conversation, [_markdown(content)])
 
-    markdown = api.calls[0]["body"]["markdown"]["content"]
+    markdown = api.calls[-1]["body"]["markdown"]["content"]
     assert '<qqbot-at-user id="member-openid" />' in markdown
     assert "<qqbot-at-everyone />" in markdown
     assert '<qqbot-cmd-input text="x" />' in markdown
@@ -580,3 +583,15 @@ async def test_api_raises_on_http_error_status(workdir) -> None:
 
     assert excinfo.value.code == 50055001
     assert excinfo.value.status == 500
+
+
+async def test_markdown_at_everyone_requires_admin_role(workdir) -> None:
+    sender, api, identity, passive, _ = _sender(workdir)
+    conversation = _group(identity)
+    _remember(passive, conversation)
+    api.bot_role = "member"
+
+    result = await sender.send(conversation, [_markdown("hello <qqbot-at-everyone />")])
+
+    assert result.status == "failed"
+    assert "群管理员" in result.message

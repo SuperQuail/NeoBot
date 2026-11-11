@@ -24,7 +24,10 @@ from neobot_app.bot_accounts import looks_like_real_qq
 from neobot_app.user_identity import (
     link_group_number,
     link_user_qq,
+    synthetic_for_qq,
     trusted_qq_for_user,
+    unlink_group_number,
+    unlink_user_qq,
 )
 from neobot_app.panel_auth import (
     MAX_PASSWORD_LENGTH,
@@ -127,6 +130,25 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
             usage="<群号>",
             params=(("群号", "必填。当前群的真实 QQ 群号（5~12 位纯数字）"),),
             handler=_handle_link_group,
+        ),
+        Command(
+            name="unlinkqq",
+            description="解除用户与真实 QQ 号的 trusted 映射（仅超级管理员）",
+            permission=PERM_SUPER_ADMIN,
+            usage="<用户ID|QQ号> 或 <@用户>",
+            params=(
+                ("用户ID|QQ号", "必填。要解除映射的用户 ID 或已映射的真实 QQ 号"),
+                ("@用户", "可选。直接 @ 对应用户"),
+            ),
+            handler=_handle_unlink_qq,
+        ),
+        Command(
+            name="unlinkgroup",
+            description="解除当前群与真实群号的 trusted 映射（仅超级管理员）",
+            permission=PERM_SUPER_ADMIN,
+            usage="",
+            params=(),
+            handler=_handle_unlink_group,
         ),
         Command(
             name="sleep",
@@ -804,6 +826,39 @@ async def _handle_link_group(ctx: CommandContext) -> str:
         ctx.conv_id, int(args[0]), channel=channel, trusted=True
     )
     return message_text if ok else f"映射失败：{message_text}"
+
+
+async def _handle_unlink_qq(ctx: CommandContext) -> str:
+    """解除用户与真实 QQ 号的 trusted 映射（仅超管）。"""
+    message = ctx.message
+    bot_account = ctx.service._bot_account(message)
+    targets = [qq for qq in ctx.at_qqs if qq != bot_account]
+    channel = str(getattr(message, "neobot_channel", "") or "") or None
+    target: int | None = None
+    if targets:
+        target = targets[0]
+    else:
+        args = [arg for arg in ctx.args if arg.isdigit()]
+        if len(args) != 1:
+            return "用法：/unlinkqq <用户ID|QQ号> 或 /unlinkqq @用户"
+        value = int(args[0])
+        if len(args[0]) == 13:
+            target = value
+        else:
+            target = synthetic_for_qq(value, channel)
+            if target is None:
+                return f"没有找到 QQ {value} 对应的已映射用户"
+    ok, text = unlink_user_qq(target, channel, force=True)
+    return text if ok else f"解除映射失败：{text}"
+
+
+async def _handle_unlink_group(ctx: CommandContext) -> str:
+    """解除当前群与真实群号的 trusted 映射（仅超管）。"""
+    if ctx.kind != "group":
+        return "请在群聊中使用 /unlinkgroup。"
+    channel = str(getattr(ctx.message, "neobot_channel", "") or "") or None
+    ok, text = unlink_group_number(ctx.conv_id, channel, force=True)
+    return text if ok else f"解除映射失败：{text}"
 
 
 async def _handle_add_admin(ctx: CommandContext) -> str:

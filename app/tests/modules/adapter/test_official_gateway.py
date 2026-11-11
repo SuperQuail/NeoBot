@@ -205,7 +205,7 @@ async def test_gateway_identifies_and_emits_ready(workdir: Path) -> None:
     assert identify == [
         {
             "op": 2,
-            "d": {"token": "QQBot tok", "intents": 1 << 25, "shard": [0, 1]},
+            "d": {"token": "QQBot tok", "intents": (1 << 25) | (1 << 24), "shard": [0, 1]},
         }
     ]
 

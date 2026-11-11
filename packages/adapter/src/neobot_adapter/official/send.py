@@ -37,6 +37,7 @@ _MEDIA_SEGMENTS = frozenset({"image", "record", "voice", "video", "file"})
 _OFFICIAL_MARKDOWN_SEGMENT = "official_markdown"
 #: Markdown 段里允许出现的内嵌 @：id 是 13 位合成号，发送前换成 member_openid。
 _AT_USER_TAG = re.compile(r'<qqbot-at-user\s+id="(\d+)"\s*/?>')
+_AT_EVERYONE_TAG = re.compile(r"<qqbot-at-everyone\s*/?>")
 
 
 class OfficialApiError(RuntimeError):
@@ -396,6 +397,8 @@ class MessageSender:
         content = self._render_markdown_mentions(str(prepared.markdown or ""), kind)
         if not content.strip():
             raise _SendFailure("Markdown 内容为空")
+        if kind == "group" and _AT_EVERYONE_TAG.search(content):
+            await self._assert_can_at_everyone(openid)
         if len(content) > _TEXT_LIMIT:
             raise _SendFailure(
                 f"Markdown 消息 {len(content)} 字，超过单条上限 {_TEXT_LIMIT}；请精简或改用 send_long_reply"
@@ -412,6 +415,17 @@ class MessageSender:
             timeout=timeout,
         )
         return _ok(self._track_sent(body, kind, openid))
+
+    async def _assert_can_at_everyone(self, group_openid: str) -> None:
+        """@全体成员要求机器人是群管理员；无法确认时直接失败，不做降级。"""
+        try:
+            body = await self._api.request("GET", f"/v2/groups/{group_openid}/bot_state")
+        except OfficialApiError as exc:
+            raise _SendFailure(f"无法确认 @全体成员权限：{exc}") from exc
+        data = api_data(body)
+        role = str(data.get("member_role") or "").strip().casefold()
+        if role not in {"admin", "owner"}:
+            raise _SendFailure("@全体成员需要机器人是群管理员；当前角色不支持")
 
     def _render_markdown_mentions(self, content: str, kind: str) -> str:
         """把 <qqbot-at-user id="合成号"> 换成 member_openid；其余官方标签原样保留。"""

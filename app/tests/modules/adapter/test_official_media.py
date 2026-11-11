@@ -264,3 +264,48 @@ async def test_missing_local_file_is_an_error(workdir) -> None:
 def test_media_file_is_frozen() -> None:
     media = MediaFile(file_info="FI", file_uuid="FU", ttl=1)
     assert media == MediaFile(file_info="FI", file_uuid="FU", ttl=1)
+
+
+async def test_unsupported_media_extension_fails_before_upload(workdir) -> None:
+    uploader = MediaUploader(NullLogger())
+    api = _FakeApi()
+
+    for segment_type, source in (
+        ("image", "file:///tmp/pic.txt"),
+        ("video", "file:///tmp/clip.avi"),
+        ("voice", "file:///tmp/voice.pcm"),
+    ):
+        with pytest.raises(MediaUploadError):
+            await uploader.upload(
+                api,
+                kind="group",
+                openid="group-openid",
+                segment_type=segment_type,
+                source=source,
+            )
+    assert api.calls == []
+
+
+async def test_supported_media_extension_enters_upload(workdir, monkeypatch) -> None:
+    from neobot_adapter.official import media as media_module
+
+    uploader = MediaUploader(NullLogger())
+    api = _FakeApi()
+    api.on("/upload_prepare", _prepare_payload())
+    api.on("/upload_part_finish", {"code": 0, "data": {}})
+    api.on("/files", _OK_FILE)
+
+    async def no_put(url: str, data: bytes) -> None:
+        return None
+
+    monkeypatch.setattr(media_module, "_put_part", no_put)
+    clip = workdir / "clip.mp4"
+    clip.write_bytes(b"abcdefgh")
+    result = await uploader.upload(
+        api,
+        kind="group",
+        openid="group-openid",
+        segment_type="video",
+        source=str(clip),
+    )
+    assert result.file_info == "FILE-INFO"

@@ -10,6 +10,7 @@ from neobot_app.commands.service import CommandService
 from neobot_app.user_identity import (
     bind_user_identity,
     group_number_for,
+    link_user_qq,
     qq_for_user,
     trusted_qq_for_user,
 )
@@ -205,3 +206,32 @@ async def test_invalid_qq_rejected():
 
     assert qq_for_user(SYNTHETIC) is None
     assert "5~11" in sent[-1][2]
+
+
+async def test_super_admin_can_unlink_trusted_qq_mapping():
+    sent: list[tuple] = []
+    service = _service(sent)
+    assert link_user_qq(SYNTHETIC, REAL_QQ, trusted=True)[0]
+
+    result = await service.handle_message(
+        _message("/unlinkqq", user_id=SUPER, at_qqs=[BOT, SYNTHETIC]),
+        kind="group",
+        queue_key="100",
+    )
+
+    assert result.consumed is True
+    assert trusted_qq_for_user(SYNTHETIC) is None
+    assert "已移除" in sent[-1][2]
+
+
+async def test_sub_admin_cannot_unlink_command():
+    sent: list[tuple] = []
+    service = _service(sent)
+
+    await service.handle_message(
+        _message("/unlinkqq", user_id=SUB, at_qqs=[BOT, SYNTHETIC]),
+        kind="group",
+        queue_key="100",
+    )
+
+    assert "权限" in sent[-1][2]
