@@ -792,7 +792,7 @@ async def _handle_link_qq(ctx: CommandContext) -> str:
     if identity_text(target) == bot_id:
         return "不能把机器人账号映射成普通用户。"
     permissions = ctx.service.permissions
-    if qq_number in permissions.super_admins and not permissions.is_super_admin(ctx.user_id):
+    if identity_text(qq_number) in permissions.super_admins and not permissions.is_super_admin(ctx.user_id):
         return "超级管理员 QQ 的映射只允许超级管理员操作。"
     channel = str(getattr(message, "neobot_channel", "") or "") or None
     ok, message_text = link_user_qq(
@@ -877,19 +877,20 @@ async def _modify_admin(ctx: CommandContext, *, add: bool) -> str:
         )
 
     permissions = ctx.service.permissions
-    if target_qq in permissions.super_admins:
+    target_text = identity_text(target_qq)
+    if target_text in permissions.super_admins:
         return "该用户是超级管理员,超级管理员只能通过配置增减,不能通过命令修改。"
 
     current = set(permissions.sub_admins)
     if add:
-        if target_qq in current:
+        if target_text in current:
             return "该用户已是次级管理员。"
-        current.add(target_qq)
+        current.add(target_text)
         action = "添加"
     else:
-        if target_qq not in current:
+        if target_text not in current:
             return "该用户不是次级管理员。"
-        current.discard(target_qq)
+        current.discard(target_text)
         action = "删除"
 
     result = await ctx.service.save_sub_admins(sorted(current))
@@ -898,7 +899,7 @@ async def _modify_admin(ctx: CommandContext, *, add: bool) -> str:
 
     # 以"磁盘上回读到的列表"为准回复：写盘静默失败时不能再报成功
     persisted = list(result.accounts)
-    wanted = str(target_qq)
+    wanted = target_text
     if (add and wanted not in persisted) or (not add and wanted in persisted):
         return (
             "错误: 配置写入后内容不符合预期，"

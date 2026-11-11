@@ -179,7 +179,7 @@ async def test_add_admin_by_qq() -> None:
         queue_key="42",
     )
     assert result.consumed is True
-    assert saved == [[SUB, 40000]]
+    assert saved == [[str(SUB), "40000"]]
 
 
 async def test_add_admin_by_at() -> None:
@@ -190,7 +190,7 @@ async def test_add_admin_by_at() -> None:
         queue_key="42",
     )
     assert result.consumed is True
-    assert saved == [[SUB, 50000]]
+    assert saved == [[str(SUB), "50000"]]
 
 
 async def test_add_admin_super_admin_protected() -> None:

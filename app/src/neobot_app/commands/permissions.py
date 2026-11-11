@@ -23,26 +23,25 @@ class PermissionManager:
         self._config = config  # ConfigProxy,动态读取
 
     @property
-    def super_admins(self) -> set[int]:
-        """超级管理员 QQ 号集合(配置不可被命令修改)。"""
+    def super_admins(self) -> set[str]:
+        """超级管理员本地 ID 集合（QQ号或 openid；配置不可被命令修改）。"""
         return self._admin_set("admin_accounts")
 
     @property
-    def sub_admins(self) -> set[int]:
-        """次级管理员 QQ 号集合(命令可增删)。"""
+    def sub_admins(self) -> set[str]:
+        """次级管理员本地 ID 集合（QQ号或 openid；命令可增删）。"""
         return self._admin_set("sub_admin_accounts")
 
-    def _admin_set(self, field: str) -> set[int]:
+    def _admin_set(self, field: str) -> set[str]:
         chat = getattr(self._config, "chat", None) if self._config is not None else None
         if chat is None:
             return set()
         values = getattr(chat, field, None) or []
-        result: set[int] = set()
+        result: set[str] = set()
         for value in values:
-            try:
-                result.add(int(value))
-            except (TypeError, ValueError):
-                continue
+            text = identity_text(value)
+            if text:
+                result.add(text)
         return result
 
     @staticmethod
@@ -62,7 +61,7 @@ class PermissionManager:
         return candidates
 
     def _admin_keys(self, field: str) -> set[str]:
-        return {str(value) for value in self._admin_set(field)}
+        return self._admin_set(field)
 
     def is_super_admin(self, user_id: int | str) -> bool:
         return bool(self._candidates(user_id) & self._admin_keys("admin_accounts"))
