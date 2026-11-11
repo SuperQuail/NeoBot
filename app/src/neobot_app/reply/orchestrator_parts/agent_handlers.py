@@ -252,6 +252,23 @@ class AgentHandlersMixin:
         )
         return delivered
 
+    async def _agent_official_group_manage_handler(
+        self, *, action: str, params: dict[str, object]
+    ) -> dict:
+        mapping = {
+            "robot_status": "get_group_robot_status",
+            "ban": "set_group_ban",
+            "unban": "set_group_ban",
+            "kick": "set_group_kick",
+            "approve_join": "set_group_add_request",
+            "reject_join": "set_group_add_request",
+        }
+        api_action = mapping[action]
+        result = await self._call_api_with_timeout(api_action, dict(params))
+        if isinstance(result, dict):
+            return result
+        return {"status": "failed", "message": "官方群管理没有返回结果"}
+
     async def _agent_speak_handler(
         self,
         state: AgentLoopState,

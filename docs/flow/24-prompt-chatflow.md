@@ -6,7 +6,7 @@ covers:
   - app/src/neobot_app/observability/context_recorder.py
   - app/src/neobot_app/observability/prompt_diff.py
 verified_against: d525a5b
-verified_hash: 6ee2400219a4
+verified_hash: 13331c67d7a5
 ---
 
 # 24 提示词系统与聊天流快照

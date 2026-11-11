@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from neobot_app.reply.tools import ReplyToolExecutor
@@ -111,3 +112,33 @@ async def test_official_markdown_tool_sends_and_rejects_bad_tags() -> None:
     )
     assert "错误" in bad
     assert len(calls) == 1
+
+
+async def test_official_group_manage_tool_maps_actions() -> None:
+    calls: list[tuple[str, dict]] = []
+
+    async def handler(*, action: str, params: dict):
+        calls.append((action, dict(params)))
+        return {"status": "ok"}
+
+    executor = ReplyToolExecutor(
+        official_platform=True,
+        official_group_manage_handler=handler,
+        logger=SimpleNamespace(info=lambda *a, **k: None),
+    )
+    names = {item["function"]["name"] for item in executor.definitions()}
+    assert "official_group_manage" in names
+
+    result = await executor.execute(
+        "official_group_manage",
+        {"action": "ban", "group_id": 8000000000001, "user_id": 9000000000002, "duration_seconds": 600},
+    )
+    payload = json.loads(result)
+    assert payload["ok"] is True
+    assert calls == [("ban", {"group_id": 8000000000001, "user_id": 9000000000002, "duration": 600})]
+
+    failed = await executor.execute(
+        "official_group_manage",
+        {"action": "kick", "group_id": 8000000000001, "user_id": 9000000000002},
+    )
+    assert json.loads(failed)["ok"] is True

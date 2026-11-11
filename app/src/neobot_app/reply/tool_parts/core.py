@@ -34,6 +34,7 @@ class _CoreMixin:
         markdown_image_converter: Any = None,
         send_long_reply_handler: Any = None,
         send_official_markdown_handler: Any = None,
+        official_group_manage_handler: Any = None,
         skill_manager: Any = None,
         skills_registry: Any = None,
         allowed_tools: set[str] | None = None,
@@ -83,6 +84,7 @@ class _CoreMixin:
         self._markdown_image_converter = markdown_image_converter
         self._send_long_reply = send_long_reply_handler
         self._send_official_markdown = send_official_markdown_handler
+        self._official_group_manage = official_group_manage_handler
         self._skill_manager = skill_manager
         self._skills_registry = skills_registry
         self._allowed_tools = allowed_tools
@@ -166,6 +168,7 @@ class _CoreMixin:
         self._define_reply_tools(tools)
         self._define_long_reply_tool(tools)
         self._define_official_markdown_tool(tools)
+        self._define_official_group_manage_tool(tools)
         self._define_wait_tool(tools)
         self._define_willingness_tools(tools)
         self._define_emoji_tools(tools)

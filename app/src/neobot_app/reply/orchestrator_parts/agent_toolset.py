@@ -103,6 +103,8 @@ class AgentToolsetMixin:
             numbering,
         )
 
+        official_group_manage_handler = self._agent_official_group_manage_handler
+
         reply_toolset = build_reply_toolset(
             send_reply_handler=send_reply_handler,
             willing_service=self._willing_service,
@@ -123,6 +125,7 @@ class AgentToolsetMixin:
             markdown_image_converter=self._markdown_image_converter,
             send_long_reply_handler=send_long_reply_handler,
             send_official_markdown_handler=send_official_markdown_handler,
+            official_group_manage_handler=official_group_manage_handler,
             chat_context=prompt,
             conv_kind=conv_kind,
             conv_id=conv_id,

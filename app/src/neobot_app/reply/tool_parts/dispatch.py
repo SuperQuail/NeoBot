@@ -156,6 +156,8 @@ class _DispatchMixin:
             return await self._execute_send_long_reply(args)
         if name == "send_official_markdown":
             return await self._execute_official_markdown(args)
+        if name == "official_group_manage":
+            return await self._execute_official_group_manage(args)
         # Markdown 技能读取（优先于 SkillManager 的 __ 路由）
         if name == "skills__read_manifest":
             return self._read_skill_manifest(args)
