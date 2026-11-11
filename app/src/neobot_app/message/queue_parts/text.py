@@ -17,6 +17,7 @@ from .common import (
     QueueMessage,
     ReactionEntry,
     RecallNotice,
+    SelfSentToolCall,
 )
 from .helpers import _poke_sub_type_text
 
@@ -77,6 +78,16 @@ class _QueueTextMixin:
         return (
             f"{reaction.operator_name} 回应了消息[msg_id={reaction.target_message_id}]:{emoji_name}"
         )
+
+    @staticmethod
+    def _tool_call_to_text(tool_call: SelfSentToolCall) -> str:
+        """非发送工具的 compact 历史行：只显示工具名与成败。
+
+        参数与结果可能很长（搜索结果、文件内容），历史里回放它们既占上下文又容易
+        把模型带偏；完整数据留给存储/调试面板，聊天管线只保留可归因的最小信息。
+        """
+        status = "成功" if tool_call.ok else "失败"
+        return f"[工具调用] {tool_call.name} {status}"
 
     @staticmethod
     def _notification_to_text(notification: NotificationEntry) -> str:

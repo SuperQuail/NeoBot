@@ -7,6 +7,7 @@ import asyncio
 import inspect
 import re
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -105,6 +106,20 @@ def _default_self_sent_uow_factory() -> Any:
         return None
     _DEFAULT_SELF_SENT_UOW_FACTORY = factory
     return factory
+
+
+def _tool_call_payload(tool_call: SelfSentToolCall | None) -> dict[str, Any] | None:
+    """工具元数据 → storage 契约里的不透明 dict（IncomingMessage.tool_call）。"""
+    if tool_call is None:
+        return None
+    return {
+        "name": tool_call.name,
+        "arguments": dict(tool_call.arguments or {}),
+        "result": dict(tool_call.result or {}),
+        "ok": bool(tool_call.ok),
+        "compact": bool(tool_call.compact),
+        "call_id": str(tool_call.call_id or ""),
+    }
 
 
 class ReplySender:
@@ -762,7 +777,9 @@ class ReplySender:
                 error=str(exc),
             )
             return None
-        return self._schedule_self_sent_persist(conv_ref, text, synthetic_msg_id, bot_account=bot_account)
+        return self._schedule_self_sent_persist(
+            conv_ref, text, synthetic_msg_id, bot_account=bot_account, tool_call=tool_call
+        )
 
     def _emit_self_sent_text(
         self,
@@ -844,7 +861,13 @@ class ReplySender:
         return int(bot_account) if bot_account else primary_bot_account(self._config)
 
     def _schedule_self_sent_persist(
-        self, conv_ref: ConversationRef, text: str, synthetic_msg_id: int, *, bot_account: int = 0
+        self,
+        conv_ref: ConversationRef,
+        text: str,
+        synthetic_msg_id: int,
+        *,
+        bot_account: int = 0,
+        tool_call: SelfSentToolCall | None = None,
     ) -> asyncio.Task[None] | None:
         """把落盘调度成后台任务：发送路径绝不等数据库。"""
         try:
@@ -852,7 +875,13 @@ class ReplySender:
         except RuntimeError:
             return None
         task = loop.create_task(
-            self.persist_self_sent_message(conv_ref, text, synthetic_msg_id=synthetic_msg_id, bot_account=bot_account)
+            self.persist_self_sent_message(
+                conv_ref,
+                text,
+                synthetic_msg_id=synthetic_msg_id,
+                bot_account=bot_account,
+                tool_call=tool_call,
+            )
         )
         self._self_sent_persist_tasks.add(task)
         task.add_done_callback(self._self_sent_persist_tasks.discard)
@@ -866,12 +895,14 @@ class ReplySender:
         synthetic_msg_id: int | None = None,
         occurred_at: datetime | None = None,
         bot_account: int = 0,
+        tool_call: SelfSentToolCall | None = None,
     ) -> None:
         """把 Bot 自己发出的消息写入 MessageData（软重启后据此补齐 assistant 块）。
 
         复用既有 MessageData 表与仓库，不新建表；event_id 形如 self:<合成消息id>，
-        与后端真实 message_id 不冲突。本方法永不抛异常：任何失败（无 UoW、
-        无表、写冲突）都只记日志，绝不能反噬发送路径。
+        与后端真实 message_id 不冲突。tool_call 随消息一起落库（发送工具 full 显示
+        所需的参数/产物索引），供恢复时重建 assistant.tool_calls。
+        本方法永不抛异常：任何失败（无 UoW、无表、写冲突）都只记日志，绝不能反噬发送路径。
         """
         if not text or not text.strip():
             return
@@ -889,6 +920,7 @@ class ReplySender:
                         sender_name=self._bot_name,
                         text=text,
                         occurred_at=occurred_at or now_utc(),
+                        tool_call=_tool_call_payload(tool_call),
                     )
                 )
                 await uow.commit()
@@ -898,6 +930,73 @@ class ReplySender:
                 event="reply.history_persist_failed",
                 chat_flow_id=f"{conv_ref.kind}:{conv_ref.id}",
                 message_id=synthetic_msg_id,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+
+    def schedule_persist_tool_call(
+        self,
+        conv_ref: ConversationRef,
+        tool_call: SelfSentToolCall,
+        *,
+        occurred_at: datetime | None = None,
+        bot_account: int = 0,
+    ) -> asyncio.Task[None] | None:
+        """把非发送工具的落盘调度成后台任务：工具执行路径绝不等数据库。"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        task = loop.create_task(
+            self.persist_tool_call(conv_ref, tool_call, occurred_at=occurred_at, bot_account=bot_account)
+        )
+        self._self_sent_persist_tasks.add(task)
+        task.add_done_callback(self._self_sent_persist_tasks.discard)
+        return task
+
+    async def persist_tool_call(
+        self,
+        conv_ref: ConversationRef,
+        tool_call: SelfSentToolCall,
+        *,
+        occurred_at: datetime | None = None,
+        bot_account: int = 0,
+    ) -> None:
+        """把一次非发送工具调用写入 MessageData（text="" + tool_call 完整元数据）。
+
+        与 self-sent 消息复用同一张表与既有仓库；event_id 形如 tool:<call_id>，
+        不与 self:<合成消息id> / 真实 message_id 冲突。本方法永不抛异常：任何失败
+        都只记日志，绝不能反噬工具执行路径。
+        """
+        payload = _tool_call_payload(tool_call)
+        if payload is None:
+            return
+        try:
+            factory = self._self_sent_uow_factory or _default_self_sent_uow_factory()
+            if factory is None:
+                return
+            call_id = str(tool_call.call_id or "").strip()
+            event_id = f"tool:{call_id or int(time.time() * 1_000_000)}:{uuid.uuid4().hex}"
+            async with factory() as uow:
+                await uow.messages.save_message(
+                    IncomingMessage(
+                        event_id=event_id,
+                        conversation=conv_ref,
+                        sender_id=str(self._resolve_bot_account(bot_account)),
+                        sender_name=self._bot_name,
+                        text="",
+                        occurred_at=occurred_at or now_utc(),
+                        tool_call=payload,
+                    )
+                )
+                await uow.commit()
+        except Exception as exc:
+            self._logger.warning(
+                "工具调用未写入历史记录",
+                event="tool.history_persist_failed",
+                chat_flow_id=f"{conv_ref.kind}:{conv_ref.id}",
+                tool_name=tool_call.name,
+                call_id=tool_call.call_id,
                 error_type=type(exc).__name__,
                 error=str(exc),
             )

@@ -26,6 +26,8 @@ class IncomingMessage:
     text: str
     occurred_at: datetime
     raw_payload: dict[str, Any] | None = None
+    #: 工具调用元数据（发送/非发送工具均可）：对 storage 是不透明 JSON 对象。
+    tool_call: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)

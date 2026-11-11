@@ -25,7 +25,7 @@
 | send_official_markdown | `_agent_send_official_markdown_handler` → `ReplySender.send_official_markdown` | ✅ 原始 Markdown 文本 | ✅ | ✅ send_official_markdown(content=...) | 线上是 official_markdown 段，历史只有文本 |
 | 后台通知（hub 镜像） | `BackgroundNotificationHub._mirror_to_message_queue` → `record_notification` → `push_notification` | ✅ 低权重 NotificationEntry | ❌（不需） | ✅ user 块 `[通知:<source>] <content>` | `mirror=False` 的通知与 `event.background_content` 仍是瞬时 |
 | 表情回应 / 戳一戳 / 撤回 | handlers → `push_reaction/push_poke/push_notice` | ✅ 非消息条目 | ❌ | ✅ 独立 user 块 | 与发送工具无关 |
-| 非发送工具（list_emojis、image_context、绘图、解析…） | 工具执行结果只进本轮 messages | ❌ 不入队 | ❌ | ❌ 不重建 | 重置后模型不记得曾经调用/拿到什么；只能从产物索引文本间接推断 |
+| 非发送工具（list_emojis、image_context、绘图、解析…） | 工具执行后 `_record_tool_call_history` | ✅ compact TOOL_CALL 条目（完整 args/result 保留） | ✅ `MessageData.tool_call_json` | ✅ assistant.tool_calls(arguments={}) + tool `{"ok":...}` | 显示只到工具名/成败；完整数据供面板/审计 |
 
 ## 3. 已验证契约（测试通过）
 
@@ -45,28 +45,23 @@
   `event.pre_reply_message_id`，last_reply_position 仍是用户消息的真实 id。
 - 队列裁剪：按权重驱逐后，重建历史的 assistant.tool_calls 与 tool 回执仍一一配对。
 
-### 3.2 软重启语义缺口（测试记录，未 xfail）
-`MessageData` 只存 text/event_id/sender；`ChatStreamManager._merge_self_sent_history`
-还原的消息不带 `tool_call`，因此软重启后图片/语音/长回复会退化为普通 send_reply 文本
-（索引文本当正文）。测试：
-`test_soft_restart_replay_without_tool_metadata_rebuilds_plain_send_reply`。
+### 3.2 软重启恢复（已实现）
+`MessageData.tool_call_json` 与 `IncomingMessage.tool_call` 已持久化；`ChatStreamManager`
+启动恢复时分两路：`self:` 记录还原为 MESSAGE + full tool_call（发送工具），
+`tool:` 记录还原为 compact TOOL_CALL（非发送工具）；空 text 不会产生空白消息。
+覆盖：`app/tests/modules/database/test_chatstream_tool_call_restore.py`。
 
 ## 4. 剩余缺口与最小修复建议
 
 1. **MessageNumbering 暴露自身发言的负 msg_id —— 已修复**
    - `_render_numbered_line` 的 is_self 分支不再渲染 `[msg_id=...]`，与 role_messages 的 assistant 口径一致；对应测试已转为普通通过。
 
-2. **软重启丢失工具元数据（较大）**
-   - 最小可行：持久化时把 tool_call（name/arguments/result）一并保存。
-     现表无字段 → 需要 storage 迁移新增 JSON 列（或 sidecar），改动比发送链大；
-     不改的话，索引文本仍能让模型知道「发过什么」，但工具名/参数语义丢失。
-   - 建议单独任务处理，不在本次审计内改动。
+2. **软重启工具元数据 —— 已修复**
+   - `messages.tool_call_json`（迁移 0032）+ `IncomingMessage.tool_call`；发送工具 full、非发送工具 compact 均可在启动恢复。
 
-3. **非发送工具结果不持久化（设计取舍）**
-   - 现状只重建「对话发言」，查询类工具调用与结果（list_emojis、image_context、
-     drawing 等）不进历史；重置后模型不知道已经查过/生成过什么。
-   - 建议保持现状（上下文膨胀风险大）；确有需要时只对「产物引用」做轻量持久化
-     （如把 image_path 写入 self-sent 索引文本，本实现已覆盖部分）。
+3. **非发送工具完整数据仅存储、compact 显示**
+   - 完整 args/result 存 `QueueEntry.tool_call` 与 `MessageData.tool_call_json`；
+     聊天管线只显示工具名 + 成败，避免上下文膨胀。
 
 4. **图片/语音产物的再引用**
    - 队列里是索引文本而非图片段；image_context 支持 `tmp_xxx`/`file:` 引用，
@@ -76,7 +71,7 @@
 
 ## 5. 测试与验证
 
-- 测试文件：`app/tests/modules/reply/test_tool_history_audit.py`（独立新增，13 passed）。
+- 测试文件：`test_tool_history_audit.py`（13）、`test_tool_call_history.py`（17）、`test_queue_tool_call.py`（6）、`test_message_tool_call.py`（9）、`test_chatstream_tool_call_restore.py`（10）。
   覆盖：文字/图片/表情包写回与重建、speak、send_long_reply（成功/失败）、
   send_official_markdown、后台通知镜像、负 message_id 防护、账号未解析兜底、
   软重启退化、队列裁剪配对、numbering 负 id 回归（已修复）。

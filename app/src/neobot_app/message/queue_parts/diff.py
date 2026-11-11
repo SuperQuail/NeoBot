@@ -149,6 +149,10 @@ class _QueueDiffMixin:
                 f"notification:{entry.notification.source}:"
                 f"{entry.notification.content}:{entry.occurred_at or 0}"
             )
+        if entry.kind == QueueEntryType.TOOL_CALL and entry.tool_call is not None:
+            # call_id 唯一；缺失时退化到「名字+时间」，避免同一管线内被当成新条目反复注入
+            record = entry.tool_call
+            return f"tool_call:{record.call_id or record.name}:{entry.occurred_at or 0}"
         return f"{entry.kind.value}:{entry.occurred_at or 0}"
 
     @staticmethod
@@ -238,4 +242,6 @@ class _QueueDiffMixin:
             return self._poke_to_text(entry.poke)
         if entry.kind == QueueEntryType.NOTIFICATION and entry.notification is not None:
             return self._notification_to_text(entry.notification)
+        if entry.kind == QueueEntryType.TOOL_CALL and entry.tool_call is not None:
+            return self._tool_call_to_text(entry.tool_call)
         return ""

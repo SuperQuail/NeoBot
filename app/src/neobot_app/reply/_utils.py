@@ -41,4 +41,9 @@ def entry_fingerprint(entry) -> str:
         p = entry.poke
         return f"poke:{p.sender_id}:{p.target_id}:{p.sub_type}:{entry.occurred_at}"
 
+    if entry.kind == QueueEntryType.TOOL_CALL and entry.tool_call is not None:
+        # call_id 唯一；缺失时退化到「名字+时间」，避免同一管线内被当成新条目反复注入
+        record = entry.tool_call
+        return f"tool_call:{record.call_id or record.name}:{entry.occurred_at or 0}"
+
     return f"unknown:{entry.kind.value}:{hash(str(entry))}"

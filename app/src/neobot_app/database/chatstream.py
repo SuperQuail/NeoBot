@@ -26,7 +26,7 @@ from neobot_adapter.model.message import (
 )
 
 from neobot_app.bot_accounts import bot_accounts, is_bot_message, primary_bot_account
-from neobot_app.message.queue import MessageQueue, QueueEntryType
+from neobot_app.message.queue import MessageQueue, QueueEntryType, SelfSentToolCall
 from neobot_app.time_context import epoch_seconds_int
 from neobot_app.user_profiles import UserProfileService
 
@@ -41,6 +41,10 @@ DEFAULT_TIMEOUT = 10           # 默认请求超时时间（秒）
 #: 与后端历史比对去重的时间窗（秒）。本地 occurred_at 与后端 message.time
 #: 分别来自本地落库与 OneBot 上报，允许 <=30s 偏差仍视为同一条（验收 S5）。
 SELF_SENT_DEDUP_WINDOW_SECONDS = 30
+
+#: 非发送工具调用记录的 event_id 前缀（ReplySender.persist_tool_call 写入）。
+#: 这类行没有聊天正文，恢复时只能还原成 compact 的 TOOL_CALL 条目。
+_TOOL_CALL_EVENT_PREFIX = "tool:"
 
 
 def _to_epoch_seconds(value: Any) -> Optional[int]:
@@ -486,7 +490,8 @@ class ChatStreamManager:
         """读取该会话本地落盘的 Bot 自身消息（双通道下可能有多个账号）；失败返回空列表。
 
         仓库按单个 sender_id 过滤，这里逐账号读取后按发生时间合并；limit 是
-        合并后的总窗口（与后端历史同一口径），None 表示不限。
+        合并后的总窗口（与后端历史同一口径），None 表示不限。返回记录可能带
+        tool_call（发送工具 full / tool: 行 compact），调用方按 event_id 区分。
         """
         if not bot_sender_ids:
             return []
@@ -505,7 +510,12 @@ class ChatStreamManager:
             )
             return []
         records.sort(
-            key=lambda record: _to_epoch_seconds(getattr(record, "occurred_at", None)) or 0
+            key=lambda record: (
+                _to_epoch_seconds(getattr(record, "occurred_at", None)) or 0,
+                # 同一时刻按 event_id 定序：self: 聊天消息排在 tool: 工具行之前，
+                # 多次重启恢复得到逐字节相同的顺序（前缀缓存不受影响）。
+                self._record_event_id(record),
+            )
         )
         if limit is not None and len(records) > limit:
             records = records[-limit:]
@@ -524,7 +534,9 @@ class ChatStreamManager:
         """
         text = str(getattr(record, "text", "") or "").strip()
         if not text:
-            return True
+            # 非发送工具记录没有正文（text=""）：不能按「空文本 = 后端已有」判重，
+            # 否则启动恢复会把整条工具历史吞掉。普通空消息仍维持旧行为。
+            return getattr(record, "tool_call", None) is None
         record_time = _to_epoch_seconds(getattr(record, "occurred_at", None))
         for message in backend_messages:
             if not is_bot_message(message):
@@ -548,20 +560,50 @@ class ChatStreamManager:
         except (TypeError, ValueError):
             return 0
 
+    @staticmethod
+    def _record_event_id(record: Any) -> str:
+        return str(getattr(record, "event_id", "") or "")
+
+    @classmethod
+    def _is_tool_call_record(cls, record: Any) -> bool:
+        """tool: 前缀的本地记录是非发送工具调用，不是 Bot 的聊天发言。"""
+        return cls._record_event_id(record).startswith(_TOOL_CALL_EVENT_PREFIX)
+
+    @staticmethod
+    def _record_tool_call(record: Any) -> SelfSentToolCall | None:
+        """本地记录里的 tool_call dict -> 入队用的 SelfSentToolCall；坏数据返回 None。"""
+        payload = getattr(record, "tool_call", None)
+        if not isinstance(payload, dict):
+            return None
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            return None
+        arguments = payload.get("arguments")
+        result = payload.get("result")
+        return SelfSentToolCall(
+            name=name,
+            arguments=dict(arguments) if isinstance(arguments, dict) else {},
+            result=dict(result) if isinstance(result, dict) else {},
+            ok=bool(payload.get("ok", True)),
+            compact=bool(payload.get("compact", False)),
+            call_id=str(payload.get("call_id") or ""),
+        )
+
     def _self_sent_entry(
         self, record: Any, conversation: ConversationRef
-    ) -> tuple[int, Any]:
-        """把一条本地 Bot 记录还原成可入队的消息对象与时间戳。
+    ) -> tuple[int, Any, SelfSentToolCall | None]:
+        """把一条本地 Bot 聊天记录还原成 (时间戳, 消息对象, 工具元数据)。
 
         账号以落库的 record.sender_id 为准（双通道下两个机器人各是各的），
-        旧记录缺失时才回退统一提供者的主账号。
+        旧记录缺失时才回退统一提供者的主账号。tool_call 随消息一起还原，供
+        role_messages 重建发送工具的 full 历史（参数/产物索引）。
         """
         bot_account = self._record_sender_account(record) or primary_bot_account()
         occurred_at = _to_epoch_seconds(getattr(record, "occurred_at", None))
         if occurred_at is None:
             occurred_at = epoch_seconds_int()
         text = str(getattr(record, "text", "") or "")
-        message_id = _self_sent_message_id(getattr(record, "event_id", ""))
+        message_id = _self_sent_message_id(self._record_event_id(record))
         if message_id is None:
             # 没有 self: 前缀的记录用负的落库时间当 id，仍落在负数空间，
             # 不会与后端真实 message_id 撞号。
@@ -579,6 +621,7 @@ class ChatStreamManager:
             message: Any = GroupMessage(
                 message_type=MessageTypeEnum.group,
                 message_id=message_id,
+                self_id=bot_account,
                 user_id=bot_account,
                 message=segments,
                 raw_message=text,
@@ -590,13 +633,55 @@ class ChatStreamManager:
             message = PrivateMessage(
                 message_type=MessageTypeEnum.private,
                 message_id=message_id,
+                self_id=bot_account,
                 user_id=bot_account,
                 message=segments,
                 raw_message=text,
                 sender=sender,
                 time=occurred_at,
             )
-        return occurred_at, message
+        return occurred_at, message, self._record_tool_call(record)
+
+    def _restored_items(self, records: list[Any], conversation: ConversationRef) -> list[tuple[int, str, Any]]:
+        """本地记录 -> (occurred_at, 条目类型, 载荷)。
+
+        两类记录分开还原：tool: 前缀是 compact 的非发送工具调用（没有正文），
+        其余是 Bot 真实发出的聊天消息（可带发送工具 full 元数据）。空正文的
+        聊天记录直接丢弃，避免恢复出空白的用户/assistant 消息。
+        """
+        items: list[tuple[int, str, Any]] = []
+        for record in records:
+            occurred_at = _to_epoch_seconds(getattr(record, "occurred_at", None))
+            if self._is_tool_call_record(record):
+                tool_call = self._record_tool_call(record)
+                if tool_call is not None:
+                    items.append((occurred_at or epoch_seconds_int(), "tool_call", tool_call))
+                continue
+            occurred_at, message, tool_call = self._self_sent_entry(record, conversation)
+            if not str(getattr(message, "raw_message", "") or "").strip():
+                continue
+            items.append((occurred_at, "message", (message, tool_call)))
+        return items
+
+    @staticmethod
+    def _push_restored_message(
+        queue: MessageQueue,
+        queue_key: str,
+        occurred_at: int,
+        message: Any,
+        tool_call: SelfSentToolCall | None,
+    ) -> None:
+        """push_history 不接收 tool_call：入队后把元数据挂到刚追加的条目上。
+
+        push_history 只追加且不插入初始时间戳；条目因容量被丢弃时保持丢弃，
+        与队列裁剪口径一致（tool_call 随消息一起消失）。
+        """
+        queue.push_history(queue_key, message, occurred_at=occurred_at)
+        if tool_call is None:
+            return
+        entries = queue.entries(queue_key)
+        if entries and entries[-1].message is message:
+            entries[-1].tool_call = tool_call
 
     async def _merge_self_sent_history(
         self,
@@ -607,14 +692,16 @@ class ChatStreamManager:
         backend_messages: list[Any],
         limit: int | None = None,
     ) -> None:
-        """把本地落盘的 Bot 自身发言补齐进队列（在 push_history 之后调用）。
+        """把本地落盘的 Bot 历史补齐进队列（在 push_history 之后调用）。
 
         ① 按当前所有机器人账号（双通道下两个）逐账号取最近记录，合并后取
            最近 limit 条（None = 不限，与后端历史同窗口 max_observations）；
         ② 跳过后端历史里已有的记录（Bot 自己 + 同文本 + 时间相差 <=30s）；
+           tool: 工具记录没有正文，不参与文本判重，不能被吞掉；
         ③ 与已在队列里的条目一起按 occurred_at 排序后重建该会话队列——
            push_history 只能追加，直接 append 会把较早的 assistant 块排到较新
-           的 user 消息之后，模型看到的顺序就错了。
+           的 user 消息之后，模型看到的顺序就错了。工具记录用 push_tool_call
+           还原成 compact 条目（无正文，不会变成空白消息）。
 
         全流程不抛异常：失败只记日志，既不影响启动流程，也不动既有灌入结果。
         """
@@ -622,49 +709,79 @@ class ChatStreamManager:
         if not accounts or queue is None:
             return
         try:
-            records = await self._load_recent_self_messages(
-                conversation, {str(account) for account in accounts}, limit
-            )
+            records = await self._load_recent_self_messages(conversation, {str(account) for account in accounts}, limit)
             if not records:
                 return
-            deduped = [
-                record
-                for record in records
-                if not self._is_duplicate_of_backend(record, backend_messages)
-            ]
+            deduped = [record for record in records if not self._is_duplicate_of_backend(record, backend_messages)]
             if not deduped:
+                return
+            restored = self._restored_items(deduped, conversation)
+            if not restored:
                 return
 
             existing = queue.entries(queue_key)
             if any(
-                entry.kind not in (QueueEntryType.MESSAGE, QueueEntryType.TIMESTAMP)
+                entry.kind
+                not in (
+                    QueueEntryType.MESSAGE,
+                    QueueEntryType.TIMESTAMP,
+                    QueueEntryType.TOOL_CALL,
+                )
                 for entry in existing
             ):
-                # 队列里已有撤回/表情回应/戳一戳等位置敏感条目（启动灌入阶段不会
-                # 出现）：重建会打乱它们，退化为只追加——宁可顺序不完美也不丢事件。
-                logger.debug(f"会话 {queue_key} 存在非消息条目，Bot 自身消息改为追加入队")
-                for record in deduped:
-                    occurred_at, message = self._self_sent_entry(record, conversation)
-                    queue.push_history(queue_key, message, occurred_at=occurred_at)
+                # 位置敏感条目（撤回/表情回应/戳一戳/通知）启动灌入阶段不会出现；
+                # 一旦出现就退化为按时间追加入队，宁可顺序不完美也不打乱事件位置。
+                logger.debug(f"会话 {queue_key} 存在位置敏感条目，Bot 历史改为追加入队")
+                for occurred_at, kind, payload in restored:
+                    if kind == "tool_call":
+                        queue.push_tool_call(queue_key, payload, occurred_at=occurred_at)
+                    else:
+                        message, tool_call = payload
+                        self._push_restored_message(queue, queue_key, occurred_at, message, tool_call)
                 return
 
-            merged: list[tuple[int, Any]] = [
-                (int(entry.occurred_at or 0), entry.message)
-                for entry in existing
-                if entry.kind == QueueEntryType.MESSAGE and entry.message is not None
-            ]
-            for record in deduped:
-                merged.append(self._self_sent_entry(record, conversation))
-            merged.sort(key=lambda item: item[0])
+            items: list[tuple[int, int, str, Any]] = []
+            sequence = 0
+            for entry in existing:
+                if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
+                    items.append(
+                        (
+                            int(entry.occurred_at or 0),
+                            sequence,
+                            "message",
+                            (entry.message, entry.tool_call),
+                        )
+                    )
+                    sequence += 1
+                elif entry.kind == QueueEntryType.TOOL_CALL and entry.tool_call is not None:
+                    items.append(
+                        (
+                            int(entry.occurred_at or 0),
+                            sequence,
+                            "tool_call",
+                            entry.tool_call,
+                        )
+                    )
+                    sequence += 1
+            restored_tools = 0
+            for occurred_at, kind, payload in restored:
+                items.append((occurred_at, sequence, kind, payload))
+                sequence += 1
+                if kind == "tool_call":
+                    restored_tools += 1
+            # occurred_at 相同时保持「后端/已有条目在前、本地记录按落库顺序在后」
+            items.sort(key=lambda item: (item[0], item[1]))
 
             queue.clear(queue_key)
-            for occurred_at, message in merged:
-                queue.push_history(queue_key, message, occurred_at=occurred_at)
-            logger.info(
-                f"会话 {queue_key} 已从本地记录补齐 {len(deduped)} 条 Bot 自身消息"
-            )
+            for occurred_at, _sequence, kind, payload in items:
+                if kind == "tool_call":
+                    queue.push_tool_call(queue_key, payload, occurred_at=occurred_at)
+                else:
+                    message, tool_call = payload
+                    self._push_restored_message(queue, queue_key, occurred_at, message, tool_call)
+            logger.info(f"会话 {queue_key} 已从本地记录补齐 {len(restored)} 条历史（工具调用 {restored_tools} 条）")
         except Exception as e:
-            logger.warning(f"补齐会话 {queue_key} 的 Bot 自身消息失败（已忽略）: {e}")
+            logger.warning(f"补齐会话 {queue_key} 的 Bot 历史失败（已忽略）: {e}")
 
     async def _collect_user_ids_from_messages(self) -> Set[str]:
         """从所有消息队列中收集用户ID"""

@@ -6,6 +6,8 @@ from neobot_contracts.ports.speaking import SpeechBlocked
 
 from typing import TYPE_CHECKING, Any
 
+from neobot_app.bot_accounts import bot_account_for_event
+from neobot_app.message.queue import SelfSentToolCall
 from neobot_app.reply.vision_context import labelled_tool_images
 from ._runtime import asyncio
 from .tool_text import (
@@ -19,7 +21,34 @@ from .tool_text import (
 )
 
 if TYPE_CHECKING:
+    from neobot_app.message.queue import MessageQueue
     from neobot_app.reply.event import ReplyEvent
+
+
+#: 会自行写回 full self-sent 历史（含产物参数/索引）的发送工具，这里不再重复记录。
+_SEND_TOOLS = frozenset({"send_reply", "speak", "send_long_reply", "send_official_markdown"})
+
+
+def _tool_call_ok(result: object, error: str | None) -> bool:
+    """工具调用是否成功；只用于 compact 历史里的成功/失败标记。"""
+    if error is not None:
+        return False
+    if isinstance(result, bool):
+        return result
+    if isinstance(result, dict):
+        if result.get("ok") is False:
+            return False
+        status = str(result.get("status") or "").strip().casefold()
+        if status in {"failed", "error"}:
+            return False
+        return True
+    text = str(result or "").strip()
+    if not text:
+        return True
+    if text.startswith("错误") or text.startswith("失败"):
+        return False
+    lowered = text.casefold()
+    return not (lowered.startswith("error:") or lowered.startswith("error ") or lowered.startswith("failed"))
 
 
 class AgentToolExecMixin:
@@ -27,6 +56,8 @@ class AgentToolExecMixin:
         self,
         *,
         event: ReplyEvent,
+        queue: MessageQueue,
+        queue_copy: MessageQueue,
         queue_key: str,
         iteration: int,
         tool_calls: list,
@@ -72,6 +103,7 @@ class AgentToolExecMixin:
                 wait_extra_seconds = float(max(1, min(parsed_seconds, self._get_max_wait_seconds())))
             reset_silent_deadline(wait_extra_seconds)
             result: object | None = None
+            raw_result: object | None = None
             safe_result: str | None = None
             tool_error: str | None = None
             remaining: float | None = None
@@ -163,6 +195,7 @@ class AgentToolExecMixin:
                                 prompt_store=getattr(self, "_prompt_store", None),
                             )
                         )
+                raw_result = result
                 safe_result = _redacted_tool_text(result, _MAX_TOOL_LOG_CHARS)
                 result = _bounded_tool_text(result)
             except asyncio.TimeoutError:
@@ -288,4 +321,83 @@ class AgentToolExecMixin:
                         "content": str(result),
                     }
                 )
+            # 非发送工具也留痕：低权重入队（重置后 compact 重建）+ 异步落库。
+            # 发送工具已由 sender 写回 full self-sent 记录，跳过避免重复。
+            call_ok = _tool_call_ok(raw_result if raw_result is not None else result, tool_error)
+            # 发送工具成功时已有 full self-sent 记录；失败时没有正文记录，补一条
+            # compact 失败历史，避免重置后模型以为「从没试过」。
+            if name not in _SEND_TOOLS or not call_ok:
+                self._record_tool_call_history(
+                    event=event,
+                    queue=queue,
+                    queue_copy=queue_copy,
+                    queue_key=queue_key,
+                    name=name,
+                    arguments=args if isinstance(args, dict) else {},
+                    result=result,
+                    ok=call_ok,
+                    error=tool_error,
+                    call_id=tool_call_id,
+                    compact=True,
+                )
         return image_parts
+
+    def _record_tool_call_history(
+        self,
+        *,
+        event: ReplyEvent,
+        queue: MessageQueue,
+        queue_copy: MessageQueue,
+        queue_key: str,
+        name: str,
+        arguments: dict,
+        result: object,
+        ok: bool,
+        error: str | None,
+        call_id: str,
+        compact: bool = True,
+    ) -> None:
+        """记录一次非发送工具调用（compact 显示 + 完整数据落库）。
+
+        入队是为了回复管线重置后仍能看到「刚才调过什么工具」；显示只保留工具名
+        与成败，arguments/result 的完整数据仍随条目和 MessageData 保留。
+        入队/落库失败只记日志，绝不影响工具执行结果。
+        """
+        conv_ref = event.conversation_ref
+        if conv_ref is None:
+            return
+        record = SelfSentToolCall(
+            name=name,
+            arguments=dict(arguments),
+            result={"ok": True, "value": result} if ok else {"ok": False, "error": error or ""},
+            ok=ok,
+            compact=compact,
+            call_id=call_id,
+        )
+        try:
+            queue.push_tool_call(queue_key, record)
+            if queue_copy is not None and queue_copy is not queue:
+                queue_copy.push_tool_call(queue_key, record)
+        except Exception as exc:
+            self._logger.warning(
+                "工具调用未写入会话上下文",
+                event="tool.history_queue_failed",
+                event_id=event.event_id,
+                tool=name,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            return
+        try:
+            self._sender.schedule_persist_tool_call(
+                conv_ref, record, bot_account=bot_account_for_event(event, self._config)
+            )
+        except Exception as exc:
+            self._logger.warning(
+                "工具调用未排入落盘",
+                event="tool.history_persist_failed",
+                event_id=event.event_id,
+                tool=name,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )

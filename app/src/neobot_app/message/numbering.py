@@ -151,6 +151,9 @@ class MessageNumbering:
                 lines.append(queue._poke_to_text(entry.poke, poke_index=poke_count))
             elif entry.kind.value == "notification" and entry.notification is not None:
                 lines.append(queue._entry_to_text(entry, sender_labels=sender_labels))
+            elif entry.kind.value == "tool_call" and entry.tool_call is not None:
+                # 非发送工具只回放 compact 一行，参数/结果不进聊天管线
+                lines.append(queue._entry_to_text(entry, sender_labels=sender_labels))
             if last_reply_message_id is not None and entry.kind.value == "message" and entry.message is not None and entry.message.message_id == last_reply_message_id:
                 lines.append("<以上是上次对话回复过的内容>")
                 new_section_opened = True
@@ -228,6 +231,8 @@ class MessageNumbering:
                 poke_count += 1
                 lines.append(queue._poke_to_text(entry.poke, poke_index=poke_count))
             elif entry.kind == QueueEntryType.NOTIFICATION and entry.notification is not None:
+                lines.append(queue._entry_to_text(entry, sender_labels=sender_labels))
+            elif entry.kind == QueueEntryType.TOOL_CALL and entry.tool_call is not None:
                 lines.append(queue._entry_to_text(entry, sender_labels=sender_labels))
         return "\n".join(lines)
 

@@ -42,6 +42,9 @@ class QueueEntryType(Enum):
     REACTION = "reaction"
     POKE = "poke"
     NOTIFICATION = "notification"
+    #: 非发送类工具调用（web_search 等）：没有对应聊天消息，但要在重置后的历史里可见
+    TOOL_CALL = "tool_call"
+
 
 @dataclass
 class QueueStats:
@@ -98,6 +101,12 @@ class SelfSentToolCall:
     name: str
     arguments: Dict[str, Any] = field(default_factory=dict)
     result: Dict[str, Any] = field(default_factory=dict)
+    #: 工具是否成功（失败/超时也记一条，但显示上不暴露内容）
+    ok: bool = True
+    #: compact 显示：只回放 name + 成败，不回放参数/结果（非发送工具用）
+    compact: bool = False
+    #: 模型给的 tool_call id（同一次调用可对齐 assistant.tool_calls 与 tool 回执）
+    call_id: str = ""
 
 
 @dataclass

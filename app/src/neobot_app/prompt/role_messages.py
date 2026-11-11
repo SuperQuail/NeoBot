@@ -198,7 +198,7 @@ def _render_self_sent_tool_history(tool_call: Any, *, msg_id: int | None, index:
     name = str(getattr(tool_call, "name", "") or "send_reply")
     arguments = dict(getattr(tool_call, "arguments", None) or {})
     result = dict(getattr(tool_call, "result", None) or {"ok": True})
-    call_id = f"history_{msg_id if msg_id is not None else index}"
+    call_id = str(getattr(tool_call, "call_id", "") or "") or f"history_{msg_id if msg_id is not None else index}"
     return [
         {
             "role": "assistant",
@@ -219,6 +219,36 @@ def _render_self_sent_tool_history(tool_call: Any, *, msg_id: int | None, index:
             "tool_call_id": call_id,
             "name": name,
             "content": json.dumps(result, ensure_ascii=False),
+        },
+    ]
+
+
+def _render_compact_tool_history(tool_call: Any, *, index: int) -> list[dict[str, Any]]:
+    """非发送工具调用的 compact 重建：只留工具名与成败，不回放参数/结果。
+
+    参数/结果完整保存在队列条目与存储里，供调试面板/审计使用；聊天管线里回放
+    它们既占上下文也容易把模型带偏（搜索结果、文件内容与当前对话无关）。
+    """
+    name = str(getattr(tool_call, "name", "") or "tool")
+    ok = bool(getattr(tool_call, "ok", True))
+    call_id = str(getattr(tool_call, "call_id", "") or "") or f"history_tool_{index}"
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "name": name,
+            "content": json.dumps({"ok": ok}, ensure_ascii=False),
         },
     ]
 
@@ -426,6 +456,9 @@ def _build_from_entries(
             text = queue._entry_to_text(entry, sender_labels=sender_labels)
             if text:
                 messages.append(_user_message(text))
+        elif entry.kind == QueueEntryType.TOOL_CALL and entry.tool_call is not None:
+            # 非发送工具调用：compact 的 assistant.tool_calls + tool 回执
+            messages.extend(_render_compact_tool_history(entry.tool_call, index=i))
 
         if (
             last_reply_message_id is not None

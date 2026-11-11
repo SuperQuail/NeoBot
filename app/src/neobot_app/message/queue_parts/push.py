@@ -262,6 +262,37 @@ class _QueuePushMixin:
             tool_call=tool_call,
         )
 
+    def push_tool_call(
+        self,
+        key: str,
+        record: SelfSentToolCall,
+        *,
+        occurred_at: Optional[int] = None,
+    ) -> None:
+        """记录一次非发送类工具调用（低权重，随聊天记录一起裁剪）。
+
+        工具调用没有对应聊天消息，单独成条入队：重置后 role_messages 会把它们
+        重建为 compact 的 assistant.tool_calls + tool 回执，模型能看到「刚才调过
+        什么工具」，又不会被参数/结果内容占满上下文。
+        """
+        resolved_time = occurred_at if occurred_at is not None else epoch_seconds_int()
+        self._get_or_create_queue(key)
+        stats = self._get_or_create_stats(key)
+        entry_weight = self.self_sent_weight
+        if not self._ensure_capacity_for_non_timestamp_entry(key, entry_weight=entry_weight):
+            return
+        self._queues[key].append(
+            QueueEntry(
+                kind=QueueEntryType.TOOL_CALL,
+                occurred_at=resolved_time,
+                tool_call=record,
+                weight=entry_weight,
+            )
+        )
+        self._message_counts[key] += 1
+        self._weighted_counts[key] += entry_weight
+        stats.total_messages += 1
+
     def push_history(
         self,
         key: str,
