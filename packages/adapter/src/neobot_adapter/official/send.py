@@ -13,6 +13,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import quote, unquote
 
 from neobot_contracts.models import ConversationRef
 from neobot_contracts.ports.logging import Logger, NullLogger
@@ -38,7 +39,44 @@ _OFFICIAL_MARKDOWN_SEGMENT = "official_markdown"
 #: Markdown 段里允许出现的内嵌 @：id 可以是 openid（直通），也可以是迁移期的
 #: 13 位合成号（发送前按只读映射表换成 member_openid）。
 _AT_USER_TAG = re.compile(r'<qqbot-at-user\s+id="([^"]+)"\s*/?>')
+_AT_USER_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+_VALID_AT_USER_TAG = re.compile(r'<qqbot-at-user\s+id="[A-Za-z0-9_-]{1,128}"\s*/?>')
 _AT_EVERYONE_TAG = re.compile(r"<qqbot-at-everyone\s*/?>")
+_VALID_CMD_TAG = re.compile(
+    r'<qqbot-cmd-(?:enter|input)\s+text="[^"\s]+"(?:\s+(?:show|reference)="[^"\s]*")*\s*/>'
+)
+#: 官方协议标签形态：<qqbot-...>、</qqbot-...> 与 <@openid>；只有白名单里的
+#: 那几个能原样上线，其余必须降级成普通文字，否则会被客户端真的执行。
+_OFFICIAL_TAG = re.compile(r"</?qqbot-[^>]*>|<@!?[^>]*>")
+
+
+def neutralize_official_tags(
+    text: str,
+    *,
+    allow_at_user: bool = False,
+    allow_at_everyone: bool = False,
+    allow_commands: bool = False,
+) -> tuple[str, int]:
+    """把白名单之外的官方标签首尾尖括号换成全角，返回 (文本, 转义个数)。
+
+    官方 Markdown 会执行 <qqbot-at-everyone /> / <qqbot-cmd-*/>；这些标签只能
+    由结构化参数生成，用户原话或模型复述里出现的同类标签必须降级成普通文字。
+    """
+    count = 0
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal count
+        tag = match.group(0)
+        if allow_at_user and _VALID_AT_USER_TAG.fullmatch(tag):
+            return tag
+        if allow_at_everyone and _AT_EVERYONE_TAG.fullmatch(tag):
+            return tag
+        if allow_commands and _VALID_CMD_TAG.fullmatch(tag):
+            return tag
+        count += 1
+        return tag.replace("<", "＜").replace(">", "＞")
+
+    return _OFFICIAL_TAG.sub(replace, text), count
 
 
 class OfficialApiError(RuntimeError):
@@ -275,6 +313,9 @@ class _SendFailure(RuntimeError):
 class _Prepared:
     text: str = ""
     markdown: str | None = None
+    #: 结构化参数（工具层校验、这里只负责按协议拼装）；content 里同名标签一律转义。
+    at_everyone: bool = False
+    commands: list[dict[str, Any]] = field(default_factory=list)
     media: list[tuple[str, str, str]] = field(default_factory=list)
     reply: str | None = None
 
@@ -355,7 +396,17 @@ class MessageSender:
     ) -> response.SendMsgResponse:
         sent_id: int | None = None
         if prepared.text:
-            for chunk in _split_text(prepared.text):
+            # 纯文本消息（msg_type=0）发不出官方标签；用户原话里的标签一律
+            # 全角化，避免「复述标签」在以后某次切换成 Markdown 时被执行。
+            text, neutralized = neutralize_official_tags(prepared.text)
+            if neutralized:
+                self._logger.info(
+                    "官方纯文本已把官方标签转义为普通文字",
+                    conversation_kind=kind,
+                    conversation_id=conversation_id,
+                    count=neutralized,
+                )
+            for chunk in _split_text(text):
                 payload = self._message_payload(kind, conversation_id, proactive)
                 payload["msg_type"] = 0
                 payload["content"] = chunk
@@ -406,12 +457,28 @@ class MessageSender:
         content = self._render_markdown_mentions(str(prepared.markdown or ""), kind)
         if not content.strip():
             raise _SendFailure("Markdown 内容为空")
-        if kind == "group" and _AT_EVERYONE_TAG.search(content):
-            await self._assert_can_at_everyone(openid)
+        # content 来自模型/用户：只放行内嵌 @。@全体与指令按钮只能来自结构化
+        # 参数，正文里手写的同名标签一律全角化，避免「复述标签」被真的执行。
+        content, neutralized = neutralize_official_tags(content, allow_at_user=True)
+        if neutralized:
+            self._logger.info(
+                "官方 Markdown 已把非结构化官方标签转义为普通文字",
+                conversation_kind=kind,
+                conversation_id=conversation_id,
+                count=neutralized,
+            )
+        if prepared.at_everyone:
+            if kind != "group":
+                raise _SendFailure("单聊不支持 @全体成员；请直接写提醒")
+            content = f"<qqbot-at-everyone /> {content}"
+        for tag in _command_tags(kind, prepared.commands):
+            content = f"{content}\n\n{tag}"
         if len(content) > _TEXT_LIMIT:
             raise _SendFailure(
                 f"Markdown 消息 {len(content)} 字，超过单条上限 {_TEXT_LIMIT}；请精简或改用 send_long_reply"
             )
+        if prepared.at_everyone:
+            await self._assert_can_at_everyone(openid)
         payload = self._message_payload(kind, conversation_id, proactive)
         payload["msg_type"] = 2
         payload["markdown"] = {"content": content}
@@ -437,18 +504,32 @@ class MessageSender:
             raise _SendFailure("@全体成员需要机器人是群管理员；当前角色不支持")
 
     def _render_markdown_mentions(self, content: str, kind: str) -> str:
-        """把 <qqbot-at-user id="..."> 规整成 member_openid；其余官方标签原样保留。"""
-        has_mention = _AT_USER_TAG.search(content) is not None
-        if has_mention and kind != "group":
-            raise _SendFailure("单聊消息不支持 @ 用户；请直接写昵称")
-        if not has_mention:
+        """把 <qqbot-at-user id="..."> 校验后规整成 member_openid。
+
+        单聊没有真正的 @ 能力：内嵌 @ 全部替换成「@用户」普通文字；群聊里
+        openid 格式非法或无法解析时同样替换并记 WARNING——坏 ID 不上线，也
+        不把整条消息打回。
+        """
+        if _AT_USER_TAG.search(content) is None:
             return content
 
         def replace(match: re.Match[str]) -> str:
             raw = match.group(1).strip()
+            if kind != "group" or not _AT_USER_ID.fullmatch(raw):
+                self._logger.warning(
+                    "官方 Markdown 内嵌 @ 的 ID 不可用，已替换为普通文字",
+                    conversation_kind=kind,
+                    user_id_length=len(raw),
+                )
+                return "@用户"
             openid = resolve_openid(self._identity, raw, "user")
             if not openid:
-                raise _SendFailure(f"Markdown 中的 @ 用户 ID 无法解析为 openid：{raw}")
+                self._logger.warning(
+                    "官方 Markdown 内嵌 @ 的 openid 无法解析，已替换为普通文字",
+                    conversation_kind=kind,
+                    user_id_length=len(raw),
+                )
+                return "@用户"
             return f'<qqbot-at-user id="{openid}" />'
 
         return _AT_USER_TAG.sub(replace, content)
@@ -517,6 +598,8 @@ def _prepare(message: str | list[dict[str, Any]]) -> _Prepared:
         raise _SendFailure("消息必须是字符串或 OneBot 消息段数组")
     text_parts: list[str] = []
     markdown_parts: list[str] = []
+    markdown_at_everyone = False
+    markdown_commands: list[dict[str, Any]] = []
     media: list[tuple[str, str, str]] = []
     reply: str | None = None
     for segment in message:
@@ -538,6 +621,14 @@ def _prepare(message: str | list[dict[str, Any]]) -> _Prepared:
             reply = _reply_id(data, reply)
         elif segment_type == _OFFICIAL_MARKDOWN_SEGMENT:
             markdown_parts.append(str(data.get("content") or ""))
+            markdown_at_everyone = markdown_at_everyone or bool(data.get("at_everyone"))
+            raw_commands = data.get("commands")
+            if raw_commands is not None:
+                if not isinstance(raw_commands, list) or any(
+                    not isinstance(item, dict) for item in raw_commands
+                ):
+                    raise _SendFailure("official_markdown 的 commands 必须是对象数组")
+                markdown_commands.extend(dict(item) for item in raw_commands)
         elif segment_type in _MEDIA_SEGMENTS:
             source = str(data.get("file") or data.get("url") or "").strip()
             if not source:
@@ -552,7 +643,12 @@ def _prepare(message: str | list[dict[str, Any]]) -> _Prepared:
     if markdown_parts:
         if text_parts or media:
             raise _SendFailure("official_markdown 消息段不能与文本/at/富媒体段混用")
-        return _Prepared(markdown="\n".join(markdown_parts), reply=reply)
+        return _Prepared(
+            markdown="\n".join(markdown_parts),
+            at_everyone=markdown_at_everyone,
+            commands=markdown_commands,
+            reply=reply,
+        )
     return _Prepared(text="".join(text_parts), media=media, reply=reply)
 
 
@@ -582,6 +678,32 @@ def _split_text(text: str, limit: int = _TEXT_LIMIT) -> list[str]:
     if remaining:
         chunks.append(remaining)
     return chunks
+
+
+def _command_tags(kind: str, commands: list[dict[str, Any]]) -> list[str]:
+    """结构化指令参数 → 官方 <qqbot-cmd-*> 标签；值统一 urlencode。"""
+    tags: list[str] = []
+    for command in commands:
+        text = _encoded_attr(command.get("text"))
+        if not text:
+            continue
+        if command.get("enter"):
+            if kind != "private":
+                raise _SendFailure("群聊不支持回车指令；请去掉 enter 或改用 send_reply")
+            tags.append(f'<qqbot-cmd-enter text="{text}" />')
+            continue
+        show = _encoded_attr(command.get("show")) or text
+        reference = "true" if command.get("reference") else "false"
+        tags.append(
+            f'<qqbot-cmd-input text="{text}" show="{show}" reference="{reference}" />'
+        )
+    return tags
+
+
+def _encoded_attr(value: Any) -> str:
+    """urlencode 指令值；先 unquote，已编码的输入不会被二次编码破坏。"""
+    text = str(value or "").strip()
+    return quote(unquote(text), safe="") if text else ""
 
 
 def _response_message_id(body: dict[str, Any]) -> str:

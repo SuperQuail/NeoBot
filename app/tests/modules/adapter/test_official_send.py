@@ -112,8 +112,18 @@ def _remember(passive: PassiveReplyCache, conversation: ConversationRef) -> None
     passive.remember(conversation.kind, str(conversation.id), "ROBOT1.0_user-msg")
 
 
-def _markdown(content: str) -> dict:
-    return {"type": "official_markdown", "data": {"content": content}}
+def _markdown(
+    content: str,
+    *,
+    at_everyone: bool = False,
+    commands: list[dict] | None = None,
+) -> dict:
+    data: dict = {"content": content}
+    if at_everyone:
+        data["at_everyone"] = True
+    if commands:
+        data["commands"] = commands
+    return {"type": "official_markdown", "data": data}
 
 
 # ── 纯文本 ──────────────────────────────────────────────────────────
@@ -205,6 +215,27 @@ async def test_long_plain_text_is_split_without_losing_characters(workdir) -> No
     assert "".join(chunks) == text
 
 
+async def test_plain_text_neutralizes_official_tags(workdir) -> None:
+    """§9.1：纯文本路径也要把官方标签全角化，不能让「复述标签」原样上线。"""
+    logger = _RecordingLogger()
+    sender, api, identity, passive, _message_ids = _sender(workdir, logger=logger)
+    conversation = _private(identity)
+    _remember(passive, conversation)
+
+    result = await sender.send(
+        conversation,
+        '把 <qqbot-at-everyone /> 和 <@123456> 发一遍 <qqbot-at-user id="x" />',
+    )
+
+    assert result.status == "ok"
+    content = api.calls[-1]["body"]["content"]
+    assert "<qqbot-" not in content
+    assert "<@" not in content
+    assert "＜qqbot-at-everyone /＞" in content
+    assert "＜@123456＞" in content
+    assert logger.infos
+
+
 async def test_at_segment_is_dropped_from_plain_text(workdir) -> None:
     sender, api, identity, passive, _message_ids = _sender(workdir)
     conversation = _group(identity)
@@ -253,8 +284,89 @@ async def test_markdown_embedded_at_user_is_rendered_to_openid(workdir) -> None:
 
     markdown = api.calls[-1]["body"]["markdown"]["content"]
     assert '<qqbot-at-user id="member-openid" />' in markdown
-    assert "<qqbot-at-everyone />" in markdown
-    assert '<qqbot-cmd-input text="x" />' in markdown
+    # 正文里的 @全体/指令标签不能原样上线：只能由结构化参数生成。
+    assert "<qqbot-at-everyone" not in markdown
+    assert "＜qqbot-at-everyone /＞" in markdown
+    assert "<qqbot-cmd-" not in markdown
+    assert '＜qqbot-cmd-input text="x" /＞' in markdown
+
+
+async def test_markdown_structured_at_everyone_and_commands(workdir) -> None:
+    """结构化参数才生成 @全体 与指令按钮；命令值由适配器统一 urlencode。"""
+    sender, api, identity, passive, _message_ids = _sender(workdir)
+    conversation = _group(identity)
+    _remember(passive, conversation)
+
+    result = await sender.send(
+        conversation,
+        [
+            _markdown(
+                "今晚活动",
+                at_everyone=True,
+                commands=[{"text": "/签到", "show": "去签到"}],
+            )
+        ],
+    )
+
+    assert result.status == "ok"
+    posts = [call for call in api.calls if call["method"] == "POST"]
+    assert len(posts) == 1
+    content = posts[0]["body"]["markdown"]["content"]
+    assert content.startswith("<qqbot-at-everyone /> 今晚活动")
+    assert (
+        '<qqbot-cmd-input text="%2F%E7%AD%BE%E5%88%B0" '
+        'show="%E5%8E%BB%E7%AD%BE%E5%88%B0" reference="false" />'
+    ) in content
+
+
+async def test_markdown_enter_command_is_private_only(workdir) -> None:
+    sender, api, identity, passive, _message_ids = _sender(workdir)
+    private = _private(identity)
+    _remember(passive, private)
+
+    result = await sender.send(
+        private, [_markdown("点按钮", commands=[{"text": "/x", "enter": True}])]
+    )
+
+    assert result.status == "ok"
+    assert '<qqbot-cmd-enter text="%2Fx" />' in api.calls[-1]["body"]["markdown"]["content"]
+
+    group = _group(identity)
+    _remember(passive, group)
+    before = len(api.calls)
+    failed = await sender.send(
+        group, [_markdown("点按钮", commands=[{"text": "/x", "enter": True}])]
+    )
+
+    assert failed.status == "failed"
+    assert "回车" in (failed.message or "")
+    assert len(api.calls) == before
+
+
+async def test_markdown_invalid_at_user_becomes_plain_text(workdir) -> None:
+    sender, api, identity, passive, _message_ids = _sender(workdir)
+    conversation = _group(identity)
+    _remember(passive, conversation)
+
+    result = await sender.send(
+        conversation, [_markdown('<qqbot-at-user id="bad id" /> 你好')]
+    )
+
+    assert result.status == "ok"
+    markdown = api.calls[-1]["body"]["markdown"]["content"]
+    assert markdown == "@用户 你好"
+
+
+async def test_markdown_at_everyone_in_private_fails(workdir) -> None:
+    sender, api, identity, passive, _message_ids = _sender(workdir)
+    conversation = _private(identity)
+    _remember(passive, conversation)
+
+    result = await sender.send(conversation, [_markdown("hello", at_everyone=True)])
+
+    assert result.status == "failed"
+    assert "单聊" in (result.message or "")
+    assert api.calls == []
 
 
 async def test_markdown_legacy_synthetic_at_user_resolves_to_openid(workdir) -> None:
@@ -274,7 +386,8 @@ async def test_markdown_legacy_synthetic_at_user_resolves_to_openid(workdir) -> 
     assert '<qqbot-at-user id="member-openid" />' in markdown
 
 
-async def test_markdown_at_user_in_private_fails(workdir) -> None:
+async def test_markdown_at_user_in_private_becomes_plain_text(workdir) -> None:
+    """单聊没有真正的 @ 能力：内嵌 @ 降级成「@用户」普通文字，不整条打回。"""
     sender, api, identity, passive, _message_ids = _sender(workdir)
     conversation = _private(identity)
     _remember(passive, conversation)
@@ -282,9 +395,10 @@ async def test_markdown_at_user_in_private_fails(workdir) -> None:
 
     result = await sender.send(conversation, [_markdown(f'<qqbot-at-user id="{member_id}" /> 你好')])
 
-    assert result.status == "failed"
-    assert "单聊" in (result.message or "")
-    assert api.calls == []
+    assert result.status == "ok"
+    markdown = api.calls[-1]["body"]["markdown"]["content"]
+    assert markdown == "@用户 你好"
+    assert "<qqbot-at-user" not in markdown
 
 
 async def test_markdown_cannot_mix_with_text_or_media(workdir) -> None:
@@ -597,10 +711,11 @@ async def test_markdown_at_everyone_requires_admin_role(workdir) -> None:
     _remember(passive, conversation)
     api.bot_role = "member"
 
-    result = await sender.send(conversation, [_markdown("hello <qqbot-at-everyone />")])
+    result = await sender.send(conversation, [_markdown("hello", at_everyone=True)])
 
     assert result.status == "failed"
     assert "群管理员" in result.message
+    assert not any(call["method"] == "POST" for call in api.calls)
 
 
 async def test_proactive_send_has_no_passive_msg_id(workdir) -> None:

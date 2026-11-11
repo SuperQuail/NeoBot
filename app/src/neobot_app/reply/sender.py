@@ -228,15 +228,26 @@ class ReplySender:
         *,
         reply_to_message_id: int | None = None,
         proactive: bool = False,
+        at_everyone: bool = False,
+        commands: list[dict] | None = None,
     ) -> Any:
-        """发送一条官方 Markdown 消息；不切分、不降级，失败原样返回。"""
+        """发送一条官方 Markdown 消息；不切分、不降级，失败原样返回。
+
+        at_everyone/commands 是结构化参数（工具层已校验），随段一起交给适配器
+        按官方协议拼装；content 里的同名标签会被适配器转义成普通文字。
+        """
         conv_ref = event.conversation_ref
         if conv_ref is None:
             raise ValueError("ReplyEvent.conversation_ref is None")
+        data: dict[str, Any] = {"content": content}
+        if at_everyone:
+            data["at_everyone"] = True
+        if commands:
+            data["commands"] = list(commands)
         segments: list[dict] = []
         if reply_to_message_id is not None:
             segments.append({"type": "reply", "data": {"id": str(reply_to_message_id)}})
-        segments.append({"type": "official_markdown", "data": {"content": content}})
+        segments.append({"type": "official_markdown", "data": data})
         return await self.send_with_timeout(
             conv_ref, segments, channel="official", proactive=proactive
         )

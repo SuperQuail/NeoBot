@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from neobot_app.bot_accounts import bot_account_for_event
 from neobot_app.reply.event import ReplyState
@@ -224,6 +224,10 @@ class AgentHandlersMixin:
         *,
         content: str,
         reply_to_number: int | None = None,
+        at_everyone: bool = False,
+        commands: list[dict] | None = None,
+        display_text: str | None = None,
+        tool_arguments: dict[str, Any] | None = None,
     ) -> object:
         from neobot_app.reply.sender import send_response_ok
 
@@ -233,7 +237,11 @@ class AgentHandlersMixin:
         reply_id = numbering.get_message_id(reply_to_number) if reply_to_number is not None else None
         before_message_id = queue.get_last_message_id(queue_key)
         delivered = await self._sender.send_official_markdown(
-            event, content, reply_to_message_id=reply_id
+            event,
+            content,
+            reply_to_message_id=reply_id,
+            at_everyone=at_everyone,
+            commands=commands or [],
         )
         if not send_response_ok(delivered):
             self._logger.info(
@@ -251,10 +259,10 @@ class AgentHandlersMixin:
         await self._sender.record_self_sent_text(
             self._self_sent_sink(queue, queue_copy, queue_key),
             conv_ref,
-            content,
+            display_text or content,
             bot_account=bot_account_for_event(event, self._config),
             tool_name="send_official_markdown",
-            tool_arguments={"content": content},
+            tool_arguments=tool_arguments or {"content": content},
         )
         return delivered
 

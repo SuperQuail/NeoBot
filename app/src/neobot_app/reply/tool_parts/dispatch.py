@@ -115,6 +115,7 @@ class _DispatchMixin:
                 flow = f"{self._conv_kind}:{self._conv_id}"
                 context = ToolContext(owner=f"{flow}:main", chat_flow_id=flow)
                 safe = {"cancel", "send_reply", "split_reply", "wait", "send_long_reply",
+                        "send_official_markdown",
                         "credential__request", "credential__check", "skills__read_manifest",
                         "skills__read_resource", "skills__view_instructions", "check_background_tasks",
                         "cancel_task", "agents__list", "image_context__add_image", "image_parse__parse_image",

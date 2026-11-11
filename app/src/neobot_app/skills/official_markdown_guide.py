@@ -16,21 +16,36 @@ _DOCUMENT = """# 官方 QQ 机器人 Markdown 卡片
 官方 QQ 机器人 Markdown 卡片与内嵌 @/指令按钮的写法（仅 official 通道，按需读取）。
 
 普通 send_reply 只发送纯文本，不会渲染 Markdown，也不能真正 @ 用户。
-只有需要标题、列表、引用、链接、图片、内嵌 @ 或指令按钮时，才调用
+只有需要标题、列表、引用、链接、内嵌 @、@全体成员或指令按钮时，才调用
 send_official_markdown（仅官方通道可见，发送的是官方 Markdown 卡片）。
 它和我们自己的 Markdown 图片（send_long_reply 把 Markdown 渲染成图片）不是一回事。
 
-## 支持的内嵌语法
+## content 写法（只放行内嵌 @）
 
-- 群 @ 用户：<qqbot-at-user id="用户openid" />，openid 是群友资料里的完整用户 ID（提示词/资料中 openid: 后面那串）。
-- @全体成员：<qqbot-at-everyone />；机器人必须是群管理员，且每个群每个自然日只能发一次。
-- 回车指令：<qqbot-cmd-enter text="..." />；群聊不支持。
-- 参数指令：<qqbot-cmd-input text="..." show="..." reference="false" />；
-  text 必填，text/show 各 ≤100 字符，值需要 URL 编码。
+- 支持：## 标题、**加粗**、_斜体_、~~删除线~~、> 引用、- 列表、1. 有序、
+  [文字](https://...)、*** 分割线；
+- 不支持：表格、代码块、HTML；需要就改 send_long_reply（转图片）。
+- @ 用户：<qqbot-at-user id="openid" />，openid 是群友资料里的完整用户 ID
+  （提示词/资料中 openid 后面那串），不要编；单聊不支持 @，直接写昵称。
+- 不要手写 <qqbot-at-everyone /> 或 <qqbot-cmd-*>：这类标签会被工具转义成普通文字。
+  @全体成员用 at_everyone=true（仅群聊，每群每天 1 次，机器人必须是群管理员）；
+  指令按钮用 commands 数组（工具会生成 qqbot-cmd-enter/qqbot-cmd-input 标签）。
 
-其余 <...> 标签会被工具拒绝。表格、代码块官方不支持，改用 send_long_reply。
+## commands 示例
 
-发送失败是真实的失败：不要改写成普通文本重发，读取错误修正参数，或告诉用户暂时无法发送。
+[{"text": "/签到", "show": "去签到"}]：text 必填、text/show 各 ≤100 字符；
+单聊可加 "enter": true（点一下直接发送），群聊不支持 enter。
+reference 只对参数指令生效（是否带引用，默认 false）。
+
+## 限制
+
+- 单条 ≤4000 字，一次回复里最多 1 条；
+- 被动回复额度：群 5 分钟内 5 次、单聊 60 分钟内 4 次，不要用它刷屏；
+- 链接只允许 http(s)；javascript:/data:/file: 与回环/内网地址会被拒绝；
+- @全体需要机器人是群管理员，当天已用过就不要再试；单聊不支持 @。
+
+失败怎么办：发送失败是真实失败，不会自动降级成纯文本；按错误修正参数，
+或告诉用户暂时无法发送。
 """
 
 
