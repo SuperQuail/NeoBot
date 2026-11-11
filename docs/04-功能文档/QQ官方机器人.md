@@ -44,7 +44,7 @@ NeoBot 支持两种 QQ 接入通道，并可以**同时运行**：
 ## 身份判定与账号
 
 - 判定只在**连接建立后**进行：对每条已连接通道调用 `get_version_info`，`app_name` 为 `NeoBot-QQOfficial` 即官方通道；未连接不判定、不猜测。双待下每条通道各有一份判定结果（通道、账号、昵称）。
-- **双通道路由**：已通过 `/linkgroup` 建立群号映射、且 OneBot 与官方 bot 都在线的群，官方通道的群消息会去重交给 OneBot 处理；回复默认发 OneBot，OneBot 连接不可用时自动回落到官方通道（Conversation ID 会按映射换成官方的 group_openid）。
+- **双通道路由**：已通过 `/linkgroup` 建立群号映射、且 OneBot 与官方 bot 都在线的群，官方通道的群消息会去重交给 OneBot 处理；但显式 @ 官方机器人的消息（`GROUP_AT_MESSAGE_CREATE` 或正文带 `@机器人` 标记，适配器会补 at 段）不参与去重，仍按官方通道正常回复/触发命令。回复默认发 OneBot，OneBot 连接不可用时自动回落到官方通道（Conversation ID 会按映射换成官方的 group_openid）。
 - **双待模式下两个机器人 QQ 号都通过工具/API 获取**（`get_login_info` 等），**不读 `[bot].account`**：两个号不同，不能用一个配置值代表。消息自带 `self_id`（即对应通道的机器人号），自我发言判断、提示词、命令 @ 判定都按消息级账号处理。
 - 单通道模式保留旧行为：`[bot].account = 0` 时连接后用 API 自动回填运行期配置；`[bot].official_mode` 仍可强制官方/非官方行为。
 - 官方通道的官方行为：只有群 @ 事件（`GROUP_AT_MESSAGE_CREATE`）和正文里带 `@机器人` 标记的群全量消息会识别为「被 @」，按必回处理；普通群全量消息（`GROUP_MESSAGE_CREATE`）没有 @ 时按普通群消息走意愿概率，不触发必回、也不触发群命令。提示词会注入官方机器人的能力边界；双待下只有官方通道的回复会注入该说明。
@@ -80,13 +80,15 @@ NeoBot 支持两种 QQ 接入通道，并可以**同时运行**：
   - 官方「唯一身份机制」明确写「不同的 bot(AppID) 获取到的用户 openid、群 openid、频道 openid 均不相同」，同一个群在不同 AppID 下连 openid 都不同；
   - OpenAPI 里没有 group_openid → QQ 群号 / user_openid → QQ 号 的转换接口。
 
-  因此只按人工 `/linkgroup` 映射关联合法群：已映射且两通道都在线时，官方群消息去重交给 OneBot，回复默认优先 OneBot，OneBot 不可用回落官方；显式 `channel` 不被静默改投。
+  因此只按人工 `/linkgroup` 映射关联合法群：已映射且两通道都在线时，官方群消息去重交给 OneBot（显式 @ 官方机器人的消息除外，仍按官方通道处理），回复默认优先 OneBot，OneBot 不可用回落官方；显式 `channel` 不被静默改投。
 - **非目标**：QQ 频道/频道私信、Webhook 模式、流式消息、消息 `keyboard` 字段（模板/自定义键盘）、ARK、互动回调；Markdown 卡片只支持内嵌 `<qqbot-at-user>` 与由 `at_everyone`/`commands` 结构化参数生成的 `qqbot-at-everyone`/`qqbot-cmd-enter`/`qqbot-cmd-input` 标签，不支持手写这些标签。
 
 ## 从合成号迁移到 openid（旧数据）
 
 - **为什么迁移**：合成号只是 13 位派生的显示视图，无法表达完整 openid；现在官方通道的主键就是 openid 字符串，插件与存储直接读原值。
 - **数据位置**：`data/qqbot/identities.json`（openid ↔ 旧合成号，迁移期只读反查源）、`data/user_qq_map.json`（真实 QQ/群号 ↔ 本地 ID 的人工映射）、本体数据库 `data/neobot.db`（会话/消息/档案/定时任务/跨聊天记录里的本地 ID 都是文本，按 `identities.json` 改写旧值）。
+- **自动迁移**：升级后首次启动时，`user_data`/`group_data`/`messages`/`memories`/`archive_memories`/`archive_snapshots`/`cross_chat_sessions`/`model_usage_records` 里的旧合成号会按 `identities.json` 自动改写成 openid（单个 SQLite 事务、可重复执行；`_build_storage` 在 schema 迁移前已写 `data/db_backup/` 快照；失败只记 WARNING 不阻塞启动，下次启动重试），日志打印各表改写条数。
+- **冲突处理**：若目标 openid 行已存在（典型：迁移后又从旧备份恢复），保留新旧两份数据、日志打 WARNING 并跳过该条，不删除旧数据，需要人工核对合并；头像文件（`data/avatars/<旧合成号>.png`）不随迁移改名，下次出面会重新拉取并产生孤儿文件。
 - **插件私有库**：`streaming_parser` 的 `group_id` 已从 BigInteger 迁移为 TEXT（插件库 Migration v2，旧数字群号自动 CAST）；`minigame` 的用户 ID 列加宽到 128 并接受 openid（Migration v3）；其它插件按自己的迁移版本随插件升级执行。
 - **面板**：机器人/活跃用户页面显示**完整** openid（`ID:<openid>`）；openid 不是 QQ 号，页面不再为它请求 qlogo 头像，也不把它拼进 `nk=` 参数。
 - **备份**：迁移前请同时备份 `data/neobot.db`、`data/qqbot/`、`data/user_qq_map.json` 和各插件数据目录（插件库在主数据库快照之外）。恢复旧备份后，旧合成号仍可经 `identities.json` 反查使用一个发布周期；迁移完成后不要立即删除 `identities.json`。
