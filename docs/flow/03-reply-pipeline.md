@@ -10,7 +10,7 @@ covers:
   - app/src/neobot_app/reply/vision_context.py
   - app/src/neobot_app/reply/flow_registry.py
 verified_against: d525a5b
-verified_hash: 154dfc4fc23b
+verified_hash: f0bd6d26d25f
 ---
 
 # 03 回复管线：状态机 / 冷却 / 静默看门狗 / 发送与后处理

@@ -69,7 +69,20 @@ class LifecycleShutdownMixin:
             )
             return None
 
-        resolved_channel = self._background_reply_channel(kind, conversation_id, channel)
+        from neobot_app.runtime.legacy_bindings import resolve_legacy_official_target
+
+        resolved = resolve_legacy_official_target(
+            kind,
+            conversation_id,
+            adapter=getattr(self, "_adapter", None),
+            logger=self._logger,
+        )
+        if resolved is None:
+            return None
+        conversation_id, forced_channel = resolved
+        queue_key = str(conversation_id)
+        pipeline_key = f"{kind}:{queue_key}"
+        resolved_channel = forced_channel or self._background_reply_channel(kind, conversation_id, channel)
 
         # 将通知内容推入消息队列作为触发消息
         @dataclass

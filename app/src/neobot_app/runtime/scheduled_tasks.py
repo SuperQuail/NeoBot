@@ -124,6 +124,8 @@ class ScheduledTaskManager:
         self._runner: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
         self._failure_logs: dict[tuple[str, str, str], tuple[str, float, int]] = {}
+        self._legacy_migration_started = False
+        self._legacy_migration_task: asyncio.Task[None] | None = None
 
     def _log_poll_failure(
         self,
@@ -175,6 +177,65 @@ class ScheduledTaskManager:
         self._orchestrator = orchestrator
         if self._notification_hub is not None:
             self._notification_hub.set_orchestrator(orchestrator)
+        self._start_legacy_binding_migration()
+
+    def _start_legacy_binding_migration(self) -> None:
+        if self._legacy_migration_started or self._uow_factory is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._legacy_migration_started = True
+        self._legacy_migration_task = loop.create_task(self.migrate_legacy_bindings())
+
+    async def migrate_legacy_bindings(self) -> None:
+        """only-official 下把旧定时任务的真实 QQ/群号迁移成官方合成 ID。"""
+        from neobot_app.runtime.legacy_bindings import resolve_legacy_official_target
+
+        adapter = getattr(self._orchestrator, "_adapter", None) if self._orchestrator else None
+        active = getattr(adapter, "active_channels", None)
+        if active is None or tuple(str(item) for item in active) != ("official",):
+            return
+        try:
+            tasks = await self._list_active_tasks()
+        except Exception as exc:
+            self._logger.warning("旧定时任务绑定迁移读取失败", error=str(exc))
+            return
+        migrated = 0
+        for task in tasks:
+            bindings = []
+            changed = False
+            for binding in task.bindings:
+                resolved = resolve_legacy_official_target(
+                    binding.kind,
+                    binding.id,
+                    adapter=adapter,
+                    logger=self._logger,
+                )
+                if resolved is None:
+                    bindings.append(binding)
+                    continue
+                new_id, _forced = resolved
+                if str(binding.id) != new_id:
+                    bindings.append(ConversationRef(binding.kind, new_id))
+                    changed = True
+                else:
+                    bindings.append(binding)
+            if not changed:
+                continue
+            try:
+                async with self._uow_factory() as uow:
+                    await uow.scheduled_tasks.update(task.task_uuid, bindings=tuple(bindings))
+                migrated += 1
+            except Exception as exc:
+                self._logger.warning(
+                    "旧定时任务绑定迁移写回失败",
+                    task_id=task.task_uuid,
+                    error=str(exc),
+                )
+        if migrated:
+            self._logger.info("旧定时任务绑定已迁移到官方合成 ID", tasks=migrated)
 
     def set_notification_hub(self, hub: Any) -> None:
         self._notification_hub = hub
