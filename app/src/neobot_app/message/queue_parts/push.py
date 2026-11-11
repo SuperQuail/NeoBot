@@ -27,6 +27,7 @@ from .common import (
     QueueStats,
     ReactionEntry,
     RecallNotice,
+    SelfSentToolCall,
 )
 from .helpers import _safe_int
 
@@ -203,6 +204,7 @@ class _QueuePushMixin:
         occurred_at: Optional[int] = None,
         include_initial_timestamp: bool = True,
         replied_messages: Optional[List[MessageType]] = None,
+        tool_call: Optional[SelfSentToolCall] = None,
     ) -> None:
         converted_message = self._convert_message(message)
         converted_replies = [
@@ -230,6 +232,7 @@ class _QueuePushMixin:
                 occurred_at=resolved_time,
                 message=converted_message,
                 replied_messages=converted_replies,
+                tool_call=tool_call,
                 weight=entry_weight,
             )
         )
@@ -249,12 +252,14 @@ class _QueuePushMixin:
         *,
         occurred_at: Optional[int] = None,
         replied_messages: Optional[List[MessageType]] = None,
+        tool_call: Optional[SelfSentToolCall] = None,
     ) -> None:
         self._push_message(
             key,
             message,
             occurred_at=occurred_at,
             replied_messages=replied_messages,
+            tool_call=tool_call,
         )
 
     def push_history(

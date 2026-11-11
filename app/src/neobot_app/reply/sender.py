@@ -17,6 +17,7 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.runtime_event import RuntimeEnvelope
 from neobot_contracts.time_context import now_utc
 
+from neobot_app.message.queue import SelfSentToolCall
 from neobot_app.reply.debug import DebugHelper
 from neobot_app.reply.event import ReplyState
 from neobot_app.reply.output_guard import clean_segments, clean_text, should_drop
@@ -456,7 +457,15 @@ class ReplySender:
                 record_delivery(image_result)
                 if index == len(image_entries) - 1 and not text.strip() and not segments:
                     event.send_incomplete = False
-                await self._emit_self_sent_image(self_sent, conv_ref, entry.file_path, bot_account=bot_account)
+                # 历史里记成真实工具调用 send_reply(emoji_numbers=[n]) + 图片索引回执，
+                # 管线重置后模型才知道「这张表情包已经发过了」，不会反复重发。
+                await self._emit_self_sent_image(
+                    self_sent,
+                    conv_ref,
+                    entry.file_path,
+                    bot_account=bot_account,
+                    tool_arguments={"emoji_numbers": [image_number]},
+                )
                 await self._emoji_service.record_usage(image_number)
 
         # Phase C: send text (segmented, with cooldown)
@@ -593,10 +602,27 @@ class ReplySender:
         )
 
     def record_self_sent_text(
-        self, sink: SelfSentSink | None, conv_ref: ConversationRef, text: str
+        self,
+        sink: SelfSentSink | None,
+        conv_ref: ConversationRef,
+        text: str,
+        *,
+        bot_account: int = 0,
+        tool_name: str = "send_reply",
+        tool_arguments: dict[str, Any] | None = None,
     ) -> asyncio.Task[None] | None:
-        """把一段真实发出的文本入队并落盘（供工具 handler 复用统一通道）。"""
-        return self._emit_self_sent(sink, conv_ref, text)
+        """把一段真实发出的文本入队并落盘（供工具 handler 复用统一通道）。
+
+        tool_name/tool_arguments 描述这次发言对应的工具调用（如
+        send_official_markdown、send_long_reply 的 caption），重置后历史才能
+        还原成真实工具调用而不是一段裸文本。
+        """
+        tool_call = SelfSentToolCall(
+            name=tool_name,
+            arguments=dict(tool_arguments or {"text": text}),
+            result={"ok": True},
+        )
+        return self._emit_self_sent(sink, conv_ref, text, bot_account=bot_account, tool_call=tool_call)
 
     async def record_self_sent_image(
         self,
@@ -607,16 +633,26 @@ class ReplySender:
         kind: str = "image",
         source_note: str = "",
         bot_account: int = 0,
+        tool_name: str = "send_reply",
+        tool_arguments: dict[str, Any] | None = None,
     ) -> asyncio.Task[None] | None:
         """把一张真实发出的图片按「索引」入队（产物进 temp 图库，队列只留引用）。
 
         索引里同时写 temp 图库 id（可被 image_context 再次取回查看）与 file: 路径
         （图库清理后仍能定位产物），不写图片内容 ⇒ 不占上下文窗口。
+
+        同时记录这次发图对应的工具调用（send_reply 的 emoji_numbers / send_long_reply
+        的图片参数）与回执里的图片索引：重置后的历史据此重建「发过哪张图」。
         """
         if sink is None or not sink.usable:
             return None
         index_text = await self._build_image_index_text(file_path, kind=kind, source_note=source_note)
-        return self._emit_self_sent(sink, conv_ref, index_text, bot_account=bot_account)
+        tool_call = SelfSentToolCall(
+            name=tool_name,
+            arguments=dict(tool_arguments or {"image_path": str(file_path)}),
+            result={"ok": True, "image_index": index_text},
+        )
+        return self._emit_self_sent(sink, conv_ref, index_text, bot_account=bot_account, tool_call=tool_call)
 
     async def record_self_sent_voice(
         self,
@@ -625,6 +661,9 @@ class ReplySender:
         text: str,
         *,
         file_hint: str = "",
+        bot_account: int = 0,
+        tool_name: str = "speak",
+        tool_arguments: dict[str, Any] | None = None,
     ) -> asyncio.Task[None] | None:
         """把一条真实发出的语音入队：暂无解析能力 ⇒ 原始文本 + 音频文件索引。"""
         if sink is None or not sink.usable:
@@ -634,7 +673,14 @@ class ReplySender:
             hint = f"file:{hint}"
         head = f"[语音:{hint}]" if hint else "[语音]"
         spoken = str(text or "").strip()
-        return self._emit_self_sent(sink, conv_ref, f"{head} {spoken}" if spoken else head)
+        tool_call = SelfSentToolCall(
+            name=tool_name,
+            arguments=dict(tool_arguments or {"text": spoken}),
+            result={"ok": True, "file_index": head},
+        )
+        return self._emit_self_sent(
+            sink, conv_ref, f"{head} {spoken}" if spoken else head, bot_account=bot_account, tool_call=tool_call
+        )
 
     def _next_self_sent_message_id(self) -> int:
         """生成严格递减的负数合成消息 id（与后端真实 id 不同源，天然不撞号）。"""
@@ -660,10 +706,13 @@ class ReplySender:
         message_segments = [MessageSegment(type="text", data={"text": text})]
         sender = PostMessageMessagesender(user_id=bot_qq, nickname=self._bot_name)
 
+        # self_id 与 user_id 同值：历史回放时 is_bot_message 不看账号集合也能
+        # 认出这是「我自己发的」（官方合成号/账号未解析时账号集合可能对不上）。
         if conv_ref.kind == "group":
             return GroupMessage(
                 message_type=MessageTypeEnum.group,
                 message_id=synthetic_msg_id,
+                self_id=bot_qq,
                 user_id=bot_qq,
                 message=message_segments,
                 raw_message=text,
@@ -673,6 +722,7 @@ class ReplySender:
         return PrivateMessage(
             message_type=MessageTypeEnum.private,
             message_id=synthetic_msg_id,
+            self_id=bot_qq,
             user_id=bot_qq,
             message=message_segments,
             raw_message=text,
@@ -680,17 +730,27 @@ class ReplySender:
         )
 
     def _emit_self_sent(
-        self, sink: SelfSentSink | None, conv_ref: ConversationRef, text: str, *, bot_account: int = 0
+        self,
+        sink: SelfSentSink | None,
+        conv_ref: ConversationRef,
+        text: str,
+        *,
+        bot_account: int = 0,
+        tool_call: SelfSentToolCall | None = None,
     ) -> asyncio.Task[None] | None:
-        """唯一入队点：写回源队列 + 管线快照，并异步落盘一份（无独立历史上限）。"""
+        """唯一入队点：写回源队列 + 管线快照，并异步落盘一份（无独立历史上限）。
+
+        tool_call 随队列条目一起保存：管线重置后 role_messages 能把它重建成
+        assistant.tool_calls + tool 回执，而不是一段无法归因的文本。
+        """
         if sink is None or not sink.usable or not str(text or "").strip():
             return None
         synthetic_msg_id = self._next_self_sent_message_id()
         try:
             message = self._build_self_sent_message(conv_ref, text, synthetic_msg_id, bot_account=bot_account)
-            sink.queue.push(sink.queue_key, message)
+            sink.queue.push(sink.queue_key, message, tool_call=tool_call)
             if sink.snapshot is not None and sink.snapshot is not sink.queue:
-                sink.snapshot.push(sink.queue_key, message)
+                sink.snapshot.push(sink.queue_key, message, tool_call=tool_call)
         except Exception as exc:
             # 入队失败绝不能反噬发送路径：宁可少一条上下文，也不能让回复发不出去。
             self._logger.warning(
@@ -705,9 +765,23 @@ class ReplySender:
         return self._schedule_self_sent_persist(conv_ref, text, synthetic_msg_id, bot_account=bot_account)
 
     def _emit_self_sent_text(
-        self, sink: SelfSentSink | None, conv_ref: ConversationRef, text: str, *, bot_account: int = 0
+        self,
+        sink: SelfSentSink | None,
+        conv_ref: ConversationRef,
+        text: str,
+        *,
+        bot_account: int = 0,
+        tool_name: str = "send_reply",
+        tool_arguments: dict[str, Any] | None = None,
     ) -> asyncio.Task[None] | None:
-        return self._emit_self_sent(sink, conv_ref, text, bot_account=bot_account)
+        return self.record_self_sent_text(
+            sink,
+            conv_ref,
+            text,
+            bot_account=bot_account,
+            tool_name=tool_name,
+            tool_arguments=tool_arguments,
+        )
 
     async def _emit_self_sent_image(
         self,
@@ -718,9 +792,18 @@ class ReplySender:
         kind: str = "image",
         source_note: str = "",
         bot_account: int = 0,
+        tool_name: str = "send_reply",
+        tool_arguments: dict[str, Any] | None = None,
     ) -> asyncio.Task[None] | None:
         return await self.record_self_sent_image(
-            sink, conv_ref, file_path, kind=kind, source_note=source_note, bot_account=bot_account
+            sink,
+            conv_ref,
+            file_path,
+            kind=kind,
+            source_note=source_note,
+            bot_account=bot_account,
+            tool_name=tool_name,
+            tool_arguments=tool_arguments,
         )
 
     async def _build_image_index_text(self, file_path: Any, *, kind: str, source_note: str) -> str:

@@ -224,6 +224,40 @@ async def test_super_admin_can_unlink_trusted_qq_mapping():
     assert "已移除" in sent[-1][2]
 
 
+@pytest.mark.asyncio
+async def test_super_admin_can_unlink_by_synthetic_id_argument():
+    """参数是 13 位合成 ID 时直接按用户 ID 解除映射（不再自己数位数）。"""
+    sent: list[tuple] = []
+    service = _service(sent)
+    assert link_user_qq(SYNTHETIC, REAL_QQ, trusted=True)[0]
+
+    await service.handle_message(
+        _message(f"/unlinkqq {SYNTHETIC}", user_id=SUPER, at_qqs=[BOT]),
+        kind="group",
+        queue_key="100",
+    )
+
+    assert trusted_qq_for_user(SYNTHETIC) is None
+    assert "已移除" in sent[-1][2]
+
+
+@pytest.mark.asyncio
+async def test_super_admin_can_unlink_by_real_qq_argument():
+    """参数是真实 QQ 号时反查映射到合成 ID 再解除。"""
+    sent: list[tuple] = []
+    service = _service(sent)
+    assert link_user_qq(SYNTHETIC, REAL_QQ, trusted=True)[0]
+
+    await service.handle_message(
+        _message(f"/unlinkqq {REAL_QQ}", user_id=SUPER, at_qqs=[BOT]),
+        kind="group",
+        queue_key="100",
+    )
+
+    assert trusted_qq_for_user(SYNTHETIC) is None
+    assert "已移除" in sent[-1][2]
+
+
 async def test_sub_admin_cannot_unlink_command():
     sent: list[tuple] = []
     service = _service(sent)

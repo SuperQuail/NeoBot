@@ -12,6 +12,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from neobot_app.bot_accounts import (
+    is_synthetic_id,
+    looks_like_real_group_number,
+    looks_like_real_qq,
+)
 from neobot_app.user_identity import synthetic_for_group, synthetic_for_qq
 
 _WARNED: set[tuple[str, str]] = set()
@@ -33,10 +38,11 @@ def resolve_legacy_official_target(
         return target, ""
     if not target.isdigit():
         return target, ""
-    if len(target) == 13:
+    if is_synthetic_id(target):
         return target, "official"
-    real_max = 12 if kind == "group" else 11
-    if len(target) > real_max:
+    if kind == "group" and not looks_like_real_group_number(target):
+        return target, ""
+    if kind == "private" and not looks_like_real_qq(target):
         return target, ""
     mapped = (
         synthetic_for_group(int(target), "official")

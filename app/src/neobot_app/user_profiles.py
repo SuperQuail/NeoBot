@@ -12,8 +12,11 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.utils.prompt_text import escape_prompt_text
 
-from neobot_app.bot_accounts import looks_like_real_qq
-from neobot_app.user_identity import display_user_id, group_number_for, qq_for_user
+from neobot_app.user_identity import (
+    display_user_id,
+    group_number_for,
+    profile_identity,
+)
 from neobot_app.favorability import (
     FAVORABILITY_MAX,
     FAVORABILITY_MIN,
@@ -25,17 +28,6 @@ from neobot_storage._retry import _is_locked_error
 
 
 _FAVORABILITY_UPDATE_ATTEMPTS = 12
-
-
-def _profile_identity(user_id: object) -> str:
-    """用户档案里的身份展示：映射后同时给真实 QQ 号和官方合成 QQ ID。"""
-    text = str(user_id or "").strip()
-    if not text:
-        return ""
-    mapped = qq_for_user(text)
-    if mapped:
-        return f"QQ:{mapped}（QQ ID:{text}）"
-    return f"QQ号:{text}" if looks_like_real_qq(text) else f"QQ ID:{text}"
 
 
 def _sex_to_text(value: object) -> str | None:
@@ -269,7 +261,7 @@ class UserProfileService:
                     # 群昵称/昵称是用户可控文本，直接拼进提示词会破坏区块结构
                     return (
                         f"群主：{escape_prompt_text(name)}"
-                        f"（{_profile_identity(user_id)}）"
+                        f"（{profile_identity(user_id)}）"
                     )
 
         return ""
@@ -791,7 +783,7 @@ class UserProfileService:
         card = escape_prompt_text(getattr(member, "card", None))
         if card:
             segments.append(f"群昵称:{card}")
-        segments.append(_profile_identity(user_id))
+        segments.append(profile_identity(user_id))
 
         qq_gender = _sex_to_text(getattr(member, "sex", None)) or _sex_to_text(getattr(profile, "sex", None))
         if qq_gender:
@@ -837,7 +829,7 @@ class UserProfileService:
         if remark:
             nickname_part += f"(你对Ta的备注:{remark})"
 
-        segments = [nickname_part, _profile_identity(user_id)]
+        segments = [nickname_part, profile_identity(user_id)]
 
         qq_gender = _sex_to_text(getattr(profile, "sex", None))
         if qq_gender:

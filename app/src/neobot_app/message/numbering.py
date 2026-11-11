@@ -73,7 +73,9 @@ class MessageNumbering:
             is_self = getattr(message, "user_id", None) == self._bot_account
         marker = "[被回复消息] " if replied else ""
         if is_self:
-            return f"[msg_id={msg_id}] {marker}{content}"
+            # 自身发言不渲染 msg_id：负数合成 id 不是可引用的真实消息号，
+            # 渲染出来只会被模型模仿；与 role_messages 的 assistant 分支一致。
+            return f"{marker}{content}"
         return f"[msg_id={msg_id}] {number}: {marker}{sender}: {content}"
 
     def apply(

@@ -47,6 +47,19 @@ def test_onebot_group_context_keeps_qq_label() -> None:
     assert "（QQ：123456）" in text
 
 
+def test_onebot_12_digit_group_number_keeps_group_label() -> None:
+    """群号上限 12 位：12 位真实群号不能被当成官方群 ID。"""
+    text = PromptBuildMixin._build_chat_context(
+        _event(
+            channel="onebot",
+            message=_message(channel="onebot", user_id=123456, group_id=123456789012),
+        ),
+        "123456789012",
+    )
+    assert "群号：123456789012" in text
+    assert "群 ID" not in text
+
+
 def test_mapped_synthetic_id_displays_as_real_qq(tmp_path) -> None:
     from neobot_app.user_identity import bind_user_identity, link_user_qq
 

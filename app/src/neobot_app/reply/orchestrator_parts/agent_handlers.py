@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from neobot_app.bot_accounts import bot_account_for_event
 from neobot_app.reply.event import ReplyState
 from neobot_app.reply.postprocess import ReplySplitPreview
 from neobot_app.reply.sender import send_response_ok
@@ -248,7 +249,12 @@ class AgentHandlersMixin:
             event, queue, queue_key, before_message_id=before_message_id
         )
         await self._sender.record_self_sent_text(
-            self._self_sent_sink(queue, queue_copy, queue_key), conv_ref, content
+            self._self_sent_sink(queue, queue_copy, queue_key),
+            conv_ref,
+            content,
+            bot_account=bot_account_for_event(event, self._config),
+            tool_name="send_official_markdown",
+            tool_arguments={"content": content},
         )
         return delivered
 
@@ -314,6 +320,7 @@ class AgentHandlersMixin:
                 speak_conv,
                 text,
                 file_hint=_segment_file_hint(segment),
+                bot_account=bot_account_for_event(event, self._config),
             )
         return f"已发送语音消息，内容：{text[:50]}{'...' if len(text) > 50 else ''}"
 
@@ -389,7 +396,14 @@ class AgentHandlersMixin:
                 self._clear_unsent_marker(event)
                 event.send_response = caption_delivered
                 self._record_reply_delivered(event, queue, queue_key, before_message_id=before_message_id)
-                self._sender.record_self_sent_text(long_reply_sink, conv_ref, caption.strip())
+                self._sender.record_self_sent_text(
+                    long_reply_sink,
+                    conv_ref,
+                    caption.strip(),
+                    bot_account=bot_account_for_event(event, self._config),
+                    tool_name="send_long_reply",
+                    tool_arguments={"caption": caption.strip()},
+                )
         # 发送图片（不附带引用，图片单独发送）
         image_delivered = await send_image(
             self._file_server,
@@ -408,13 +422,17 @@ class AgentHandlersMixin:
             self._record_reply_delivered(event, queue, queue_key, before_message_id=before_message_id)
         # 图片入队为「索引」：产物登记进 temp 图库（tmp_xxx）+ file 路径兜底，
         # Markdown 原文只留前 N 字来源标注（全文不再重复注入上下文）。
-        if conv_ref is not None:
+        # 只有真正发出去了才写历史：失败时写回索引会让重建后的历史谎报「已发送」。
+        if conv_ref is not None and send_response_ok(image_delivered):
             await self._sender.record_self_sent_image(
                 long_reply_sink,
                 conv_ref,
                 Path(image_path),
                 kind="markdown",
                 source_note=markdown,
+                bot_account=bot_account_for_event(event, self._config),
+                tool_name="send_long_reply",
+                tool_arguments={"image_path": str(image_path)},
             )
         if send_response_ok(image_delivered) or send_response_ok(caption_delivered):
             state.reply_sent = True

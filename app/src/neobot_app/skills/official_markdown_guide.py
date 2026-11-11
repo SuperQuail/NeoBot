@@ -22,7 +22,7 @@ send_official_markdown（仅官方通道可见，发送的是官方 Markdown 卡
 
 ## 支持的内嵌语法
 
-- 群 @ 用户：<qqbot-at-user id="合成ID" />，合成 ID 是群友资料里的 900 开头 13 位 QQ ID。
+- 群 @ 用户：<qqbot-at-user id="合成ID" />，合成 ID 是群友资料里的 13 位 QQ ID（提示词/资料中的 ID）。
 - @全体成员：<qqbot-at-everyone />；机器人必须是群管理员，且每个群每个自然日只能发一次。
 - 回车指令：<qqbot-cmd-enter text="..." />；群聊不支持。
 - 参数指令：<qqbot-cmd-input text="..." show="..." reference="false" />；

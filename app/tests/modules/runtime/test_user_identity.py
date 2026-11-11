@@ -18,6 +18,7 @@ from neobot_app.user_identity import (
     id_label,
     link_group_number,
     link_user_qq,
+    profile_identity,
     synthetic_for_group,
     qq_for_user,
     trusted_group_number_for,
@@ -112,8 +113,21 @@ def test_group_mapping_and_display():
     assert trusted_group_number_for(SYNTHETIC_GROUP) is None
     assert display_group_id(8000000000003) == "群 ID:8000000000003"
     assert group_label(8000000000003) == "群 ID"
+    # 12 位真实群号仍是群号（群号上限 12 位，比 QQ 号多一位）
+    assert display_group_id(123456789012) == "群号:123456789012"
+    assert group_label(123456789012) == "群号"
     assert unlink_group_number(SYNTHETIC_GROUP)[0]
     assert group_number_for(SYNTHETIC_GROUP) is None
+
+
+def test_profile_identity_keeps_qq_and_id_labels():
+    """档案身份展示：真实 QQ 号用 QQ号，合成 ID 用 QQ ID，映射后两者都给。"""
+    assert profile_identity(REAL_QQ) == f"QQ号:{REAL_QQ}"
+    assert profile_identity(SYNTHETIC) == f"QQ ID:{SYNTHETIC}"
+    assert profile_identity("") == ""
+
+    assert link_user_qq(SYNTHETIC, REAL_QQ, trusted=True)[0]
+    assert profile_identity(SYNTHETIC) == f"QQ:{REAL_QQ}（QQ ID:{SYNTHETIC}）"
 
 
 def test_group_mapping_validates_group_number():

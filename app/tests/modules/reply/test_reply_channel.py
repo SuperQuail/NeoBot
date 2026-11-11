@@ -45,7 +45,7 @@ class _Queue:
     def __init__(self) -> None:
         self.messages: list = []
 
-    def push(self, key, message) -> None:
+    def push(self, key, message, **_kwargs) -> None:
         self.messages.append(message)
 
     def get_last_message_id(self, key):

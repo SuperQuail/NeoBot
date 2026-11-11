@@ -26,9 +26,15 @@ from pathlib import Path
 from typing import Any
 
 from neobot_app.bot_accounts import (
+    display_group_id as _bot_display_group_id,
+)
+from neobot_app.bot_accounts import (
     display_user_id as _bot_display_user_id,
 )
+from neobot_app.bot_accounts import group_label as _bot_group_label
 from neobot_app.bot_accounts import id_label as _bot_id_label
+from neobot_app.bot_accounts import infer_channel
+from neobot_app.bot_accounts import looks_like_real_group_number
 from neobot_app.bot_accounts import looks_like_real_qq
 from neobot_app.utils.atomic import atomic_write_text
 
@@ -45,20 +51,13 @@ def _to_int(value: Any) -> int:
 
 
 def _is_valid_qq(value: Any) -> bool:
-    """真实 QQ 号：5~11 位纯数字（官方合成号是 13 位，且不是 QQ）。"""
-    text = str(value or "").strip()
-    return text.isdigit() and 5 <= len(text) <= 11
+    """真实 QQ 号输入校验：5~11 位纯数字（官方合成号是 13 位，且不是 QQ）。"""
+    return looks_like_real_qq(value, min_digits=5)
 
 
 def _is_valid_group_number(value: Any) -> bool:
-    """真实 QQ 群号：5~12 位纯数字（官方合成 group id 是 13 位）。"""
-    text = str(value or "").strip()
-    return text.isdigit() and 5 <= len(text) <= 12
-
-
-def _infer_channel(local_id: Any) -> str:
-    """真实 QQ 规模数字来自 OneBot；13 位合成号来自官方通道。"""
-    return "onebot" if looks_like_real_qq(local_id) else "official"
+    """真实 QQ 群号输入校验：5~12 位纯数字（官方合成 group id 是 13 位）。"""
+    return looks_like_real_group_number(value, min_digits=5)
 
 
 class UserIdentityMap:
@@ -111,11 +110,11 @@ class UserIdentityMap:
     # ── key 解析 ────────────────────────────────────────────
 
     @staticmethod
-    def _channel_order(channel: str | None, local_id: Any) -> list[str]:
+    def _channel_order(channel: str | None, local_id: Any, kind: str) -> list[str]:
         channels: list[str] = []
         if channel:
             channels.append(str(channel))
-        channels.append(_infer_channel(local_id))
+        channels.append(infer_channel(local_id, kind=kind))
         for fallback in ("onebot", "official"):
             if fallback not in channels:
                 channels.append(fallback)
@@ -126,10 +125,10 @@ class UserIdentityMap:
         if not uid:
             return []
         keys: list[str] = []
-        for name in self._channel_order(channel, uid):
+        for name in self._channel_order(channel, uid, kind):
             keys.append(f"{kind}:{name}:{uid}")
         # 旧格式兼容 key（无 kind）
-        for name in self._channel_order(channel, uid):
+        for name in self._channel_order(channel, uid, kind):
             keys.append(f"{name}:{uid}")
         return keys
 
@@ -192,7 +191,7 @@ class UserIdentityMap:
             return False, "QQ 号必须是 5~11 位纯数字"
         if uid == qq_number:
             return True, f"用户 {uid} 本身就是 QQ 号，无需映射"
-        key = f"{_USER}:{channel or _infer_channel(uid)}:{uid}"
+        key = f"{_USER}:{channel or infer_channel(uid, kind=_USER)}:{uid}"
         previous = self._aliases.get(key)
         if previous and previous.get("trusted") and not trusted:
             return False, "该用户的映射由管理员命令建立，agent 不能修改；请联系管理员用 /linkqq 处理"
@@ -313,7 +312,7 @@ class UserIdentityMap:
             return False, "群号必须是 5~12 位纯数字"
         if gid == number:
             return True, f"群 ID {gid} 本身就是群号，无需映射"
-        key = f"{_GROUP}:{channel or _infer_channel(gid)}:{gid}"
+        key = f"{_GROUP}:{channel or infer_channel(gid, kind=_GROUP)}:{gid}"
         previous = self._aliases.get(key)
         if previous and previous.get("trusted") and not trusted:
             return False, "该群的映射由管理员命令建立，agent 不能修改；请联系管理员用 /linkgroup 处理"
@@ -360,15 +359,22 @@ class UserIdentityMap:
         number = self.group_number_for(group_id, channel)
         if number:
             return f"群号:{number}"
-        text = str(group_id or "").strip()
-        if looks_like_real_qq(text):
-            return f"群号:{text}"
-        return f"群 ID:{text}"
+        return _bot_display_group_id(group_id)
 
     def group_label(self, group_id: Any, channel: str | None = None) -> str:
         if self.group_number_for(group_id, channel):
             return "群号"
-        return "群号" if looks_like_real_qq(group_id) else "群 ID"
+        return _bot_group_label(group_id)
+
+    def profile_identity(self, user_id: Any, channel: str | None = None) -> str:
+        """用户档案里的身份展示：映射后同时给真实 QQ 号和官方合成 QQ ID。"""
+        text = str(user_id or "").strip()
+        if not text:
+            return ""
+        mapped = self.qq_for(text, channel)
+        if mapped:
+            return f"QQ:{mapped}（QQ ID:{text}）"
+        return f"QQ号:{text}" if looks_like_real_qq(text) else f"QQ ID:{text}"
 
 
 _singleton = UserIdentityMap()
@@ -409,6 +415,10 @@ def unlink_user_qq(
 
 def display_user_id(user_id: Any, channel: str | None = None) -> str:
     return _singleton.display_user_id(user_id, channel)
+
+
+def profile_identity(user_id: Any, channel: str | None = None) -> str:
+    return _singleton.profile_identity(user_id, channel)
 
 
 def id_label(user_id: Any, channel: str | None = None) -> str:
@@ -466,6 +476,7 @@ __all__ = [
     "id_label",
     "link_group_number",
     "link_user_qq",
+    "profile_identity",
     "qq_for_user",
     "synthetic_for_qq",
     "synthetic_for_group",

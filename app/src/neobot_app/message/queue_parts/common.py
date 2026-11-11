@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import field
 from enum import Enum
+from typing import Any
 from typing import Callable
 from typing import Dict
 from typing import List
@@ -84,6 +85,21 @@ class NotificationEntry:
     source: str
     content: str
 
+
+@dataclass
+class SelfSentToolCall:
+    """Bot 自身发言背后的工具调用记录。
+
+    入队时挂在对应消息上，回复管线重置（寿命耗尽 / 挂起恢复）后据此把历史
+    重建成 assistant.tool_calls + tool 回执，模型才能看到「自己发过图/语音/
+    长回复」以及当时的参数与索引，而不是一段无法归因的文本。
+    """
+
+    name: str
+    arguments: Dict[str, Any] = field(default_factory=dict)
+    result: Dict[str, Any] = field(default_factory=dict)
+
+
 @dataclass
 class QueueEntry:
     """单条队列事件。"""
@@ -97,6 +113,9 @@ class QueueEntry:
     poke: Optional[PokeEntry] = None
     notification: Optional[NotificationEntry] = None
     replied_messages: List[QueueMessage] = field(default_factory=list)
+    #: Bot 自身发言对应的工具调用（仅 self-sent 消息有）；随条目一起进/出队列，
+    #: 因此「早于最早保留聊天记录」的工具上下文会随聊天记录一起被丢弃。
+    tool_call: Optional[SelfSentToolCall] = None
     #: 该条目占用的容量权重（入队时固化）。
     #: 驱逐与「按权重取最近消息」必须读同一个值：此前驱逐按 kind 重算
     #: （MESSAGE 恒为 1.0），而入队按内容计算（合并转发为 forward_weight），

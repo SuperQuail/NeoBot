@@ -4,7 +4,7 @@ covers:
   - app/src/neobot_app/user_profiles.py
   - app/src/neobot_app/favorability.py
 verified_against: 528fe18
-verified_hash: a9565373c70d
+verified_hash: 2b4f29f023ee
 ---
 
 # 18 用户画像与好感度

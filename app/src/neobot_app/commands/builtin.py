@@ -20,7 +20,7 @@ from neobot_app.commands.model import (
     CommandContext,
     permission_name,
 )
-from neobot_app.bot_accounts import looks_like_real_qq
+from neobot_app.bot_accounts import is_synthetic_id, looks_like_real_qq
 from neobot_app.user_identity import (
     link_group_number,
     link_user_qq,
@@ -783,7 +783,7 @@ async def _handle_link_qq(ctx: CommandContext) -> str:
             "（QQ 号为 5~11 位纯数字）"
         )
     qq_number = int(qq_args[0])
-    if not looks_like_real_qq(qq_number):
+    if not looks_like_real_qq(qq_number, min_digits=5):
         return "QQ 号必须是 5~11 位纯数字。"
     target = targets[0] if targets else int(ctx.user_id or 0)
     if not target:
@@ -828,7 +828,7 @@ async def _handle_unlink_qq(ctx: CommandContext) -> str:
         if len(args) != 1:
             return "用法：/unlinkqq <用户ID|QQ号> 或 /unlinkqq @用户"
         value = int(args[0])
-        if len(args[0]) == 13:
+        if is_synthetic_id(args[0]):
             target = value
         else:
             target = synthetic_for_qq(value, channel)

@@ -45,7 +45,7 @@ class UserIdentitySkill(SkillModule):
             "  - qq_number：真实 QQ 号（5~11 位纯数字）。\n"
             "映射后该用户会显示为 QQ:<真实号>；agent 写入的映射只影响展示，\n"
             "好友/回复名单等访问控制只认管理员命令写入的 trusted 映射。\n"
-            "官方通道的群 ID 是 13 位合成 ID（提示词里显示为 群 ID:800…）；确认真实群号后可用\n"
+            "官方通道的群 ID 是 13 位合成 ID（提示词里显示为 群 ID:9…）；确认真实群号后可用\n"
             "link_group_number 建立群号映射，之后显示为 群号:<真实群号>；同样只影响展示，\n"
             "群黑白名单只认管理员 /linkgroup 写入的 trusted 映射。\n"
             "注意：本技能写入的用户映射只影响展示，**不会授予管理员权限**；管理员/次级管理员\n"
@@ -71,7 +71,7 @@ class UserIdentitySkill(SkillModule):
                         "channel": {
                             "type": "string",
                             "enum": ["auto", "onebot", "official"],
-                            "description": "可选，用户 ID 所属通道；auto 按 ID 位数推断（13 位合成 ID 视为官方）",
+                            "description": "可选，用户 ID 所属通道；auto 按统一身份 API 推断（合成 ID 视为官方）",
                         },
                     },
                     "required": ["user_id", "qq_number"],
@@ -99,12 +99,12 @@ class UserIdentitySkill(SkillModule):
             ),
             self._tool_def(
                 "link_group_number",
-                "把官方群的合成群 ID 映射到真实 QQ 群号（官方群 ID 显示为 群 ID:800…）。",
+                "把官方群的合成群 ID 映射到真实 QQ 群号（官方群 ID 在提示词里显示为 群 ID:9…）。",
                 {
                     "properties": {
                         "group_id": {
                             "type": "string",
-                            "description": "群 ID（提示词里的 群 ID:800… 那串数字，或普通群号）",
+                            "description": "群 ID（提示词里的 群 ID:9… 那串数字，或普通群号）",
                         },
                         "group_number": {
                             "type": "string",
@@ -113,7 +113,7 @@ class UserIdentitySkill(SkillModule):
                         "channel": {
                             "type": "string",
                             "enum": ["auto", "onebot", "official"],
-                            "description": "可选，群 ID 所属通道；auto 按 ID 位数推断",
+                            "description": "可选，群 ID 所属通道；auto 按统一身份 API 推断",
                         },
                     },
                     "required": ["group_id", "group_number"],

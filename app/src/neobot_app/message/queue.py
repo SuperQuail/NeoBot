@@ -22,6 +22,7 @@ from .queue_parts.common import (
     PokeEntry,
     NotificationEntry,
     QueueEntry,
+    SelfSentToolCall,
 )
 from .queue_parts.helpers import _safe_int as _safe_int, _poke_sub_type_text
 from .queue_parts.push import _QueuePushMixin
@@ -43,6 +44,7 @@ __all__ = [
     "ReactionEntry",
     "RecallNotice",
     "SegmentFormatter",
+    "SelfSentToolCall",
     "create_message_queue",
     "is_bot_message",
 ]

@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 from neobot_contracts.models import ConversationRef
-from neobot_app.bot_accounts import bot_account_for_event, looks_like_real_qq
-from neobot_app.user_identity import group_number_for, id_label, qq_for_user
+from neobot_app.bot_accounts import bot_account_for_event
+from neobot_app.user_identity import group_label, group_number_for, id_label, qq_for_user
 from neobot_app.prompt.blocks import Stage, blocks_for
 from neobot_app.prompt.context import Scope
 from neobot_app.reply.event import ReplyEvent, ReplyState
@@ -323,11 +323,7 @@ class PromptBuildMixin:
         if isinstance(message, GroupMessage) or msg_type == "group":
             group_id = getattr(message, "group_id", None) or queue_key
             mapped_group = group_number_for(group_id, event_channel)
-            group_line = (
-                f"群号：{mapped_group}"
-                if mapped_group
-                else f"{'群号' if looks_like_real_qq(group_id) else '群 ID'}：{group_id}"
-            )
+            group_line = f"{group_label(group_id, event_channel)}：{mapped_group or group_id}"
             lines = ["[当前聊天环境]", "会话类型：群聊", group_line]
             if sender_name and sender_id:
                 lines.append(f"消息发送者：{sender_name}（{sender_label}：{sender_value}）")
