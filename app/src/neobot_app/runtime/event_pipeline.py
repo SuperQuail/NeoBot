@@ -99,6 +99,43 @@ class EventPipeline(
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._stopping = False
 
+    def _log_message_enqueued(
+        self,
+        *,
+        message: PrivateMessage | GroupMessage,
+        queue_key: str,
+        decision: WillingDecision | None = None,
+        reason: str = "",
+        **extra: Any,
+    ) -> None:
+        """消息入队且意愿判定完成后的唯一 info 明细日志。"""
+        if decision is None:
+            decision = WillingDecision(
+                manager_name="skipped",
+                probability=0.0,
+                should_reply=False,
+                reasons=(reason,),
+            )
+        preview = (_credential_message_text(message) or str(getattr(message, "raw_message", "") or ""))[:80]
+        kind = "group" if isinstance(message, GroupMessage) else "private"
+        self._logger.info(
+            "消息已入队",
+            event="message.enqueued",
+            chat_flow_id=f"{kind}:{queue_key}",
+            queue_key=queue_key,
+            conversation_kind=kind,
+            conversation_id=queue_key,
+            message_id=getattr(message, "message_id", None),
+            sender_id=str(getattr(message, "user_id", "") or ""),
+            preview=preview,
+            willingness={
+                "probability": decision.probability,
+                "should_reply": decision.should_reply,
+                "reasons": list(decision.reasons),
+            },
+            **extra,
+        )
+
     async def _handle_willing_decision(
         self,
         *,
@@ -106,11 +143,19 @@ class EventPipeline(
         queue: MessageQueue,
         queue_key: str,
     ) -> bool:
-        if self._willing_service is None or not queue_key:
-            return False
-
         conversation_type = "group" if isinstance(message, GroupMessage) else "private"
         chat_type = "群聊" if conversation_type == "group" else "私聊"
+
+        if self._willing_service is None:
+            # 意愿服务缺失也要给出入队结果，否则面板只剩接收日志、看不到为何不回复
+            self._log_message_enqueued(
+                message=message,
+                queue_key=queue_key,
+                reason="意愿服务未启用，不触发回复",
+            )
+            return False
+        if not queue_key:
+            return False
 
         # 睡眠拦截:睡眠期间群聊不触发回复事件(消息已入队);
         # 被@时唤醒并注入唤醒提示词回复;私聊不睡眠,不走本函数。
@@ -129,16 +174,10 @@ class EventPipeline(
                 queue_key=queue_key,
             )
             if block_reason:
-                self._logger.debug(
-                    "回复意愿判定",
-                    event="reply.decided",
-                    chat_flow_id=f"{conversation_type}:{queue_key}",
-                    message_id=message.message_id,
-                    conversation_kind=conversation_type,
-                    conversation_id=queue_key,
-                    probability=0.0,
-                    should_reply=False,
-                    reasons=f"原因: 已屏蔽: {block_reason}",
+                self._log_message_enqueued(
+                    message=message,
+                    queue_key=queue_key,
+                    reason=f"已屏蔽: {block_reason}",
                 )
                 return False
 
@@ -171,19 +210,9 @@ class EventPipeline(
                 manager_name="Quail",
                 probability=1.0,
                 should_reply=True,
-                reasons=("被@提及，直接触发回复",),
+                reasons=("被@提及，直接触发",),
             )
-            self._logger.debug(
-                "回复意愿判定",
-                event="reply.decided",
-                chat_flow_id=f"{conversation_type}:{queue_key}",
-                message_id=message.message_id,
-                conversation_kind=conversation_type,
-                conversation_id=queue_key,
-                probability=1.0,
-                should_reply=True,
-                reasons="原因: 被@提及，直接触发",
-            )
+            self._log_message_enqueued(message=message, queue_key=queue_key, decision=decision)
             if self._reply_orchestrator is not None:
                 return self._start_reply_with_tracking(
                     message=message, queue=queue, queue_key=queue_key, decision=decision
@@ -209,18 +238,7 @@ class EventPipeline(
             )
             return False
 
-        detail = " | ".join(decision.reasons)
-        self._logger.debug(
-            "回复意愿判定",
-            event="reply.decided",
-            chat_flow_id=f"{conversation_type}:{queue_key}",
-            message_id=message.message_id,
-            conversation_kind=conversation_type,
-            conversation_id=queue_key,
-            probability=decision.probability,
-            should_reply=decision.should_reply,
-            reasons=detail,
-        )
+        self._log_message_enqueued(message=message, queue_key=queue_key, decision=decision)
 
         if decision.should_reply and self._reply_orchestrator is not None:
             return self._start_reply_with_tracking(message=message, queue=queue, queue_key=queue_key, decision=decision)
