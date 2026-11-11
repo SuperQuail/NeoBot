@@ -393,11 +393,7 @@ def _help_cache_dir(ctx: CommandContext) -> Any:
 
 
 async def _send_text_with_optional_image(ctx: CommandContext, text: str) -> str | None:
-    """提示类文案：先试既有 markdown→图片，失败则交回命令服务发纯文本。"""
-    if await ctx.service.send_markdown_image(
-        ctx.kind, ctx.conv_id, text, at_user_id=ctx.user_id
-    ):
-        return None
+    """提示类文案直接交回命令服务发纯文本，不再尝试图片降级。"""
     return text
 
 
@@ -443,11 +439,7 @@ async def _send_help_card(
     pages: int = 1,
     allow_cache: bool = True,
 ) -> str | None:
-    """三级降级发送 /help 卡片：HTML 卡片 → markdown 图片 → 纯文本。
-
-    任一级成功即返回 None（已回复）；全部失败才把纯文本交回命令服务发送，
-    保证用户一定有反馈（spec(5) R8 / A13）。
-    """
+    """发送 /help 卡片；渲染/发送失败只写日志并返回 None，不降级成聊天文本。"""
     from neobot_app.runtime import help_card
     from neobot_app.runtime.html_card import render_card_image
 
@@ -505,16 +497,10 @@ async def _send_help_card(
     ):
         return None
 
-    markdown = help_card.render_payload_markdown(payload)
-    if await ctx.service.send_markdown_image(
-        ctx.kind, ctx.conv_id, markdown, at_user_id=ctx.user_id
-    ):
-        return None
-
-    text = help_card.render_payload_text(payload)
-    if help_card.FALLBACK_HINT not in text:
-        text = f"{text}\n{help_card.FALLBACK_HINT}"
-    return text
+    log = getattr(ctx.service, "_log", None)
+    if callable(log):
+        log("帮助卡片发送失败，已跳过聊天输出", kind=ctx.kind, conversation_id=ctx.conv_id)
+    return None
 
 
 async def _handle_standby(ctx: CommandContext) -> str:

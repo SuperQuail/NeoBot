@@ -1,4 +1,4 @@
-"""命令结果卡片：payload → 自包含 HTML → PNG → 纯文本降级。
+"""命令结果卡片：payload → 自包含 HTML → PNG；失败只写日志，不再降级成聊天文本。
 
 命令面此前只有 /help 与 /status 出图（渲染逻辑各自长在模块里、不可复用），其余命令一律回
 多行纯文本。这里把「渲染可用就出图、不可用就回等价文本」收敛成一个入口：
@@ -132,7 +132,7 @@ async def send_card(
     avatars: str = "",
     filename: str | None = None,
 ) -> str | None:
-    """出图成功返回 `None`（已自行发送）；否则返回**不含 QQ 号**的等价纯文本。"""
+    """出图成功或失败都返回 `None`；失败只写日志，绝不把错误/降级文本发进聊天。"""
     service = getattr(ctx, "service", None)
     if service is None:
         return fallback_text

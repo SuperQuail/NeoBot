@@ -204,7 +204,7 @@ async def test_long_plain_text_is_split_without_losing_characters(workdir) -> No
     assert "".join(chunks) == text
 
 
-async def test_at_segment_becomes_plain_text_mention(workdir) -> None:
+async def test_at_segment_is_dropped_from_plain_text(workdir) -> None:
     sender, api, identity, passive, _message_ids = _sender(workdir)
     conversation = _group(identity)
     _remember(passive, conversation)
@@ -220,7 +220,7 @@ async def test_at_segment_becomes_plain_text_mention(workdir) -> None:
 
     body = api.calls[0]["body"]
     assert body["msg_type"] == 0
-    assert body["content"] == "@小明 你好"
+    assert body["content"] == " 你好"
 
 
 # ── 显式 Markdown ───────────────────────────────────────────────────
@@ -609,3 +609,25 @@ async def test_proactive_send_has_no_passive_msg_id(workdir) -> None:
     assert body["content"] == "主动提醒"
     assert "msg_id" not in body
     assert "msg_seq" not in body
+
+
+async def test_unknown_segment_type_fails_without_sending(workdir) -> None:
+    sender, api, identity, _passive, _ = _sender(workdir)
+    conversation = _private(identity)
+
+    result = await sender.send(conversation, [{"type": "face", "data": {"id": 1}}])
+
+    assert result.status == "failed"
+    assert "不支持该消息段类型" in result.message
+    assert api.calls == []
+
+
+async def test_media_segment_without_source_fails(workdir) -> None:
+    sender, api, identity, _passive, _ = _sender(workdir)
+    conversation = _private(identity)
+
+    result = await sender.send(conversation, [{"type": "image", "data": {}}])
+
+    assert result.status == "failed"
+    assert "缺少 file/url" in result.message
+    assert api.calls == []

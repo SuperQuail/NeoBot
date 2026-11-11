@@ -180,9 +180,12 @@ def _send_target(action: str, params: dict[str, Any]) -> tuple[str | None, Any]:
 
 async def _get_login_info(adapter: Any) -> dict[str, Any]:
     await adapter.ensure_robot_identity()
+    user_id = int(getattr(adapter, "robot_uin", 0) or 0)
+    if not user_id:
+        return _failed("官方机器人身份尚未就绪（等待 READY 与 /users/@me）")
     return _ok(
         {
-            "user_id": int(getattr(adapter, "robot_uin", 0) or 0),
+            "user_id": user_id,
             "nickname": str(getattr(adapter, "robot_nickname", "") or ""),
         }
     )

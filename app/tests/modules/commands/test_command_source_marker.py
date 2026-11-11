@@ -59,8 +59,7 @@ async def test_help_text_fallback_marks_plugin_commands() -> None:
 
     await service.handle_message(message, kind="private", queue_key="1")
 
-    assert replies
-    assert "[来源: dashboard]" in replies[0]
+    assert replies == []
 
 
 if __name__ == "__main__":  # pragma: no cover

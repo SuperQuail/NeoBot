@@ -375,8 +375,8 @@ async def test_help_card_has_no_secrets(tmp_path: Path) -> None:
 # ── A13：三级降级 ──
 
 
-async def test_help_degrades_to_markdown_image(tmp_path: Path) -> None:
-    """① HTML 不可用 → 既有 markdown→图片 仍然出图。"""
+async def test_help_does_not_fall_back_to_markdown_image(tmp_path: Path) -> None:
+    """HTML 渲染不可用时直接停止，不再降级成 Markdown 图片。"""
     converter = FakeConverter(tmp_path / "md")
     service, adapter, _, _ = _make_service(
         tmp_path,
@@ -388,12 +388,12 @@ async def test_help_degrades_to_markdown_image(tmp_path: Path) -> None:
     result = await _run(service, "/help")
 
     assert result is None
-    assert converter.calls and "# 可用命令" in converter.calls[0]
-    assert len(adapter.sent) == 1
+    assert converter.calls == []
+    assert adapter.sent == []
 
 
-async def test_help_degrades_to_plain_text(tmp_path: Path) -> None:
-    """② 两级图片都不行 → 纯文本交回命令服务（用户一定有反馈）。"""
+async def test_help_does_not_fall_back_to_plain_text(tmp_path: Path) -> None:
+    """图片不可用时不再把错误/降级文本发进聊天流。"""
     service, adapter, _, _ = _make_service(
         tmp_path,
         commands=[_command("ping", usage="[目标]")],
@@ -403,9 +403,7 @@ async def test_help_degrades_to_plain_text(tmp_path: Path) -> None:
 
     result = await _run(service, "/help")
 
-    assert result is not None
-    assert "可用命令:" in result
-    assert "/ping [目标]" in result
+    assert result is None
     assert adapter.sent == []
 
 
@@ -504,8 +502,8 @@ async def test_prerendered_cache_is_used_after_startup(tmp_path: Path) -> None:
     assert len(screenshots.calls) == renders, "命中预渲染缓存后不得再截图"
 
 
-async def test_image_send_failure_falls_through_to_text(tmp_path: Path) -> None:
-    """HTML 渲染成功但发图失败时继续降级（不报错、用户仍有反馈）。"""
+async def test_image_send_failure_does_not_send_text(tmp_path: Path) -> None:
+    """HTML 发图失败时只记日志，不再改发降级文本。"""
 
     class BadAdapter(FakeAdapter):
         async def send(self, conv: Any, segments: list[dict[str, Any]]) -> None:
@@ -521,8 +519,7 @@ async def test_image_send_failure_falls_through_to_text(tmp_path: Path) -> None:
 
     result = await _run(service, "/help")
 
-    assert result is not None
-    assert "可用命令:" in result
+    assert result is None
     assert screenshots.calls, "渲染本身是成功的，失败发生在发送环节"
 
 

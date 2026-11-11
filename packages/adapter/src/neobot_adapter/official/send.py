@@ -526,30 +526,31 @@ def _prepare(message: str | list[dict[str, Any]]) -> _Prepared:
             text_parts.append(segment)
             continue
         if not isinstance(segment, dict):
-            continue
+            raise _SendFailure(f"官方协议不支持该消息段类型：{type(segment).__name__}")
         segment_type = str(segment.get("type") or "")
         data = segment.get("data") if isinstance(segment.get("data"), dict) else {}
+        if segment_type not in {"text", "at", "reply", _OFFICIAL_MARKDOWN_SEGMENT, *_MEDIA_SEGMENTS}:
+            raise _SendFailure(f"官方协议不支持该消息段类型：{segment_type or 'unknown'}")
         if segment_type == "text":
             text_parts.append(str(data.get("text") or ""))
         elif segment_type == "at":
-            name = str(data.get("name") or "").strip()
-            qq = str(data.get("qq") if data.get("qq") is not None else "").strip()
-            # 纯文本消息（msg_type=0）发不出真正的 @，只能保留可读文本。
-            text_parts.append(f"@{name or qq}")
+            # 纯文本消息发不出真正的 @；不制造假 @ 文本，需要 @ 请用 Markdown 卡片。
+            continue
         elif segment_type == "reply":
             reply = _reply_id(data, reply)
         elif segment_type == _OFFICIAL_MARKDOWN_SEGMENT:
             markdown_parts.append(str(data.get("content") or ""))
         elif segment_type in _MEDIA_SEGMENTS:
             source = str(data.get("file") or data.get("url") or "").strip()
-            if source:
-                media.append(
-                    (
-                        "record" if segment_type == "voice" else segment_type,
-                        source,
-                        str(data.get("name") or ""),
-                    )
+            if not source:
+                raise _SendFailure(f"媒体消息段 {segment_type} 缺少 file/url")
+            media.append(
+                (
+                    "record" if segment_type == "voice" else segment_type,
+                    source,
+                    str(data.get("name") or ""),
                 )
+            )
     if markdown_parts:
         if text_parts or media:
             raise _SendFailure("official_markdown 消息段不能与文本/at/富媒体段混用")
