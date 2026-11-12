@@ -131,6 +131,14 @@ class _PipelineWillingMixin:
             return
 
         for msg in pending:
+            # 同 msg_id 已触发过回复（FULL→AT 升级）：不再重复触发
+            if self._reply_started_for_message(getattr(msg, "message_id", None)):
+                self._logger.debug(
+                    "同 msg_id 已触发过回复，跳过图片等待队列中的重复消息",
+                    queue_key=queue_key,
+                    message_id=getattr(msg, "message_id", None),
+                )
+                continue
             if queue_key in self._replying_queues and not self._has_active_reply_pipeline("group", queue_key):
                 self._logger.debug(
                     "已清理过期的回复中队列状态",
@@ -169,6 +177,15 @@ class _PipelineWillingMixin:
         )
 
         for msg in pending:
+            # 同 msg_id 已触发过回复（FULL→AT 升级）：不再重复触发。
+            # 必须先于「仍在回复中」判断，否则会被再次放回 post-reply 队列。
+            if self._reply_started_for_message(getattr(msg, "message_id", None)):
+                self._logger.debug(
+                    "同 msg_id 已触发过回复，跳过回复后队列中的重复消息",
+                    queue_key=queue_key,
+                    message_id=getattr(msg, "message_id", None),
+                )
+                continue
             if queue_key in self._replying_queues and not self._has_active_reply_pipeline("group", queue_key):
                 self._logger.debug(
                     "已清理过期的回复中队列状态",

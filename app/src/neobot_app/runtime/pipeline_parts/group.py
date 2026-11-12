@@ -260,9 +260,12 @@ class _PipelineGroupMixin:
         if not callable(extract_text) or not callable(match):
             return False
         try:
-            return match(extract_text(message)) is not None
+            matched = match(extract_text(message))
         except Exception:  # pragma: no cover - 命令表异常只降级
             return False
+        # match 对「/ 开头但未注册」返回 (None, raw, args) 元组，也算命令形态；
+        # 只有真正命中已注册命令（matched[0] 非 None）才抑制闲聊回复。
+        return bool(matched is not None and matched[0] is not None)
 
     def _register_reply_started(self, message: Any) -> None:
         """登记该 message_id 已触发过回复（有界窗口）：FULL→AT 升级不再重复回复。"""

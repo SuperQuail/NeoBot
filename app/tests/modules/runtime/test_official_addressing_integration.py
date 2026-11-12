@@ -305,6 +305,10 @@ class _ArchiveSummarySpy:
 class _ReplyOrchestratorSpy:
     def __init__(self) -> None:
         self.starts: list[dict[str, Any]] = []
+        self.active = False
+
+    def is_pipeline_active(self, kind: str, queue_key: str) -> bool:
+        return self.active
 
     def start_reply(self, **kwargs: Any) -> object:
         self.starts.append(kwargs)
@@ -485,3 +489,77 @@ async def test_full_command_then_at_upgrade_does_not_chat_reply_first(monkeypatc
     assert len(orchestrator.starts) == 0
     assert pipeline._group_queue.size("group-openid-1") == 1
     assert len(archive.records) == 1
+
+
+async def test_full_then_at_upgrade_while_replying_replies_once(monkeypatch) -> None:
+    """群正在回复其他消息：FULL/AT 都积压到 post-reply，上一条结束后最多只回一次。"""
+    from neobot_app.willing import builtin as willing_builtin
+
+    monkeypatch.setattr(willing_builtin.random, "random", lambda: 0.0)
+    mapper = _mapper(bot_openid="")
+    orchestrator = _ReplyOrchestratorSpy()
+    orchestrator.active = True
+    pipeline = _wired_pipeline(orchestrator=orchestrator, group_chat_chance=1.0)
+    # 固定事件时间戳是过去时间，关掉 post-reply 的过期跳过以便验证回复去重
+    pipeline._config.chat.post_reply_message_timeout_seconds = 0.0
+    pipeline._replying_queues.add("group-openid-1")
+    full_event = _pipeline_event(_full_group_payload("随便聊聊", message_id="ROBOT1.0_e2e-pending"), mapper)
+    at_event = _pipeline_event(_user_group_at_payload(" 随便聊聊", message_id="ROBOT1.0_e2e-pending"), mapper)
+
+    await pipeline.handle_group_message_event(full_event)
+    await pipeline.handle_group_message_event(at_event)
+
+    pending = pipeline._post_reply_willing.get("group-openid-1", [])
+    assert len(pending) == 2  # FULL + AT 都进入回复后队列
+    assert len(orchestrator.starts) == 0  # 回复进行中不启动新回复
+
+    # 模拟上一条回复结束：on_reply_done 先清理回复中标记，再处理积压消息
+    pipeline._replying_queues.discard("group-openid-1")
+    orchestrator.active = False
+    await pipeline._process_post_reply_queue("group-openid-1")
+
+    assert len(orchestrator.starts) == 1  # FULL 概率命中回一次，AT 升级不再二次回复
+    assert not pipeline._post_reply_willing.get("group-openid-1")
+
+
+async def test_full_then_at_upgrade_while_replying_without_reply_still_guarantees_once() -> None:
+    """回复进行中：FULL 概率未命中不回复；AT 升级仍按 @ 必回一次。"""
+    mapper = _mapper(bot_openid="")
+    orchestrator = _ReplyOrchestratorSpy()
+    orchestrator.active = True
+    pipeline = _wired_pipeline(orchestrator=orchestrator)
+    pipeline._config.chat.post_reply_message_timeout_seconds = 0.0
+    pipeline._replying_queues.add("group-openid-1")
+    full_event = _pipeline_event(_full_group_payload("随便聊聊", message_id="ROBOT1.0_e2e-pending-miss"), mapper)
+    at_event = _pipeline_event(_user_group_at_payload(" 随便聊聊", message_id="ROBOT1.0_e2e-pending-miss"), mapper)
+
+    await pipeline.handle_group_message_event(full_event)
+    await pipeline.handle_group_message_event(at_event)
+    assert len(pipeline._post_reply_willing.get("group-openid-1", [])) == 2
+
+    pipeline._replying_queues.discard("group-openid-1")
+    orchestrator.active = False
+    await pipeline._process_post_reply_queue("group-openid-1")
+
+    assert len(orchestrator.starts) == 1  # FULL 未回复，AT 补一次 @ 必回
+    assert orchestrator.starts[0]["message"].mentioned_self is True
+
+
+async def test_unregistered_slash_command_does_not_suppress_casual_reply(monkeypatch) -> None:
+    """未注册的 /notacommand 不算已注册命令：不应抑制闲聊回复。"""
+    from neobot_app.willing import builtin as willing_builtin
+
+    monkeypatch.setattr(willing_builtin.random, "random", lambda: 0.0)
+    mapper = _mapper(bot_openid="")
+    orchestrator = _ReplyOrchestratorSpy()
+    command = _CommandServiceSpy(_command_service())
+    pipeline = _wired_pipeline(
+        orchestrator=orchestrator,
+        command_service=command,
+        group_chat_chance=1.0,
+    )
+    event = _pipeline_event(_full_group_payload("/notacommand hello", message_id="ROBOT1.0_e2e-notacmd"), mapper)
+
+    await pipeline.handle_group_message_event(event)
+
+    assert len(orchestrator.starts) == 1  # 未被误判为命令而抑制闲聊回复
