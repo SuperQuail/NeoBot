@@ -125,6 +125,19 @@ async def test_get_openid_rejects_extra_text_arguments() -> None:
     assert "用法" in reply
 
 
+async def test_get_openid_onebot_rejects_at_argument_without_leaking() -> None:
+    """OneBot 下把 @someone 当文本参数时也走用法提示，不回显号码。"""
+    reply = await _run(
+        "/get openid @someone",
+        channel="onebot",
+        user_id="10001",
+        self_id=10001,
+        at_qqs=("10001",),
+    )
+    assert "用法" in reply
+    assert "10001" not in reply
+
+
 async def test_get_without_subcommand_shows_usage() -> None:
     reply = await _run("/get")
     assert "用法" in reply
