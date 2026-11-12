@@ -8,6 +8,7 @@ CommandService.handle_message（群命令触发）/ WillingService.is_at_mention
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 from types import SimpleNamespace
 from typing import Any
@@ -288,3 +289,199 @@ async def test_duplicate_full_without_bot_info_then_at_upgrades_to_addressed() -
     result = await _command_service().handle_message(at_message, kind="group", queue_key="group-openid-1")
     assert result.consumed is True
     assert _willing_service().is_at_mentioned(at_message) is True
+
+
+# ── FULL→AT 升级后的队列与副作用（e2e） ─────────────────────────────
+
+
+class _ArchiveSummarySpy:
+    def __init__(self) -> None:
+        self.records: list[dict[str, Any]] = []
+
+    async def record_message(self, **kwargs: Any) -> None:
+        self.records.append(kwargs)
+
+
+class _ReplyOrchestratorSpy:
+    def __init__(self) -> None:
+        self.starts: list[dict[str, Any]] = []
+
+    def start_reply(self, **kwargs: Any) -> object:
+        self.starts.append(kwargs)
+        return object()
+
+
+class _CommandServiceSpy:
+    def __init__(self, delegate: CommandService) -> None:
+        self._delegate = delegate
+        self.consumed = 0
+
+    @property
+    def registry(self):
+        return self._delegate.registry
+
+    @staticmethod
+    def _message_text(message: Any) -> str:
+        return CommandService._message_text(message)
+
+    async def handle_message(self, message: Any, *, kind: str, queue_key: str):
+        result = await self._delegate.handle_message(message, kind=kind, queue_key=queue_key)
+        if result is not None and result.consumed:
+            self.consumed += 1
+        return result
+
+
+def _e2e_willing_config(
+    *,
+    group_chat_chance: float = 0.0,
+    willing_global_coefficient: float = 1.0,
+) -> BotConfig:
+    config = BotConfig()
+    config.bot.account = 0
+    config.chat.at_mention_guaranteed_reply = True
+    config.chat.group_chat_chance = group_chat_chance
+    config.chat.willing_global_coefficient = willing_global_coefficient
+    config.chat.at_mention_reply_delay_seconds = 0.0
+    return config
+
+
+def _pipeline_event(payload: dict[str, Any], mapper: EventMapper) -> dict[str, Any]:
+    event = mapper.from_dispatch(payload)
+    assert event is not None, "事件映射不应返回 None"
+    return {**event, "neobot_channel": "official"}
+
+
+def _wired_pipeline(
+    *,
+    archive: _ArchiveSummarySpy | None = None,
+    orchestrator: _ReplyOrchestratorSpy | None = None,
+    command_service: Any = None,
+    group_chat_chance: float = 0.0,
+    willing_global_coefficient: float = 1.0,
+) -> EventPipeline:
+    config = _e2e_willing_config(
+        group_chat_chance=group_chat_chance,
+        willing_global_coefficient=willing_global_coefficient,
+    )
+    return EventPipeline(
+        adapter=SimpleNamespace(connected_channels=("official",)),
+        group_message_queue=MessageQueue(),
+        friend_message_queue=MessageQueue(),
+        willing_service=WillingService(config),
+        reply_orchestrator=orchestrator,
+        archive_summary_service=archive,
+        command_service=command_service,
+        config=config,
+        logger=NullLogger(),
+    )
+
+
+async def _flush_background(pipeline: EventPipeline) -> None:
+    tasks = [task for task in pipeline._background_tasks if not task.done()]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_full_then_at_upgrade_keeps_one_entry_one_summary_one_reply() -> None:
+    """FULL(未@)先处理已入队/已总结；同 msg_id 的 AT 升级后队列仍 1 条、总结一次、必回一次。"""
+    mapper = _mapper(bot_openid="")
+    archive = _ArchiveSummarySpy()
+    orchestrator = _ReplyOrchestratorSpy()
+    pipeline = _wired_pipeline(archive=archive, orchestrator=orchestrator)
+    full_event = _pipeline_event(_full_group_payload(" /今日天气 ", message_id="ROBOT1.0_e2e-reply"), mapper)
+    at_event = _pipeline_event(_user_group_at_payload(" /今日天气 ", message_id="ROBOT1.0_e2e-reply"), mapper)
+
+    await pipeline.handle_group_message_event(full_event)
+    await pipeline.handle_group_message_event(at_event)
+    await _flush_background(pipeline)
+
+    assert pipeline._group_queue.size("group-openid-1") == 1
+    kept = pipeline._group_queue.get("group-openid-1")
+    assert kept is not None
+    assert kept.mentioned_self is True
+    assert len(archive.records) == 1
+    assert len(orchestrator.starts) == 1
+    assert orchestrator.starts[0]["message"].mentioned_self is True
+
+
+async def test_full_then_at_upgrade_triggers_command_once() -> None:
+    """FULL 先到未触发命令；同 msg_id 的 AT 升级后命令只触发一次，归档总结仍只有一次。"""
+    mapper = _mapper(bot_openid="")
+    archive = _ArchiveSummarySpy()
+    command = _CommandServiceSpy(_command_service())
+    pipeline = _wired_pipeline(archive=archive, command_service=command)
+    full_event = _pipeline_event(_full_group_payload("/reboot", message_id="ROBOT1.0_e2e-cmd"), mapper)
+    at_event = _pipeline_event(_user_group_at_payload(" /reboot ", message_id="ROBOT1.0_e2e-cmd"), mapper)
+
+    await pipeline.handle_group_message_event(full_event)
+    await pipeline.handle_group_message_event(at_event)
+    await _flush_background(pipeline)
+
+    assert pipeline._group_queue.size("group-openid-1") == 1
+    assert command.consumed == 1
+    assert len(archive.records) == 1
+
+
+async def test_full_probability_reply_then_at_upgrade_replies_once(monkeypatch) -> None:
+    """FULL(未@) 被意愿概率命中先回复；AT 升级只补 @ 语义，不再第二次回复。"""
+    from neobot_app.willing import builtin as willing_builtin
+
+    monkeypatch.setattr(willing_builtin.random, "random", lambda: 0.0)
+    mapper = _mapper(bot_openid="")
+    archive = _ArchiveSummarySpy()
+    orchestrator = _ReplyOrchestratorSpy()
+    pipeline = _wired_pipeline(
+        archive=archive,
+        orchestrator=orchestrator,
+        group_chat_chance=1.0,
+    )
+    full_event = _pipeline_event(
+        _full_group_payload("随便聊聊", message_id="ROBOT1.0_e2e-reply-once"), mapper
+    )
+    at_event = _pipeline_event(
+        _user_group_at_payload(" 随便聊聊", message_id="ROBOT1.0_e2e-reply-once"), mapper
+    )
+
+    await pipeline.handle_group_message_event(full_event)
+    assert len(orchestrator.starts) == 1  # FULL 概率命中，已经启动回复
+
+    await pipeline.handle_group_message_event(at_event)
+    await _flush_background(pipeline)
+
+    assert len(orchestrator.starts) == 1  # 同 msg_id 的 AT 升级不再重复触发
+    assert pipeline._group_queue.size("group-openid-1") == 1
+    assert len(archive.records) == 1
+
+
+async def test_full_command_then_at_upgrade_does_not_chat_reply_first(monkeypatch) -> None:
+    """FULL 命令文本未 @ 时不先当闲聊回复；AT 后命令只执行一次。"""
+    from neobot_app.willing import builtin as willing_builtin
+
+    monkeypatch.setattr(willing_builtin.random, "random", lambda: 0.0)
+    mapper = _mapper(bot_openid="")
+    archive = _ArchiveSummarySpy()
+    orchestrator = _ReplyOrchestratorSpy()
+    command = _CommandServiceSpy(_command_service())
+    pipeline = _wired_pipeline(
+        archive=archive,
+        orchestrator=orchestrator,
+        command_service=command,
+        group_chat_chance=1.0,
+    )
+    full_event = _pipeline_event(
+        _full_group_payload("/reboot", message_id="ROBOT1.0_e2e-cmd-once"), mapper
+    )
+    at_event = _pipeline_event(
+        _user_group_at_payload(" /reboot ", message_id="ROBOT1.0_e2e-cmd-once"), mapper
+    )
+
+    await pipeline.handle_group_message_event(full_event)
+    assert len(orchestrator.starts) == 0  # 命令文本不先当闲聊回一句
+
+    await pipeline.handle_group_message_event(at_event)
+    await _flush_background(pipeline)
+
+    assert command.consumed == 1
+    assert len(orchestrator.starts) == 0
+    assert pipeline._group_queue.size("group-openid-1") == 1
+    assert len(archive.records) == 1

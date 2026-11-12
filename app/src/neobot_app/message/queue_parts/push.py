@@ -203,6 +203,36 @@ class _QueuePushMixin:
                 stats.oldest_message_id = entry.message.message_id
                 return
 
+    def _replace_queued_message(
+        self,
+        key: str,
+        message: QueueMessage,
+        *,
+        replied_messages: List[QueueMessage],
+        tool_call: Optional[SelfSentToolCall],
+    ) -> bool:
+        """同 key 已有同 message_id 的 MESSAGE 条目时原地替换，不再追加新条目。
+
+        官方通道同一 msg_id 的 FULL→AT 升级会再次入队；同一条消息只保留一条，
+        位置/权重/首次时间不变，内容换成最新事件。旧条目已有的工具调用元数据
+        在新事件没带时保留（自身发言回显会走到这里）。
+        """
+        message_id = message.message_id
+        if message_id is None:
+            return False
+        for entry in self._queues.get(key, ()):
+            if entry.kind != QueueEntryType.MESSAGE or entry.message is None:
+                continue
+            if entry.message.message_id != message_id:
+                continue
+            entry.message = message
+            if replied_messages:
+                entry.replied_messages = replied_messages
+            if tool_call is not None:
+                entry.tool_call = tool_call
+            return True
+        return False
+
     def _push_message(
         self,
         key: str,
@@ -222,6 +252,13 @@ class _QueuePushMixin:
 
         self._get_or_create_queue(key)
         stats = self._get_or_create_stats(key)
+        if self._replace_queued_message(
+            key,
+            converted_message,
+            replied_messages=converted_replies,
+            tool_call=tool_call,
+        ):
+            return
 
         entry_weight = self._compute_message_weight(converted_message)
         if not self._ensure_capacity_for_non_timestamp_entry(key, entry_weight=entry_weight):
