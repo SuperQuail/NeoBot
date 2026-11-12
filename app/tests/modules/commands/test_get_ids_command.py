@@ -80,11 +80,12 @@ async def test_get_openid_at_user_full_value() -> None:
     assert "OPENID-SELF" not in reply
 
 
-async def test_get_openid_onebot_reports_qq_number() -> None:
+async def test_get_openid_onebot_does_not_echo_qq_number() -> None:
     reply = await _run(
         "/get openid", user_id="10001", channel="onebot", self_id=10001, at_qqs=("10001",)
     )
-    assert "QQ号：10001" in reply
+    assert "没有 openid" in reply
+    assert "10001" not in reply
 
 
 async def test_get_groupid_official_full_value() -> None:
@@ -92,11 +93,12 @@ async def test_get_groupid_official_full_value() -> None:
     assert "group openid：OPENID-GROUP" in reply
 
 
-async def test_get_groupid_onebot_reports_group_number() -> None:
+async def test_get_groupid_onebot_does_not_echo_group_number() -> None:
     reply = await _run(
         "/get groupid", group_id="123456", channel="onebot", self_id=10001, at_qqs=("10001",)
     )
-    assert "群号：123456" in reply
+    assert "没有 group openid" in reply
+    assert "123456" not in reply
 
 
 async def test_get_groupid_private_is_rejected() -> None:
@@ -107,6 +109,20 @@ async def test_get_groupid_private_is_rejected() -> None:
 async def test_get_rejects_multiple_at_targets() -> None:
     reply = await _run("/get openid", at_qqs=("OPENID-A", "OPENID-B"))
     assert "一次只能 @ 一个用户" in reply
+
+
+async def test_get_openid_ignores_bot_at_segment() -> None:
+    """官方 @ 事件会带 bot 自己的 at 段，@用户查询只能取被 @ 的人。"""
+    reply = await _run(
+        "/get openid", at_qqs=("88888", "OPENID-TARGET"), self_id=88888
+    )
+    assert "OPENID-TARGET" in reply
+    assert "88888" not in reply
+
+
+async def test_get_openid_rejects_extra_text_arguments() -> None:
+    reply = await _run("/get openid someone")
+    assert "用法" in reply
 
 
 async def test_get_without_subcommand_shows_usage() -> None:

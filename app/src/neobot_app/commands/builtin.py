@@ -322,10 +322,10 @@ async def _handle_reload(ctx: CommandContext) -> str:
 
 
 async def _handle_get(ctx: CommandContext) -> str:
-    """/get openid [@用户] / /get groupid：只读展示当前通道的本地 ID（完整 openid）。
+    """/get openid [@用户] / /get groupid：只读展示当前通道的完整 openid。
 
     官方通道的 user_id / conv_id 本身就是 openid；OneBot 通道没有 openid，
-    直接说明这是 QQ号/群号，避免把数字当 openid 使用。
+    只说明不可用，绝不回显 QQ 号/群号（命令回复遵循「不出现 QQ 号」约定）。
     """
     args = [str(arg).strip() for arg in (ctx.args or ()) if str(arg).strip()]
     sub = args[0].casefold() if args else ""
@@ -342,14 +342,14 @@ async def _handle_get(ctx: CommandContext) -> str:
                 targets.append(value)
         if len(targets) > 1:
             return "一次只能 @ 一个用户。"
-        if len(args) > 1 and not args[1].startswith("@"):
+        if len(args) > 1:
             return "用法：/get openid 或 /get openid @用户"
         target = targets[0] if targets else identity_text(ctx.user_id)
         if not target:
             return "无法确定用户 ID。"
         if official:
             return f"openid：{target}"
-        return f"当前通道是 OneBot，没有 openid；该用户的 QQ号：{target}"
+        return "当前通道是 OneBot，没有 openid（openid 仅官方机器人通道可用）。"
 
     if sub == "groupid":
         if ctx.kind != "group":
@@ -357,7 +357,7 @@ async def _handle_get(ctx: CommandContext) -> str:
         group_id = identity_text(ctx.conv_id)
         if official:
             return f"本群 group openid：{group_id}"
-        return f"当前通道是 OneBot，没有 group openid；本群群号：{group_id}"
+        return "当前通道是 OneBot，没有 group openid（openid 仅官方机器人通道可用）。"
 
     return "用法：/get openid [@用户] 或 /get groupid"
 
