@@ -12,6 +12,7 @@ import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote
 
@@ -630,14 +631,20 @@ def _prepare(message: str | list[dict[str, Any]]) -> _Prepared:
                     raise _SendFailure("official_markdown 的 commands 必须是对象数组")
                 markdown_commands.extend(dict(item) for item in raw_commands)
         elif segment_type in _MEDIA_SEGMENTS:
-            source = str(data.get("file") or data.get("url") or "").strip()
+            # app 的 file 是文件服务器 URL（可能是 127.0.0.1，QQ 拉不到）；有
+            # local_path 时官方优先读本地文件走分片上传，file 只留给 OneBot 兼容。
+            local_path = str(data.get("local_path") or "").strip()
+            source = local_path or str(data.get("file") or data.get("url") or "").strip()
             if not source:
-                raise _SendFailure(f"媒体消息段 {segment_type} 缺少 file/url")
+                raise _SendFailure(f"媒体消息段 {segment_type} 缺少 file/url/local_path")
+            file_name = str(data.get("name") or "").strip()
+            if not file_name and local_path:
+                file_name = Path(local_path).name
             media.append(
                 (
                     "record" if segment_type == "voice" else segment_type,
                     source,
-                    str(data.get("name") or ""),
+                    file_name,
                 )
             )
     if markdown_parts:

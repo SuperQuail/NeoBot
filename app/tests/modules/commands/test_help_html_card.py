@@ -55,8 +55,9 @@ class FakeAdapter:
     def __init__(self) -> None:
         self.sent: list[tuple[Any, list[dict[str, Any]]]] = []
 
-    async def send(self, conv: Any, segments: list[dict[str, Any]]) -> None:
+    async def send(self, conv: Any, segments: list[dict[str, Any]]) -> Any:
         self.sent.append((conv, segments))
+        return SimpleNamespace(status="ok")
 
 
 class FakeConverter:
@@ -375,8 +376,8 @@ async def test_help_card_has_no_secrets(tmp_path: Path) -> None:
 # ── A13：三级降级 ──
 
 
-async def test_help_does_not_fall_back_to_markdown_image(tmp_path: Path) -> None:
-    """HTML 渲染不可用时直接停止，不再降级成 Markdown 图片。"""
+async def test_help_render_failure_falls_back_to_plain_text(tmp_path: Path) -> None:
+    """HTML 渲染不可用时回退等价纯文本（不再静默跳过），也不走 Markdown 图片。"""
     converter = FakeConverter(tmp_path / "md")
     service, adapter, _, _ = _make_service(
         tmp_path,
@@ -387,23 +388,27 @@ async def test_help_does_not_fall_back_to_markdown_image(tmp_path: Path) -> None
 
     result = await _run(service, "/help")
 
-    assert result is None
+    assert result is not None
+    assert "可用命令" in result
+    assert "ping" in result
     assert converter.calls == []
     assert adapter.sent == []
 
 
-async def test_help_does_not_fall_back_to_plain_text(tmp_path: Path) -> None:
-    """图片不可用时不再把错误/降级文本发进聊天流。"""
+async def test_help_detail_render_failure_falls_back_to_plain_text(tmp_path: Path) -> None:
+    """/help 详情同样回退纯文本：命令名、描述与用法都要在文本里。"""
     service, adapter, _, _ = _make_service(
         tmp_path,
-        commands=[_command("ping", usage="[目标]")],
+        commands=[_command("ping", usage="[目标]", description="检查连通性")],
         screenshots=UnavailableScreenshots(),
-        converter=FakeConverter(tmp_path / "md", ok=False),
     )
 
-    result = await _run(service, "/help")
+    result = await _run(service, "/help ping")
 
-    assert result is None
+    assert result is not None
+    assert "命令 /ping" in result
+    assert "检查连通性" in result
+    assert "用法" in result
     assert adapter.sent == []
 
 
@@ -502,8 +507,8 @@ async def test_prerendered_cache_is_used_after_startup(tmp_path: Path) -> None:
     assert len(screenshots.calls) == renders, "命中预渲染缓存后不得再截图"
 
 
-async def test_image_send_failure_does_not_send_text(tmp_path: Path) -> None:
-    """HTML 发图失败时只记日志，不再改发降级文本。"""
+async def test_image_send_failure_falls_back_to_text(tmp_path: Path) -> None:
+    """HTML 发图失败时回退纯文本（保留日志），不再静默跳过。"""
 
     class BadAdapter(FakeAdapter):
         async def send(self, conv: Any, segments: list[dict[str, Any]]) -> None:
@@ -519,8 +524,32 @@ async def test_image_send_failure_does_not_send_text(tmp_path: Path) -> None:
 
     result = await _run(service, "/help")
 
-    assert result is None
+    assert result is not None
+    assert "可用命令" in result
+    assert "ping" in result
     assert screenshots.calls, "渲染本身是成功的，失败发生在发送环节"
+
+
+async def test_help_send_image_bytes_false_falls_back_to_text(tmp_path: Path) -> None:
+    """图片发送接口返回 False（如官方媒体上传失败）时回退纯文本，不静默跳过。"""
+    screenshots = FakeScreenshots()
+    service, _, _, _ = _make_service(
+        tmp_path,
+        commands=[_command("ping")],
+        screenshots=screenshots,
+    )
+
+    async def _send_image_bytes_fails(*_args: Any, **_kwargs: Any) -> bool:
+        return False
+
+    service.send_image_bytes = _send_image_bytes_fails  # type: ignore[method-assign]
+
+    result = await _run(service, "/help")
+
+    assert result is not None
+    assert "可用命令" in result
+    assert "ping" in result
+    assert screenshots.calls, "先尝试渲染图片，发送失败才回退"
 
 
 # ── A17：指纹失效 / --refresh ──

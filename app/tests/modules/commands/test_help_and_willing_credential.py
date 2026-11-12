@@ -73,24 +73,28 @@ def _ctx(service, args=None):
 
 
 @pytest.mark.asyncio
-async def test_help_list_does_not_fallback_when_renderer_unavailable() -> None:
+async def test_help_list_falls_back_to_text_when_renderer_unavailable() -> None:
+    """/help 列表渲染/发图不可用时回退纯文本（不再静默跳过）。"""
     from neobot_app.commands.builtin import _handle_help
 
     sent: list = []
     service = _FakeService(sent=sent)
     result = await _handle_help(_ctx(service))
-    assert result is None
+    assert result is not None
+    assert "可用命令" in result
     assert sent == []
 
 
 @pytest.mark.asyncio
-async def test_help_detail_does_not_fallback_when_renderer_unavailable() -> None:
+async def test_help_detail_falls_back_to_text_when_renderer_unavailable() -> None:
+    """/help 详情渲染/发图不可用时同样回退纯文本。"""
     from neobot_app.commands.builtin import _handle_help
 
     sent: list = []
     service = _FakeService(sent=sent)
     result = await _handle_help(_ctx(service, ["add_admin"]))
-    assert result is None
+    assert result is not None
+    assert "命令 /add_admin" in result
     assert sent == []
 
 
@@ -106,13 +110,15 @@ async def test_help_unknown_command_falls_back() -> None:
 
 
 @pytest.mark.asyncio
-async def test_help_list_no_text_fallback_on_converter_failure() -> None:
+async def test_help_list_falls_back_to_text_even_with_bad_converter() -> None:
+    """图片链路整体不可用（converter 也失败）时仍回退纯文本。"""
     from neobot_app.commands.builtin import _handle_help
 
     sent: list = []
     service = _FakeService(sent=sent, converter_ok=False)
     result = await _handle_help(_ctx(service))
-    assert result is None
+    assert result is not None
+    assert "可用命令" in result
     assert sent == []
 
 

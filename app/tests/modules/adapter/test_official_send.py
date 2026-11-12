@@ -533,6 +533,59 @@ async def test_text_and_media_are_sent_as_separate_messages(workdir, monkeypatch
     assert uploaded[0]["segment_type"] == "image"
 
 
+@pytest.mark.parametrize(
+    ("data", "expected_source", "expected_name"),
+    [
+        (
+            {
+                "file": "http://127.0.0.1:8765/files/help-0-list.png?token=x",
+                "local_path": r"D:\NeoBot\data\card_images\help-0-list.png",
+            },
+            r"D:\NeoBot\data\card_images\help-0-list.png",
+            "help-0-list.png",
+        ),
+        (
+            {
+                "file": "http://127.0.0.1:8765/files/help-0-list.png?token=x",
+                "local_path": r"D:\NeoBot\data\card_images\help-0-list.png",
+                "name": "帮助.png",
+            },
+            r"D:\NeoBot\data\card_images\help-0-list.png",
+            "帮助.png",
+        ),
+        (
+            {"local_path": r"D:\NeoBot\data\card_images\help-0-list.png"},
+            r"D:\NeoBot\data\card_images\help-0-list.png",
+            "help-0-list.png",
+        ),
+    ],
+)
+async def test_media_segment_prefers_local_path_for_official_upload(
+    workdir, monkeypatch, data, expected_source, expected_name
+) -> None:
+    """app 的 file 是 127.0.0.1 文件服务器 URL（QQ 拉不到）；官方优先读 local_path。
+
+    local_path 让官方走本地分片上传；file_name 用显式 name，缺省取文件名。
+    """
+    sender, api, identity, passive, _message_ids = _sender(workdir)
+    conversation = _private(identity)
+    _remember(passive, conversation)
+    uploaded: list[dict] = []
+
+    async def fake_upload(api_arg, **kwargs):
+        uploaded.append(kwargs)
+        return MediaFile(file_info="FILE-INFO", file_uuid="FILE-UUID", ttl=0)
+
+    monkeypatch.setattr(sender._media, "upload", fake_upload)
+
+    result = await sender.send(conversation, [{"type": "image", "data": data}])
+
+    assert result.status == "ok"
+    assert uploaded[0]["source"] == expected_source
+    assert uploaded[0]["file_name"] == expected_name
+    assert api.calls[0]["body"]["msg_type"] == 7
+
+
 async def test_media_failure_returns_failed_without_fallback(workdir, monkeypatch) -> None:
     from neobot_adapter.official.media import MediaUploadError
 
@@ -750,5 +803,5 @@ async def test_media_segment_without_source_fails(workdir) -> None:
     result = await sender.send(conversation, [{"type": "image", "data": {}}])
 
     assert result.status == "failed"
-    assert "缺少 file/url" in result.message
+    assert "缺少 file/url/local_path" in result.message
     assert api.calls == []

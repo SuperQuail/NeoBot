@@ -310,9 +310,9 @@ async def _handle_reload(ctx: CommandContext) -> str:
 async def _handle_help(ctx: CommandContext) -> str | None:
     """列出当前用户可见的命令;带参数时显示指定命令的详情。
 
-    首选自包含 HTML 卡片(命中预渲染缓存时直接发图),依次降级到
-    markdown→图片与纯文本;任一级成功即视为已回复(spec(5) §4.2 / R5-R9)。
-    返回 None 表示已自行发送回复。
+    首选自包含 HTML 卡片(命中预渲染缓存时直接发图);渲染或发送失败时回退
+    等价纯文本(spec(5) §4.2 / R5-R9)。返回 None 表示已自行发送图片，返回
+    文本表示由命令服务补发纯文本。
     """
     from neobot_app.runtime import help_cache, help_card
 
@@ -439,7 +439,7 @@ async def _send_help_card(
     pages: int = 1,
     allow_cache: bool = True,
 ) -> str | None:
-    """发送 /help 卡片；渲染/发送失败只写日志并返回 None，不降级成聊天文本。"""
+    """发送 /help 卡片；渲染/发送失败写日志并回退等价纯文本。"""
     from neobot_app.runtime import help_card
     from neobot_app.runtime.html_card import render_card_image
 
@@ -499,8 +499,8 @@ async def _send_help_card(
 
     log = getattr(ctx.service, "_log", None)
     if callable(log):
-        log("帮助卡片发送失败，已跳过聊天输出", kind=ctx.kind, conversation_id=ctx.conv_id)
-    return None
+        log("帮助卡片发送失败，已回退纯文本", kind=ctx.kind, conversation_id=ctx.conv_id)
+    return with_hint(help_card.render_payload_text(payload))
 
 
 async def _handle_standby(ctx: CommandContext) -> str:
