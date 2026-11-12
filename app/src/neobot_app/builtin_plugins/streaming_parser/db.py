@@ -178,9 +178,37 @@ async def _group_id_as_text(connection: AsyncConnection) -> None:
     await connection.execute(text("ALTER TABLE group_settings_v2 RENAME TO group_settings"))
 
 
+async def _legacy_group_ids_to_openid(connection: AsyncConnection) -> None:
+    """v3：把旧 13 位合成号群 ID 改写成官方 openid。
+
+    本体数据库的启动迁移只覆盖本体表；插件库是独立 SQLite，升级后旧订阅/
+    群设置在官方通道按 openid 查不到。借本体 user_identity 的只读映射
+    （bootstrap 在加载插件前已 bind DATA_DIR）做一次显式 UPDATE：无
+    identities.json / 非合成号 / 无映射时原样保留；目标 openid 行已存在时
+    UPDATE OR IGNORE 跳过该行，不删除旧数据。
+    """
+    from neobot_app.user_identity import openid_for_legacy_id
+
+    for table in ("subscriptions", "group_settings"):
+        result = await connection.execute(text(f"SELECT DISTINCT group_id FROM {table}"))
+        for (value,) in result:
+            legacy = str(value or "")
+            openid = openid_for_legacy_id("group", legacy)
+            if not openid or openid == legacy:
+                continue
+            await connection.execute(
+                text(
+                    f"UPDATE OR IGNORE {table} SET group_id=:openid "
+                    "WHERE group_id=:legacy"
+                ),
+                {"openid": openid, "legacy": legacy},
+            )
+
+
 MIGRATIONS: list[Migration] = [
     Migration(version=1, name="initial-schema", upgrade=_create_initial_schema),
     Migration(version=2, name="group-id-as-text", upgrade=_group_id_as_text),
+    Migration(version=3, name="legacy-group-id-to-openid", upgrade=_legacy_group_ids_to_openid),
 ]
 
 

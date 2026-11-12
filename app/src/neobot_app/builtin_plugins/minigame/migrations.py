@@ -134,11 +134,40 @@ async def add_profile_user_name(connection) -> None:
     )
 
 
+#: v3 重建表要搬运的列（按 v3 新表的列顺序写）。
+#: 必须显式列清单：v2 的 ALTER TABLE 把 user_name 追加在 mg_profile 末尾，而 v3
+#: 新表把它放在第二列；SELECT * 会按位置搬运，导致 score/user_name/best_score
+#: 等整体错位（DATETIME 列甚至可能拿到人名）。
+_V3_COPY_COLUMNS = {
+    "mg_profile": "user_id, user_name, score, best_score, plays, wins, updated_at",
+    "mg_bottle": (
+        "id, sender_id, sender_name, sender_avatar, content, anonymous, "
+        "created_at, picked_at, picked_by, status, meta"
+    ),
+    "mg_daily": "user_id, game_id, day, plays",
+    "mg_checkin": "user_id, day, score, streak, created_at",
+    "mg_fortune": "user_id, day, result_key, result_text, drawn_at",
+    "mg_record": "id, user_id, game_id, score, conversation_id, created_at",
+}
+
+#: v4 要改写的（表, 列）：这些列存本地用户 ID。
+_LEGACY_USER_ID_COLUMNS = (
+    ("mg_profile", "user_id"),
+    ("mg_bottle", "sender_id"),
+    ("mg_bottle", "picked_by"),
+    ("mg_daily", "user_id"),
+    ("mg_checkin", "user_id"),
+    ("mg_fortune", "user_id"),
+    ("mg_record", "user_id"),
+)
+
+
 async def widen_user_ids(connection) -> None:
     """v3：用户/会话 ID 列加宽到 128，容纳官方通道的 openid 字符串。
 
     SQLite 不强制 VARCHAR 长度，但列声明要与 models 一致，同时给「对外能力
-    接受 openid」一个明确的库结构版本。列顺序不变，可用 SELECT * 搬迁。
+    接受 openid」一个明确的库结构版本。重建表必须按 :data:`_V3_COPY_COLUMNS`
+    的显式列清单搬运，不能用 SELECT *（v2 追加的 user_name 在旧表末尾）。
     """
     tables = {
         "mg_profile": """
@@ -208,8 +237,11 @@ async def widen_user_ids(connection) -> None:
         """,
     }
     for table, create_sql in tables.items():
+        columns = _V3_COPY_COLUMNS[table]
         await connection.execute(text(create_sql))
-        await connection.execute(text(f"INSERT INTO {table}_v3 SELECT * FROM {table}"))
+        await connection.execute(
+            text(f"INSERT INTO {table}_v3 ({columns}) SELECT {columns} FROM {table}")
+        )
         await connection.execute(text(f"DROP TABLE {table}"))
         await connection.execute(text(f"ALTER TABLE {table}_v3 RENAME TO {table}"))
     await connection.execute(
@@ -229,12 +261,51 @@ async def widen_user_ids(connection) -> None:
     )
 
 
+async def _rewrite_legacy_ids(connection, table: str, column: str, resolve) -> None:
+    """逐列把旧合成号改写成 openid；目标行已存在时跳过（保留旧数据）。"""
+    result = await connection.execute(text(f"SELECT DISTINCT {column} FROM {table}"))
+    for (value,) in result:
+        legacy = str(value or "")
+        openid = resolve(legacy)
+        if not openid or openid == legacy:
+            continue
+        await connection.execute(
+            text(f"UPDATE OR IGNORE {table} SET {column}=:openid WHERE {column}=:legacy"),
+            {"openid": openid, "legacy": legacy},
+        )
+
+
+async def rewrite_legacy_user_ids(connection) -> None:
+    """v4：把旧 13 位合成号本地 ID 改写成官方 openid。
+
+    本体数据库的启动迁移只覆盖本体表；插件库是独立 SQLite，升级后旧积分/
+    签到/运势/榜单行在官方通道按 openid 查不到。这里借本体 user_identity 的
+    只读映射（bootstrap 在加载插件前已 bind DATA_DIR）做一次显式 UPDATE：
+    无 identities.json / 非合成号 / 无映射时原样保留；目标 openid 行已存在时
+    跳过该行，不删除旧数据。
+    """
+    from neobot_app.user_identity import openid_for_legacy_id
+
+    for table, column in _LEGACY_USER_ID_COLUMNS:
+        await _rewrite_legacy_ids(
+            connection, table, column, lambda value: openid_for_legacy_id("user", value)
+        )
+    # 会话 ID 可能是群也可能是用户，两种映射依次尝试（命中一种即用）。
+    await _rewrite_legacy_ids(
+        connection,
+        "mg_record",
+        "conversation_id",
+        lambda value: openid_for_legacy_id("group", value) or openid_for_legacy_id("user", value),
+    )
+
+
 def build_migrations() -> tuple[Migration, ...]:
     """本插件数据库的迁移列表（新增结构时追加 version）。"""
     return (
         Migration(version=1, name="initial-schema", upgrade=create_initial_schema),
         Migration(version=2, name="profile-user-name", upgrade=add_profile_user_name),
         Migration(version=3, name="widen-user-ids", upgrade=widen_user_ids),
+        Migration(version=4, name="legacy-ids-to-openid", upgrade=rewrite_legacy_user_ids),
     )
 
 
@@ -243,5 +314,6 @@ __all__ = [
     "add_profile_user_name",
     "build_migrations",
     "create_initial_schema",
+    "rewrite_legacy_user_ids",
     "widen_user_ids",
 ]
