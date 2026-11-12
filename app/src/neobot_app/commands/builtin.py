@@ -86,6 +86,20 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
             handler=_handle_help,
         ),
         Command(
+            name="get",
+            description=(
+                "查看当前通道的 ID：/get openid 看你自己（或 @ 到的用户）的 openid，"
+                "/get groupid 看本群的 openid"
+            ),
+            permission=PERM_EVERYONE,
+            usage="openid [@用户] | groupid",
+            params=(
+                ("openid [@用户]", "查看你本人（或 @ 到的用户）在当前通道的 openid"),
+                ("groupid", "查看本群的 openid（仅群聊）"),
+            ),
+            handler=_handle_get,
+        ),
+        Command(
             name="add_admin",
             description="添加次级管理员,用 QQ 号或 @ 指定",
             permission=PERM_SUPER_ADMIN,
@@ -305,6 +319,47 @@ async def _handle_reload(ctx: CommandContext) -> str:
         fallback_text="\n".join(lines),
         filename="reload.png",
     )
+
+
+async def _handle_get(ctx: CommandContext) -> str:
+    """/get openid [@用户] / /get groupid：只读展示当前通道的本地 ID（完整 openid）。
+
+    官方通道的 user_id / conv_id 本身就是 openid；OneBot 通道没有 openid，
+    直接说明这是 QQ号/群号，避免把数字当 openid 使用。
+    """
+    args = [str(arg).strip() for arg in (ctx.args or ()) if str(arg).strip()]
+    sub = args[0].casefold() if args else ""
+    channel = str(getattr(ctx.message, "neobot_channel", "") or "").strip().casefold()
+    official = channel == "official"
+
+    if sub == "openid":
+        bot_id = identity_text(ctx.service._bot_account(ctx.message))
+        targets: list[str] = []
+        for raw in ctx.at_qqs or ():
+            value = identity_text(raw)
+            # 排除 @bot 自身与官方 @ 事件的 qq=0 占位，其余按顺序保留
+            if value and value not in {bot_id, "0"}:
+                targets.append(value)
+        if len(targets) > 1:
+            return "一次只能 @ 一个用户。"
+        if len(args) > 1 and not args[1].startswith("@"):
+            return "用法：/get openid 或 /get openid @用户"
+        target = targets[0] if targets else identity_text(ctx.user_id)
+        if not target:
+            return "无法确定用户 ID。"
+        if official:
+            return f"openid：{target}"
+        return f"当前通道是 OneBot，没有 openid；该用户的 QQ号：{target}"
+
+    if sub == "groupid":
+        if ctx.kind != "group":
+            return "只能在群聊中使用 /get groupid。"
+        group_id = identity_text(ctx.conv_id)
+        if official:
+            return f"本群 group openid：{group_id}"
+        return f"当前通道是 OneBot，没有 group openid；本群群号：{group_id}"
+
+    return "用法：/get openid [@用户] 或 /get groupid"
 
 
 async def _handle_help(ctx: CommandContext) -> str | None:
