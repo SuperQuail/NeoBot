@@ -98,9 +98,20 @@ class RuntimePluginContextTest(unittest.IsolatedAsyncioTestCase):
             await ctx.send_private(10001, "hello")
             await ctx.send_group(123, "hello")
             await ctx.send(ConversationRef(kind="group", id="456"), "hi")
-            self.assertEqual(adapter.calls[0], ("private", 10001, "hello"))
-            self.assertEqual(adapter.calls[1], ("group", 123, "hello"))
+            # send_private/send_group 也统一走 ConversationRef + 门面 send：
+            # OneBot 数字号与官方 openid 字符串都能发。
+            self.assertEqual(adapter.calls[0], ("send", ConversationRef(kind="private", id="10001"), "hello"))
+            self.assertEqual(adapter.calls[1], ("send", ConversationRef(kind="group", id="123"), "hello"))
             self.assertEqual(adapter.calls[2][0], "send")
+
+    async def test_send_methods_accept_openid_strings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = FakeAdapter()
+            ctx = self.make_context(Path(temp), adapter)
+            await ctx.send_private("2F1B3C4D", "hello")
+            await ctx.send_group("A1B2C3D4", "hi")
+            self.assertEqual(adapter.calls[0], ("send", ConversationRef(kind="private", id="2F1B3C4D"), "hello"))
+            self.assertEqual(adapter.calls[1], ("send", ConversationRef(kind="group", id="A1B2C3D4"), "hi"))
 
     async def test_reply_uses_conversation_from_event(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -27,8 +27,9 @@ from .common import (
     QueueStats,
     ReactionEntry,
     RecallNotice,
+    SelfSentToolCall,
 )
-from .helpers import _safe_int
+from .helpers import _identity_str, _safe_int
 
 
 class _QueuePushMixin:
@@ -125,7 +126,11 @@ class _QueuePushMixin:
         )
 
     def _bot_ids(self, message: object = None) -> set[int]:
-        """判定/匹配用的 bot 账号集合：消息级 self_id 优先，其次队列登记的 bot_accounts。"""
+        """判定/匹配用的 bot 账号集合：消息级 self_id 优先，其次队列登记的 bot_accounts。
+
+        机器人账号本身始终是真实 QQ 数字（不随 openid 化改变），这里保持 int；
+        与消息 user_id（可能是 openid 字符串）比较时由 _is_bot_message 转字符串。
+        """
         ids = set(self.bot_accounts)
         if self.bot_account:
             ids.add(int(self.bot_account))
@@ -135,14 +140,17 @@ class _QueuePushMixin:
         return ids
 
     def _is_bot_message(self, message: object) -> bool:
-        """消息是否由任一 bot 账号发出（双通道时另一个 bot 的发言同样算 bot 发言）。"""
-        user_id = _safe_int(getattr(message, "user_id", None))
-        if not user_id:
+        """消息是否由任一 bot 账号发出（双通道时另一个 bot 的发言同样算 bot 发言）。
+
+        user_id 可能是官方 openid 字符串：统一按字符串比较，绝不 int() openid。
+        """
+        user_text = _identity_str(getattr(message, "user_id", None))
+        if not user_text:
             return False
-        self_id = _safe_int(getattr(message, "self_id", None))
-        if self_id and user_id == self_id:
+        self_text = _identity_str(getattr(message, "self_id", None))
+        if self_text and user_text == self_text:
             return True
-        return user_id in self._bot_ids()
+        return user_text in {str(bot_id) for bot_id in self._bot_ids()}
 
     def _compute_message_weight(self, message: QueueMessage) -> float:
         # Bot 自身发言（无论来自实时入队还是后端/本地历史灌入）统一按
@@ -195,6 +203,36 @@ class _QueuePushMixin:
                 stats.oldest_message_id = entry.message.message_id
                 return
 
+    def _replace_queued_message(
+        self,
+        key: str,
+        message: QueueMessage,
+        *,
+        replied_messages: List[QueueMessage],
+        tool_call: Optional[SelfSentToolCall],
+    ) -> bool:
+        """同 key 已有同 message_id 的 MESSAGE 条目时原地替换，不再追加新条目。
+
+        官方通道同一 msg_id 的 FULL→AT 升级会再次入队；同一条消息只保留一条，
+        位置/权重/首次时间不变，内容换成最新事件。旧条目已有的工具调用元数据
+        在新事件没带时保留（自身发言回显会走到这里）。
+        """
+        message_id = message.message_id
+        if message_id is None:
+            return False
+        for entry in self._queues.get(key, ()):
+            if entry.kind != QueueEntryType.MESSAGE or entry.message is None:
+                continue
+            if entry.message.message_id != message_id:
+                continue
+            entry.message = message
+            if replied_messages:
+                entry.replied_messages = replied_messages
+            if tool_call is not None:
+                entry.tool_call = tool_call
+            return True
+        return False
+
     def _push_message(
         self,
         key: str,
@@ -203,6 +241,7 @@ class _QueuePushMixin:
         occurred_at: Optional[int] = None,
         include_initial_timestamp: bool = True,
         replied_messages: Optional[List[MessageType]] = None,
+        tool_call: Optional[SelfSentToolCall] = None,
     ) -> None:
         converted_message = self._convert_message(message)
         converted_replies = [
@@ -213,6 +252,13 @@ class _QueuePushMixin:
 
         self._get_or_create_queue(key)
         stats = self._get_or_create_stats(key)
+        if self._replace_queued_message(
+            key,
+            converted_message,
+            replied_messages=converted_replies,
+            tool_call=tool_call,
+        ):
+            return
 
         entry_weight = self._compute_message_weight(converted_message)
         if not self._ensure_capacity_for_non_timestamp_entry(key, entry_weight=entry_weight):
@@ -230,6 +276,7 @@ class _QueuePushMixin:
                 occurred_at=resolved_time,
                 message=converted_message,
                 replied_messages=converted_replies,
+                tool_call=tool_call,
                 weight=entry_weight,
             )
         )
@@ -249,13 +296,46 @@ class _QueuePushMixin:
         *,
         occurred_at: Optional[int] = None,
         replied_messages: Optional[List[MessageType]] = None,
+        tool_call: Optional[SelfSentToolCall] = None,
     ) -> None:
         self._push_message(
             key,
             message,
             occurred_at=occurred_at,
             replied_messages=replied_messages,
+            tool_call=tool_call,
         )
+
+    def push_tool_call(
+        self,
+        key: str,
+        record: SelfSentToolCall,
+        *,
+        occurred_at: Optional[int] = None,
+    ) -> None:
+        """记录一次非发送类工具调用（低权重，随聊天记录一起裁剪）。
+
+        工具调用没有对应聊天消息，单独成条入队：重置后 role_messages 会把它们
+        重建为 compact 的 assistant.tool_calls + tool 回执，模型能看到「刚才调过
+        什么工具」，又不会被参数/结果内容占满上下文。
+        """
+        resolved_time = occurred_at if occurred_at is not None else epoch_seconds_int()
+        self._get_or_create_queue(key)
+        stats = self._get_or_create_stats(key)
+        entry_weight = self.self_sent_weight
+        if not self._ensure_capacity_for_non_timestamp_entry(key, entry_weight=entry_weight):
+            return
+        self._queues[key].append(
+            QueueEntry(
+                kind=QueueEntryType.TOOL_CALL,
+                occurred_at=resolved_time,
+                tool_call=record,
+                weight=entry_weight,
+            )
+        )
+        self._message_counts[key] += 1
+        self._weighted_counts[key] += entry_weight
+        stats.total_messages += 1
 
     def push_history(
         self,

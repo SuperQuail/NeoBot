@@ -18,6 +18,7 @@ tomlkit.dumps(document) 写回去的还是原文件——而调用方收到的�
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -34,8 +35,10 @@ from neobot_app.config.schemas.bot import BotConfig
 CHAT_SECTION = "chat"
 #: 次级管理员列表的字段名（schema 里是 List[str]）
 SUB_ADMIN_FIELD = "sub_admin_accounts"
-#: QQ 号长度上限（防御性校验：不接受明显不是 QQ 号的值）
-MAX_ACCOUNT_LENGTH = 20
+#: 管理员标识长度上限（QQ 号或 openid）
+MAX_ACCOUNT_LENGTH = 128
+#: 管理员标识允许的字符：真实 QQ 数字 / 官方 openid 字母数字（避免注入/空白）
+_ACCOUNT_RE = re.compile(r"^[A-Za-z0-9_-]{5,128}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,15 +192,19 @@ def normalize_accounts(accounts: Iterable[Any]) -> tuple[tuple[str, ...], str]:
     Returns:
         (规范化后的账号元组, 错误文本)；错误文本非空时元组为空。
     """
-    collected: dict[int, str] = {}
+    collected: set[str] = set()
     for raw in accounts:
         text = str(raw).strip()
         if not text:
             continue
-        if not text.isdigit() or len(text) > MAX_ACCOUNT_LENGTH:
-            return (), f"非法的 QQ 号: {raw!r}"
-        collected[int(text)] = text
-    return tuple(collected[key] for key in sorted(collected)), ""
+        if len(text) > MAX_ACCOUNT_LENGTH or not _ACCOUNT_RE.match(text):
+            return (), f"非法的 QQ 号/openid: {raw!r}"
+        collected.add(text)
+    ordered = sorted(
+        collected,
+        key=lambda item: (0, int(item), "") if item.isdigit() else (1, 0, item),
+    )
+    return tuple(ordered), ""
 
 
 def save_sub_admin_accounts(

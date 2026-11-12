@@ -10,7 +10,7 @@ from neobot_adapter.model.message import PrivateMessage
 from neobot_app.bot_accounts import bot_account_for_message
 from neobot_app.message.queue import MessageQueue
 
-from .helpers import _credential_message_text
+from .helpers import _credential_message_text, _safe_int
 
 
 class _PipelineCredentialMixin:
@@ -76,11 +76,20 @@ class _PipelineCredentialMixin:
         credential_manager = self._credential_manager
         if credential_manager is None:
             return False
-        issuer_id = int(getattr(message, "user_id", 0) or 0)
+        from neobot_app.bot_accounts import identity_text
+        from neobot_app.user_identity import trusted_qq_for_user
+
+        raw_user = getattr(message, "user_id", None)
+        user_text = identity_text(raw_user)
         bot_account = self._bot_account_id(message)
-        # bot 自己发送的消息不能触发自我签发(防审批失效)
-        if bot_account and issuer_id == bot_account:
+        # bot 自己发送的消息不能触发自我签发(防审批失效)；user_id 可能是 openid 字符串
+        if bot_account and user_text and user_text == identity_text(bot_account):
             return False
+        # 凭据签发沿用管理员真实 QQ 号：openid 用户只能通过 /linkqq 绑定的 trusted
+        # 映射换算出 QQ 号；未绑定则不具签发权限（issuer_id=0 必然被权限校验拒绝）。
+        issuer_id = trusted_qq_for_user(raw_user, getattr(message, "neobot_channel", None)) or (
+            _safe_int(user_text) or 0
+        )
         # 使用纯文本内容匹配(不含"发送者: "前缀)
         text = _credential_message_text(message)
         text = text.strip()

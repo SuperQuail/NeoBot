@@ -183,6 +183,7 @@ html.is-embedded main { width: 100%; max-width: none; }
       </div>
       <div class="row">
         <button id="rebind" class="ghost" type="button">重新扫码绑定</button>
+        <button id="unbind" class="ghost" type="button">解绑官方机器人</button>
       </div>
     </article>
   </section>
@@ -376,6 +377,7 @@ PAGE_SCRIPT = """(function () {
       || "未配置（config.toml [adapter].qq_appid 或 .env NEOBOT_QQ_APPID）";
     renderBind(official);
     el("rebind").disabled = switching || !canManage || !official.active;
+    el("unbind").disabled = switching || !canManage || !official.active;
   }
 
   async function readJson(response) {
@@ -492,7 +494,32 @@ PAGE_SCRIPT = """(function () {
       el("mode-" + mode).addEventListener("click", function () { switchMode(mode); });
     })(modes[i]);
   }
+  async function unbind() {
+    if (busy) { return; }
+    if (!window.confirm("解绑后会删除本机保存的官方机器人凭据并断开连接；确定继续？")) { return; }
+    busy = true;
+    setNotice("");
+    setStatus("正在解绑官方机器人…");
+    try {
+      await post("bind/unbind", {});
+      busy = false;
+      setNotice("已解绑。可在配置里填写 AppID/AppSecret，或重新扫码绑定。", false);
+      schedule(1000);
+    } catch (error) {
+      busy = false;
+      if (error.status === 401) { handleFailure(error); return; }
+      setNotice(
+        error.status === 503
+          ? "当前适配器不支持解绑（请先把模式切到「仅官方机器人」或「双通道并行」）。"
+          : "解绑失败：" + error.message,
+        true
+      );
+      schedule(3000);
+    }
+  }
+
   el("rebind").addEventListener("click", function () { rebind(); });
+  el("unbind").addEventListener("click", function () { unbind(); });
   main();
 })();
 """

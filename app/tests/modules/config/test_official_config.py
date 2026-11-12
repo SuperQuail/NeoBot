@@ -27,7 +27,6 @@ def test_adapter_qq_defaults() -> None:
     assert adapter.mode == "official"
     assert adapter.qq_appid == ""
     assert adapter.qq_client_secret == ""
-    assert adapter.qq_markdown is True
     assert adapter.qq_base_url == "https://api.bot.qq.com"
     assert adapter.qq_token_url == "https://api.bot.qq.com/app/getAppAccessToken"
     assert adapter.qq_portal_host == "q.qq.com"
@@ -53,7 +52,6 @@ def test_every_qq_field_has_description() -> None:
     for name in (
         "qq_appid",
         "qq_client_secret",
-        "qq_markdown",
         "qq_base_url",
         "qq_token_url",
         "qq_portal_host",
@@ -83,7 +81,6 @@ def test_settings_from_config_carries_qq_fields(monkeypatch) -> None:
         adapter=Adapter(
             qq_appid="app-id",
             qq_client_secret="client-secret",
-            qq_markdown=False,
             qq_base_url="https://api.example.test",
             qq_token_url="https://api.example.test/token",
             qq_portal_host="portal.example.test",
@@ -96,7 +93,6 @@ def test_settings_from_config_carries_qq_fields(monkeypatch) -> None:
     assert isinstance(settings, AdapterSettings)
     assert settings.qq_appid == "app-id"
     assert settings.qq_client_secret == "client-secret"
-    assert settings.qq_markdown is False
     assert settings.qq_base_url == "https://api.example.test"
     assert settings.qq_token_url == "https://api.example.test/token"
     assert settings.qq_portal_host == "portal.example.test"
@@ -134,5 +130,4 @@ def test_config_values_pass_through_without_env(monkeypatch) -> None:
 
     assert settings.qq_appid == ""
     assert settings.qq_client_secret == ""
-    assert settings.qq_markdown is True
     assert settings.qq_base_url == "https://api.bot.qq.com"

@@ -98,7 +98,7 @@ def build_message_queues(*, config: BotConfigSchema) -> tuple[Any, Any]:
     if self_sent_weight is None:
         self_sent_weight = 0.1
     bot_account = primary_bot_account(config)
-    reply_blacklist = set(config.chat.reply_blacklist or [])
+    reply_blacklist = {str(item) for item in (config.chat.reply_blacklist or [])}
 
     group_queue = MessageQueue(
         max_size=config.chat.max_group_chat_observations,

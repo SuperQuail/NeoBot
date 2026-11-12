@@ -1,7 +1,7 @@
-"""UserIdentitySkill — 官方合成用户 ID 与真实 QQ 号的人工映射。
+"""UserIdentitySkill — 官方 openid 与真实 QQ 号的人工映射。
 
-官方通道只给 openid，NeoBot 内部映射成 13 位合成 ID，和真实 QQ 号没有 API
-可以互转。Agent 在提示词里看到 `ID:9000…` 且能从对话判断其真实 QQ 号时，
+官方通道只给 openid，NeoBot 直接以完整 openid 作为本地身份 key，和真实 QQ 号没有 API
+可以互转。Agent 在提示词里看到 `openid:<完整值>` 且能从对话判断其真实 QQ 号时，
 用这里的工具写入同一份映射文件；管理员命令 /linkqq 也写这份文件。
 """
 
@@ -34,18 +34,20 @@ class UserIdentitySkill(SkillModule):
 
     @property
     def description(self) -> str:
-        return "官方合成用户 ID 与真实 QQ 号的人工映射（提示词显示、管理员识别共用）"
+        return "官方用户 openid 与真实 QQ 号的人工映射（提示词显示、管理员识别共用）"
 
     @property
     def instructions(self) -> str:
         return (
-            "官方通道的用户 ID 是开放平台合成 ID（提示词里显示为 ID:9000…），不是真实 QQ 号。\n"
+            "官方通道的用户 ID 是开放平台 openid（提示词里显示为 openid:<完整值>），不是真实 QQ 号。\n"
             "如果你从对话中确认了某位官方用户的真实 QQ 号，用 link_user_qq 建立映射：\n"
-            "  - user_id：提示词/消息里的用户 ID（ID: 后面那串数字）；\n"
+            "  - user_id：提示词/消息里的用户 openid（openid: 后面那串）；\n"
             "  - qq_number：真实 QQ 号（5~11 位纯数字）。\n"
-            "映射后该用户会显示为 QQ:<真实号>，好友/回复名单也按真实 QQ 号识别。\n"
-            "官方通道的群 ID 是 13 位合成 ID（提示词里显示为 群 ID:800…）；确认真实群号后可用\n"
-            "link_group_number 建立群号映射，之后显示为 群号:<真实群号>，群黑白名单按真实群号识别。\n"
+            "映射后该用户会显示为 QQ:<真实号>；agent 写入的映射只影响展示，\n"
+            "好友/回复名单等访问控制只认管理员命令写入的 trusted 映射。\n"
+            "官方通道的群 ID 是 openid（提示词里显示为 openid:<完整值>）；确认真实群号后可用\n"
+            "link_group_number 建立群号映射，之后显示为 群号:<真实群号>；同样只影响展示，\n"
+            "群黑白名单只认管理员 /linkgroup 写入的 trusted 映射。\n"
             "注意：本技能写入的用户映射只影响展示，**不会授予管理员权限**；管理员/次级管理员\n"
             "身份映射必须由人类管理员在面板/群里用 /linkqq 命令建立，agent 无权自行把用户映射成管理员。\n"
             "不要猜测或编造 QQ 号/群号；不确定时用 get_user_qq / get_group_number 查询已有映射。"
@@ -55,12 +57,12 @@ class UserIdentitySkill(SkillModule):
         return [
             self._tool_def(
                 "link_user_qq",
-                "把某个用户 ID 与真实 QQ 号映射（官方合成 ID → QQ 号）。仅在能确认二者属于同一个人时调用。",
+                "把某个用户 ID 与真实 QQ 号映射（官方 openid → QQ 号）。仅在能确认二者属于同一个人时调用。",
                 {
                     "properties": {
                         "user_id": {
                             "type": "string",
-                            "description": "用户 ID（提示词里的 ID:9000… 那串数字，或普通 QQ 号）",
+                            "description": "用户 ID（提示词里的 openid:<完整值>，或普通 QQ 号）",
                         },
                         "qq_number": {
                             "type": "string",
@@ -69,7 +71,7 @@ class UserIdentitySkill(SkillModule):
                         "channel": {
                             "type": "string",
                             "enum": ["auto", "onebot", "official"],
-                            "description": "可选，用户 ID 所属通道；auto 按 ID 位数推断（13 位合成 ID 视为官方）",
+                            "description": "可选，用户 ID 所属通道；auto 按统一身份 API 推断（openid 视为官方、纯数字视为 OneBot）",
                         },
                     },
                     "required": ["user_id", "qq_number"],
@@ -97,12 +99,12 @@ class UserIdentitySkill(SkillModule):
             ),
             self._tool_def(
                 "link_group_number",
-                "把官方群的合成群 ID 映射到真实 QQ 群号（官方群 ID 显示为 群 ID:800…）。",
+                "把官方群的 openid 映射到真实 QQ 群号（官方群 ID 在提示词里显示为 openid:<完整值>）。",
                 {
                     "properties": {
                         "group_id": {
                             "type": "string",
-                            "description": "群 ID（提示词里的 群 ID:800… 那串数字，或普通群号）",
+                            "description": "群 ID（提示词里的 openid:<完整值>，或普通群号）",
                         },
                         "group_number": {
                             "type": "string",
@@ -111,7 +113,7 @@ class UserIdentitySkill(SkillModule):
                         "channel": {
                             "type": "string",
                             "enum": ["auto", "onebot", "official"],
-                            "description": "可选，群 ID 所属通道；auto 按 ID 位数推断",
+                            "description": "可选，群 ID 所属通道；auto 按统一身份 API 推断（openid 视为官方、纯数字视为 OneBot）",
                         },
                     },
                     "required": ["group_id", "group_number"],

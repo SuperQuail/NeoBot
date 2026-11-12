@@ -1,7 +1,7 @@
 """QQ 官方富媒体上传：URL 直传、分片上传与 file_info 缓存。
 
-官方要求先把媒体上传成 file_info，再带 media 字段发消息；URL 直传失败码
-850026 时回退为「下载到内存再分片」。这里只管上传，发送/被动回复在 send.py。
+官方要求先把媒体上传成 file_info，再带 media 字段发消息；URL 来源只走官方
+URL 转存，本地/Base64 来源走分片上传。上传失败直接报错，不做下载回退。
 """
 
 from __future__ import annotations
@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
-import ipaddress
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,16 +19,19 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 
 #: OneBot 消息段类型 → 官方 file_type（1 图片 / 2 视频 / 3 语音 / 4 文件）。
 _FILE_TYPES = {"image": 1, "video": 2, "record": 3, "voice": 3, "file": 4}
+#: 官方接口明确支持的扩展名；其它扩展名在发送前失败，不赌平台转码。
+_ALLOWED_EXTENSIONS = {
+    1: frozenset({"png", "jpg", "jpeg", "gif", "webp", "bmp"}),
+    2: frozenset({"mp4"}),
+    3: frozenset({"silk", "slk", "mp3", "wav", "ogg"}),
+}
 _ENDPOINTS = {"group": "/v2/groups/{openid}", "private": "/v2/users/{openid}"}
-#: URL 直传被官方拒绝（资源不可访问/格式不支持）时回退到下载后分片。
-_URL_UPLOAD_FALLBACK_CODE = 850026
 #: 40093001 是官方分片接口的临时错误，可重试；40093002 是当日配额用尽。
 _RETRYABLE_CODE = 40093001
 _QUOTA_CODE = 40093002
 _RETRY_ATTEMPTS = 3
 _RETRY_DELAY_SECONDS = 1.0
 _MD5_10M_BYTES = 10_002_432
-_DOWNLOAD_TIMEOUT_SECONDS = 120.0
 _PUT_TIMEOUT_SECONDS = 300.0
 _MAX_MEDIA_BYTES = 200 * 1024 * 1024
 _CACHE_MAX_ENTRIES = 128
@@ -56,6 +58,23 @@ def api_data(body: dict[str, Any]) -> dict[str, Any]:
     """官方 HTTP 响应取 data 段；部分接口直接返回对象本身。"""
     data = body.get("data")
     return data if isinstance(data, dict) else body
+
+
+def _validate_extension(source: str, file_name: str, file_type: int) -> None:
+    """有扩展名时按官方支持列表预检；无扩展名/任意文件交给平台。"""
+    allowed = _ALLOWED_EXTENSIONS.get(file_type)
+    if not allowed:
+        return
+    suffix = Path(file_name).suffix if file_name else ""
+    if not suffix:
+        candidate = urlparse(source).path if source.startswith(("http://", "https://")) else source
+        suffix = Path(unquote(candidate)).suffix
+    ext = suffix.lstrip(".").strip().casefold()
+    if ext and ext not in allowed:
+        raise MediaUploadError(
+            f"官方富媒体不支持 .{ext} 格式（file_type={file_type}，允许：{', '.join(sorted(allowed))}）"
+        )
+
 
 
 class MediaUploader:
@@ -93,29 +112,25 @@ class MediaUploader:
         source = str(source or "").strip()
         if not source:
             raise MediaUploadError("富媒体来源为空")
-        cache_key = (kind, openid, file_type, source)
-        cached = self._cache_get(cache_key)
-        if cached is not None:
-            return cached
+        _validate_extension(source, file_name, file_type)
 
         if source.startswith(("http://", "https://")):
-            if _is_private_media_url(source):
-                # 官方平台访问不到本机/内网 FileServer：本地下载后走分片上传。
-                data = await _download_url(source)
-                result = await self._upload_bytes(
-                    api, kind, openid, file_type, data, file_name or _name_of(source), timeout
-                )
-            else:
-                result = await self._upload_url(
-                    api, kind, openid, file_type, source, file_name, timeout
-                )
-                if result is None:
-                    data = await _download_url(source)
-                    result = await self._upload_bytes(
-                        api, kind, openid, file_type, data, file_name or _name_of(source), timeout
-                    )
+            # 官方只认它能访问到的 URL；拉不到就报错，不下载后改走分片。
+            cache_key = (kind, openid, file_type, source)
+            cached = self._cache_get(cache_key)
+            if cached is not None:
+                return cached
+            result = await self._upload_url(api, kind, openid, file_type, source, file_name, timeout)
         else:
             data, name = _read_source(source, file_name)
+            # 本地/内联来源按内容哈希缓存：app 的卡片图用固定文件名覆写
+            # （help-{perm}-{page}.png / reload.png），Windows 上快速覆写时
+            # st_mtime_ns 可能同毫秒不变，只有内容才能可靠区分新旧图。
+            digest = hashlib.sha1(data, usedforsecurity=False).hexdigest()
+            cache_key = (kind, openid, file_type, f"{source}|{digest}")
+            cached = self._cache_get(cache_key)
+            if cached is not None:
+                return cached
             result = await self._upload_bytes(api, kind, openid, file_type, data, name, timeout)
         self._cache_put(cache_key, result)
         return result
@@ -131,21 +146,11 @@ class MediaUploader:
         url: str,
         file_name: str,
         timeout: float,
-    ) -> MediaFile | None:
+    ) -> MediaFile:
         body: dict[str, Any] = {"file_type": file_type, "url": url, "srv_send_msg": False}
         if file_name:
             body["file_name"] = file_name
-        try:
-            payload = await _post(api, _base_path(kind, openid), "/files", body, timeout)
-        except MediaUploadError as exc:
-            if exc.code == _URL_UPLOAD_FALLBACK_CODE:
-                self._logger.info(
-                    "官方拒绝 URL 直传，改为下载后分片上传",
-                    code=exc.code,
-                    url=url,
-                )
-                return None
-            raise
+        payload = await _post(api, _base_path(kind, openid), "/files", body, timeout)
         return _media_from_payload(payload)
 
     # ── 分片上传 ────────────────────────────────────────────────────
@@ -294,32 +299,6 @@ async def _put_part(presigned_url: str, data: bytes) -> None:
         raise MediaUploadError(f"官方分片上传失败: {type(exc).__name__}: {exc}") from exc
 
 
-async def _download_url(url: str) -> bytes:
-    """下载 URL 到内存，供 850026 回退路径使用。"""
-    import aiohttp
-
-    try:
-        timeout = aiohttp.ClientTimeout(total=_DOWNLOAD_TIMEOUT_SECONDS)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url) as response:
-                if int(response.status) >= 400:
-                    raise MediaUploadError(f"下载富媒体失败: HTTP {response.status}")
-                chunks: list[bytes] = []
-                total = 0
-                async for chunk in response.content.iter_chunked(64 * 1024):
-                    total += len(chunk)
-                    if total > _MAX_MEDIA_BYTES:
-                        raise MediaUploadError("富媒体超过 200MB 上限，官方协议无法发送")
-                    chunks.append(chunk)
-                return b"".join(chunks)
-    except MediaUploadError:
-        raise
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        raise MediaUploadError(f"下载富媒体失败: {type(exc).__name__}: {exc}") from exc
-
-
 def _read_source(source: str, file_name: str) -> tuple[bytes, str]:
     """解析 file:///、base64://、data: 与本地路径，返回字节和文件名。"""
     if source.startswith("file://"):
@@ -368,30 +347,6 @@ def _read_local(path: Path, file_name: str) -> bytes:
         return path.read_bytes()
     except OSError as exc:
         raise MediaUploadError(f"读取本地富媒体失败: {path}: {exc}") from exc
-
-
-def _is_private_media_url(url: str) -> bool:
-    """URL 指向本机/内网/本地主机名时，官方平台无法拉取，必须本地下载后上传。"""
-    host = str(urlparse(url).hostname or "").strip().casefold()
-    if not host:
-        return True
-    if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
-        return True
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return bool(
-        address.is_loopback
-        or address.is_private
-        or address.is_link_local
-        or address.is_unspecified
-    )
-
-
-def _name_of(url: str) -> str:
-    name = Path(unquote(urlparse(url).path)).name
-    return name or "media"
 
 
 def _hash_bytes(data: bytes) -> dict[str, str]:

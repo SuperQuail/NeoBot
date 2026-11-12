@@ -225,8 +225,8 @@ async def test_send_reply_falls_back_to_text_when_markdown_render_fails():
     assert event.state == ReplyState.GENERATING
 
 
-async def test_send_reply_uses_markdown_image_when_render_succeeds(tmp_path):
-    """Markdown 渲染成功时发送图片段（不发送文本），并记录 send_response。"""
+async def test_send_reply_does_not_auto_render_markdown_image(tmp_path):
+    """普通 send_reply 不再自动把长文本转图片；想发图片请显式用 send_long_reply。"""
     png = tmp_path / "rendered.png"
     png.write_bytes(b"png-data")
     converter = FakeConverter(result=png)
@@ -240,9 +240,8 @@ async def test_send_reply_uses_markdown_image_when_render_succeeds(tmp_path):
 
     await sender.send_reply(event, long_text)
 
-    assert len(adapter.sent) == 1
-    assert adapter.sent[0][0]["type"] == "image"
-    assert event.send_response == {"status": "ok", "message_id": 1001}
+    assert adapter.sent, "普通发送必须调用 adapter.send 发文本"
+    assert adapter.sent[0][0]["type"] == "text"
 
 
 async def test_send_reply_plain_short_text_single_send():
@@ -329,3 +328,21 @@ async def test_call_api_with_timeout_forwards_action_and_params():
     result = await sender.call_api_with_timeout("group_poke", {"group_id": 1, "user_id": 2})
     assert adapter.api_calls == [("group_poke", {"group_id": 1, "user_id": 2})]
     assert result == {"status": "ok"}
+
+
+async def test_send_reply_returns_false_when_adapter_reports_failed() -> None:
+    class _FailedAdapter(FakeAdapter):
+        async def send(self, conversation_ref, payload, wait_response=True, **kwargs):
+            self.sent.append(payload)
+            return {"status": "failed", "retcode": 1404, "message": "被平台拒绝"}
+
+    sender, _adapter = _make_sender()
+    failed = _FailedAdapter()
+    sender._adapter = failed
+    event = _make_private_event()
+
+    delivered = await sender.send_reply(event, "你好")
+
+    assert delivered is False
+    assert failed.sent
+    assert event.send_response is None

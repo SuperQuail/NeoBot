@@ -466,11 +466,11 @@ class RuntimePluginContext(PluginMessaging):
     def record_subscription(self, subscription: Any) -> None:
         self._record_subscription(subscription)
 
-    async def send_private(self, user_id: int, message: MessagePayload) -> SendMsgResponse:
-        return await self._adapter.send_private_msg(user_id, normalize_message_payload(message))
+    async def send_private(self, user_id: int | str, message: MessagePayload) -> SendMsgResponse:
+        return await self.send(ConversationRef(kind="private", id=str(user_id)), message)
 
-    async def send_group(self, group_id: int, message: MessagePayload) -> SendMsgResponse:
-        return await self._adapter.send_group_msg(group_id, normalize_message_payload(message))
+    async def send_group(self, group_id: int | str, message: MessagePayload) -> SendMsgResponse:
+        return await self.send(ConversationRef(kind="group", id=str(group_id)), message)
 
     async def send(self, conversation: ConversationRef, message: MessagePayload) -> SendMsgResponse:
         return await self._adapter.send(conversation, normalize_message_payload(message))

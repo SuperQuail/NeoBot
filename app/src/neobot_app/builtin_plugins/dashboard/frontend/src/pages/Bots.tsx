@@ -4,6 +4,7 @@ import type { ActiveUser } from '../api/types';
 import { useQuery } from '../data/useQuery';
 import { POLL, QK } from '../data/queryKeys';
 import { fmtUptime, fmtNum, fmtRelTime } from '../utils/format';
+import { displayId, qqAvatarUrl } from '../utils/identity';
 import LineChart from '../components/LineChart';
 import MessageTrendCard from '../components/MessageTrendCard';
 import MonitorList from '../components/MonitorList';
@@ -65,7 +66,7 @@ export default function Bots() {
           </div>
           <div>
             <h2 title={d.nickname}>{d.nickname || '未连接'}</h2>
-            <span>QQ {d.user_id || '—'}</span>
+            <span>{displayId(d.user_id)}</span>
           </div>
           <span className={'monitor-connection ' + (d.online ? 'online' : '')}>
             <i />
@@ -192,18 +193,20 @@ export default function Bots() {
               <>
                 <span className="monitor-rank">{String(index + 1).padStart(2, '0')}</span>
                 <div className="monitor-user-avatar">
-                  <img
-                    src={`https://q1.qlogo.cn/g?b=qq&nk=${user.user_id}&s=100`}
-                    alt=""
-                    referrerPolicy="no-referrer"
-                    onError={(event) => {
-                      event.currentTarget.style.visibility = 'hidden';
-                    }}
-                  />
+                  {qqAvatarUrl(user.user_id) && (
+                    <img
+                      src={qqAvatarUrl(user.user_id) ?? ''}
+                      alt=""
+                      referrerPolicy="no-referrer"
+                      onError={(event) => {
+                        event.currentTarget.style.visibility = 'hidden';
+                      }}
+                    />
+                  )}
                 </div>
                 <div className="monitor-item-main">
-                  <strong title={user.nickname}>{user.nickname || `用户${user.user_id}`}</strong>
-                  <span>QQ {user.user_id}</span>
+                  <strong title={user.nickname}>{user.nickname || displayId(user.user_id)}</strong>
+                  <span>{displayId(user.user_id)}</span>
                 </div>
                 <div className="monitor-item-side">
                   <strong>{fmtNum(user.count)} 条</strong>

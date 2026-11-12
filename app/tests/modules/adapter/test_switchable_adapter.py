@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -42,7 +43,9 @@ class _FakeBackend:
         self.event_sink: Any = None
         self.reconfigured: list[ReverseWsSettings] = []
         self.api_calls: list[str] = []
+        self.method_calls: list[str] = []
         self.send_calls = 0
+        self.send_proactive = False
         self.core = SimpleNamespace(speaking_policy=None)
 
     async def start(self) -> None:
@@ -78,12 +81,31 @@ class _FakeBackend:
         message: str | list[dict[str, Any]],
         timeout: float = 5.0,
         wait_response: bool = True,
+        proactive: bool = False,
     ) -> response.SendMsgResponse:
         self.send_calls += 1
+        self.send_proactive = proactive
         return response.SendMsgResponse(status="ok", data={"message_id": self.send_calls})
 
     async def get_group_list(self, no_cache: bool = False, timeout: float = 5.0) -> Any:
+        self.method_calls.append("get_group_list")
         return response.GetGroupListResponse(status="ok", data=[])
+
+    async def get_msg(self, message_id: int, timeout: float = 5.0) -> Any:
+        self.method_calls.append("get_msg")
+        return {"status": "ok", "retcode": 0, "data": {"message_id": message_id, "mode": self.mode}}
+
+    async def get_group_member_list(self, group_id: int, no_cache: bool = False, timeout: float = 5.0) -> Any:
+        self.method_calls.append("get_group_member_list")
+        return {"status": "ok", "retcode": 0, "data": [{"group_id": group_id, "mode": self.mode}]}
+
+    async def send_private_msg(self, user_id: Any, message: Any, timeout: float = 5.0, wait_response: bool = True) -> Any:
+        self.method_calls.append(f"send_private_msg:{user_id}")
+        return response.SendMsgResponse(status="ok", data={"message_id": 1})
+
+    async def send_group_msg(self, group_id: Any, message: Any, timeout: float = 5.0, wait_response: bool = True) -> Any:
+        self.method_calls.append(f"send_group_msg:{group_id}")
+        return response.SendMsgResponse(status="ok", data={"message_id": 1})
 
 
 def _install_fake_backends(
@@ -127,7 +149,6 @@ def _config(**overrides: Any) -> Any:
         "reverse_ws_access_token": "",
         "qq_appid": "",
         "qq_client_secret": "",
-        "qq_markdown": True,
         "qq_base_url": "https://api.bot.qq.com",
         "qq_token_url": "https://api.bot.qq.com/app/getAppAccessToken",
         "qq_portal_host": "q.qq.com",
@@ -559,3 +580,109 @@ async def test_adapter_supervisor_raises_when_channel_switch_fails() -> None:
 
     with pytest.raises(RuntimeError, match="official 适配器启动失败"):
         await AdapterSupervisor(_Adapter()).apply_config(object())
+
+
+def test_settings_from_config_keeps_env_credentials() -> None:
+    """env-only 官方凭据在热重载时不能被 config 空串覆盖。"""
+    adapter = SwitchableAdapter(
+        AdapterSettings(mode="official", qq_appid="env-id", qq_client_secret="env-secret")
+    )
+    config = SimpleNamespace(
+        adapter=SimpleNamespace(mode="official", qq_appid="", qq_client_secret="")
+    )
+
+    settings = adapter._settings_from_config(config)
+
+    assert settings is not None
+    assert settings.qq_appid == "env-id"
+    assert settings.qq_client_secret == "env-secret"
+
+
+def test_request_proxy_follows_event_channel_context() -> None:
+    from neobot_adapter.request._proxy import CoreProxy
+    from neobot_adapter.switchable import channel_context
+
+    class _Core:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.calls: list[str] = []
+
+        async def call_api(self, action, params, timeout=5, websocket=None):
+            self.calls.append(action)
+            return {"source": self.name}
+
+        def call_api_sync(self, action, params, timeout=5, websocket=None):
+            self.calls.append(action)
+            return {"source": self.name}
+
+    proxy = CoreProxy()
+    onebot = _Core("onebot")
+    official = _Core("official")
+    proxy.bind(onebot, "onebot")
+    proxy.bind(official, "official")
+
+    assert asyncio.run(proxy.call_api("x", {}))["source"] == "onebot"
+    with channel_context("official"):
+        assert asyncio.run(proxy.call_api("x", {}))["source"] == "official"
+
+
+async def test_unseen_openid_conversation_routes_to_official(monkeypatch: pytest.MonkeyPatch) -> None:
+    """没见过消息的 openid 会话按 ID 形态兜底到官方通道，而不是默认 OneBot。"""
+    created, _ = _install_fake_backends(monkeypatch)
+    adapter = SwitchableAdapter(AdapterSettings(mode="dual"))
+    await adapter.start()
+
+    openid_sent = await adapter.send(ConversationRef(kind="private", id="user-openid-abc"), "hi")
+    numeric_sent = await adapter.send(ConversationRef(kind="private", id="12345678"), "hi")
+
+    assert openid_sent.status == "ok" and numeric_sent.status == "ok"
+    assert created[1].send_calls == 1  # official：openid
+    assert created[0].send_calls == 1  # onebot：数字号
+
+
+async def test_send_private_and_group_msg_route_by_target_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """门面便捷方法无事件上下文时：openid/旧合成号 → official，真实数字号 → onebot。"""
+    created, _ = _install_fake_backends(monkeypatch)
+    adapter = SwitchableAdapter(AdapterSettings(mode="dual"))
+    await adapter.start()
+
+    await adapter.send_private_msg("user-openid-abc", "hi")
+    await adapter.send_group_msg("group-openid-abc", "hi")
+    await adapter.send_private_msg(9000000000123, "hi")  # 旧 13 位合成号仍属官方
+    await adapter.send_private_msg(123456789, "hi")
+
+    assert created[1].method_calls == [
+        "send_private_msg:user-openid-abc",
+        "send_group_msg:group-openid-abc",
+        "send_private_msg:9000000000123",
+    ]
+    assert created[0].method_calls == ["send_private_msg:123456789"]
+
+
+async def test_send_private_msg_explicit_channel_overrides_id_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created, _ = _install_fake_backends(monkeypatch)
+    adapter = SwitchableAdapter(AdapterSettings(mode="dual"))
+    await adapter.start()
+
+    await adapter.send_private_msg("user-openid-abc", "hi", channel="onebot")
+
+    assert created[0].method_calls == ["send_private_msg:user-openid-abc"]
+    assert created[1].method_calls == []
+
+
+async def test_proactive_send_only_forwarded_to_official(monkeypatch: pytest.MonkeyPatch) -> None:
+    created, _ = _install_fake_backends(monkeypatch)
+    adapter = SwitchableAdapter(AdapterSettings(mode="dual"))
+    await adapter.start()
+
+    result = await adapter.send(
+        ConversationRef(kind="group", id="42"), "提醒", proactive=True, channel="official"
+    )
+
+    assert result.status == "ok"
+    assert created[1].send_proactive is True
+    assert created[0].send_proactive is False

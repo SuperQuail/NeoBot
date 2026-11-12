@@ -74,12 +74,6 @@ class Adapter:
         default="",
         metadata={"description": ("QQ 官方机器人 AppSecret（official 模式）；也可用环境变量 NEOBOT_QQ_SECRET 配置")},
     )
-    qq_markdown: bool = field(
-        default=True,
-        metadata={
-            "description": ("official 模式下文本消息默认按 Markdown 发送；官方接口拒绝 Markdown 时自动降级为纯文本重发")
-        },
-    )
     qq_base_url: str = field(
         default="https://api.bot.qq.com",
         metadata={"description": ("QQ 官方机器人 API 基地址（official 模式）；也可用环境变量 NEOBOT_QQ_BASE_URL 配置")},

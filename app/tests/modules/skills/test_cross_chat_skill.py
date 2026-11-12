@@ -454,7 +454,7 @@ async def test_query_fetches_history_when_queue_empty():
     }))
 
     assert result["ok"] is True
-    assert adapter.group_history_calls == [(888, 30)]
+    assert adapter.group_history_calls == [("888", 30)]
     assert queue.pushed == [("888", "m1"), ("888", "m2")]
     assert queue.text_calls == ["888"]
 

@@ -251,15 +251,20 @@ class GetTest(unittest.IsolatedAsyncioTestCase):
             ["get_group_member_info", "get_stranger_info"],
         )
 
-    async def test_non_numeric_group_id_degrades_to_stranger(self) -> None:
+    async def test_openid_group_id_is_passed_through(self) -> None:
+        """官方通道的 group_id 是 openid 字符串：原样传给适配器，不转 int。"""
         adapter = FakeUserAdapter()
         adapter.strangers[42] = StrangerInfoData(user_id=42, nickname="备用")
         users = UserDirectory(adapter)
 
-        profile = await users.get("42", group_id="abc")
+        profile = await users.get("42", group_id="A1B2C3D4")
 
         self.assertEqual(profile.display_name, "备用")
-        self.assertEqual([name for name, _ in adapter.calls], ["get_stranger_info"])
+        self.assertEqual(
+            [name for name, _ in adapter.calls],
+            ["get_group_member_info", "get_stranger_info"],
+        )
+        self.assertEqual(adapter.calls[0][1], ("A1B2C3D4", 42))
 
     async def test_all_fail_returns_placeholder(self) -> None:
         adapter = FakeUserAdapter()
@@ -274,15 +279,16 @@ class GetTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(profile.display_name, "42")
         self.assertEqual(adapter.calls, [("get_group_member_info", (10, 42)), ("get_stranger_info", (42,))])
 
-    async def test_non_numeric_user_id_returns_placeholder(self) -> None:
+    async def test_openid_user_id_is_passed_through(self) -> None:
+        """官方通道用户 ID 是 openid 字符串：按字符串查询，不能当 int 丢弃。"""
         adapter = FakeUserAdapter()
         users = UserDirectory(adapter)
 
-        profile = await users.get("not-a-number")
+        profile = await users.get("2F1B3C4D5E6F7A8B")
 
-        self.assertEqual(profile.user_id, "not-a-number")
-        self.assertEqual(profile.display_name, "not-a-number")
-        self.assertEqual(adapter.calls, [])
+        self.assertEqual(profile.user_id, "2F1B3C4D5E6F7A8B")
+        self.assertEqual(profile.display_name, "2F1B3C4D5E6F7A8B")
+        self.assertEqual(adapter.calls, [("get_stranger_info", ("2F1B3C4D5E6F7A8B",))])
 
     async def test_zero_user_and_group_id(self) -> None:
         adapter = FakeUserAdapter()

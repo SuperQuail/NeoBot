@@ -296,6 +296,7 @@ async def test_send_long_reply_pre_rendered_image_skips_converter():
 
     async def handler(**kwargs):
         sent.append(kwargs)
+        return {"status": "ok"}
 
     executor = _make_executor(
         markdown_image_converter=converter,
@@ -321,6 +322,7 @@ async def test_send_long_reply_accepts_legacy_id_params():
 
     async def handler(**kwargs):
         sent.append(kwargs)
+        return {"status": "ok"}
 
     executor = _make_executor(
         markdown_image_converter=object(),

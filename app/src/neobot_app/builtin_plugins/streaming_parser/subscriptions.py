@@ -35,7 +35,7 @@ def parse_target(raw: str) -> tuple[str, int]:
     raise ValueError("请提供房间号、短号、直播间链接或 UP 主空间链接")
 
 
-async def push_defaults(state: Any, group_id: int) -> tuple[bool, bool]:
+async def push_defaults(state: Any, group_id: int | str) -> tuple[bool, bool]:
     """新增订阅优先采用群设置；重复订阅不会重置已有开关。"""
     async with state.database.session() as session:
         setting = db.setting_view(await db.get_group_setting(session, group_id))
@@ -57,12 +57,12 @@ class SubscriptionService:
         return await self.state.resolve_target(kind, value)
 
     async def create(
-        self, group_id: int, target: str
+        self, group_id: int | str, target: str
     ) -> tuple[db.SubscriptionView, bool]:
         return await self.create_resolved(group_id, await self.resolve(target))
 
     async def create_resolved(
-        self, group_id: int, resolved: dict[str, Any]
+        self, group_id: int | str, resolved: dict[str, Any]
     ) -> tuple[db.SubscriptionView, bool]:
         push_live, push_live_end = await push_defaults(self.state, group_id)
         async with self.state.database.transaction() as session:
@@ -82,13 +82,13 @@ class SubscriptionService:
             self.state.poller.request_check()
         return view, created
 
-    async def remove(self, group_id: int, room_id: int) -> bool:
+    async def remove(self, group_id: int | str, room_id: int) -> bool:
         async with self.state.database.transaction() as session:
             return await db.remove_subscription(session, group_id, room_id)
 
     async def toggle(
         self,
-        group_id: int,
+        group_id: int | str,
         room_id: int,
         *,
         push_live: bool | None = None,
@@ -105,7 +105,7 @@ class SubscriptionService:
                 )
             )
 
-    async def list(self, group_id: int | None = None) -> list[dict[str, Any]]:
+    async def list(self, group_id: int | str | None = None) -> list[dict[str, Any]]:
         query = (
             select(db.Subscription, db.RoomState)
             .outerjoin(
@@ -115,7 +115,7 @@ class SubscriptionService:
             .order_by(db.Subscription.group_id, db.Subscription.room_id)
         )
         if group_id is not None:
-            query = query.where(db.Subscription.group_id == group_id)
+            query = query.where(db.Subscription.group_id == db._group_id_text(group_id))
         async with self.state.database.session() as session:
             records = await session.execute(query)
             return [

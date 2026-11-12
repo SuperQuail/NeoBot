@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from .core import Chat
+from .core import ID_CONFIG_NOTE, Chat
 
 
 @dataclass
@@ -60,11 +60,11 @@ class EnhancedChat(Chat):
     )
     startup_history_group_whitelist: Optional[List[str]] = field(
         default_factory=list,
-        metadata={"description": "启动历史预热群聊白名单"},
+        metadata={"description": f"启动历史预热群聊白名单（群号或 openid）。{ID_CONFIG_NOTE}"},
     )
     startup_history_friend_whitelist: Optional[List[str]] = field(
         default_factory=list,
-        metadata={"description": "启动历史预热私聊白名单"},
+        metadata={"description": f"启动历史预热私聊白名单（QQ号或 openid）。{ID_CONFIG_NOTE}"},
     )
     reply_cooldown_seconds: Optional[int] = field(
         default=0,
@@ -314,13 +314,13 @@ class EnhancedChat(Chat):
     admin_accounts: Optional[List[str]] = field(
         default_factory=list,
         metadata={
-            "description": "超级管理员QQ号列表，用于接收余额不足等系统通知；仅可通过配置增减。"
-            "留空也能正常启动，但相关系统通知无人接收；面板首页会给出提示"
+            "description": f"超级管理员列表（QQ号或 openid），用于接收余额不足等系统通知；仅可通过配置增减。"
+            "默认留空，必须由部署者显式设置；" f"{ID_CONFIG_NOTE}"
         },
     )
     sub_admin_accounts: List[str] = field(
         default_factory=list,
-        metadata={"description": "次级管理员QQ号列表；超级管理员可通过 /add_admin、/del_admin 命令增删"},
+        metadata={"description": f"次级管理员列表（QQ号或 openid）；超级管理员可通过 /add_admin、/del_admin 命令增删。{ID_CONFIG_NOTE}"},
     )
     balance_check_cooldown_seconds: Optional[int] = field(
         default=300,

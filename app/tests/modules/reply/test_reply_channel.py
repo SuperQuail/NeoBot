@@ -45,7 +45,7 @@ class _Queue:
     def __init__(self) -> None:
         self.messages: list = []
 
-    def push(self, key, message) -> None:
+    def push(self, key, message, **_kwargs) -> None:
         self.messages.append(message)
 
     def get_last_message_id(self, key):
@@ -274,8 +274,8 @@ def test_send_reply_tool_schema_exposes_channel_enum():
     assert channel["enum"] == ["auto", "onebot", "official"]
     assert channel["default"] == "auto"
     mention = definition["function"]["parameters"]["properties"]["mention_qqs"]
-    assert "不要再写" in mention["description"]
-    assert "@ 后留一个空格" not in mention["description"]
+    assert "send_official_markdown" in mention["description"]
+    assert "OneBot" in mention["description"]
 
 
 # ── 提示词账号 ─────────────────────────────────────────────────────
@@ -399,3 +399,27 @@ def test_multiple_duplicate_leading_mentions_are_dropped() -> None:
     )
 
     assert segments[-1]["data"]["text"] == "正文"
+
+
+def test_linked_group_prefers_onebot_and_falls_back_official(tmp_path) -> None:
+    from neobot_app.user_identity import bind_user_identity, link_group_number
+
+    bind_user_identity(tmp_path)
+    try:
+        assert link_group_number(8000000000010, 123456789, channel="official", trusted=True)[0]
+        sender = object.__new__(ReplySender)
+        official = ConversationRef(kind="group", id="8000000000010")
+        onebot = ConversationRef(kind="group", id="123456789")
+
+        sender._adapter = SimpleNamespace(connected_channels=("onebot", "official"))
+        target, channel = sender._preferred_linked_group_target(official, "official")
+        assert (channel, target.id) == ("onebot", "123456789")
+
+        target, channel = sender._preferred_linked_group_target(onebot, "onebot")
+        assert (channel, target.id) == ("onebot", "123456789")
+
+        sender._adapter = SimpleNamespace(connected_channels=("official",))
+        target, channel = sender._preferred_linked_group_target(onebot, "onebot")
+        assert (channel, target.id) == ("official", "8000000000010")
+    finally:
+        bind_user_identity(None)

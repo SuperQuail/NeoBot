@@ -27,6 +27,7 @@ COT_NO_BLUFFING = "<禁止不懂装懂>在回复之前,你应该思考:你说的
 COT_NO_GAME_TOPICS = "<禁止主动参与游戏话题>在没有人主动与你聊天的情况下,你不应该参与任何游戏相关讨论,你不应该猜测任何游戏机制并进行回复,对于游戏相关内容,除非你的上下文有明确的内容可提供答案,否则一律禁止给出明确的答案;没有人主动问你,你也禁止主动参与游戏相关话题,如果聊天中只有游戏相关话题,并且没有人叫你,你应该直接取消回复</禁止主动参与游戏话题>"
 COT_NO_ECHO_IMAGES = "<禁止附和与解说图片>你不应该以任何形式复述或者转述别人说过的内容然后再进行评论,对一件事情发表观点不应该先复述;也不应该描述某张图片的内容,除非有人明确询问你</禁止附和与解说图片>"
 COT_CROSS_CHAT = "<跨聊天交互>当你有事情需要对某个人私聊说,或者在别的群聊说,你可以使用 cross_chat 工具</跨聊天交互>"
+COT_VALUABLE_REPLY = "<有价值的回复>在实际发送回复前,你必须思考:你的回复内容是否是有意义的内容,而不是对群友话题的点评,或者无意义的附和,如果你想不到有价值的回答,直接cancel,禁止回复无意义内容</有价值的回复>"
 COT_OUTRO = "</cot>"
 
 #: 块 id -> 逐字原文（顺序即注入顺序）。
@@ -39,6 +40,7 @@ COT_PARTS = {
     "cot_no_game_topics": COT_NO_GAME_TOPICS,
     "cot_no_echo_images": COT_NO_ECHO_IMAGES,
     "cot_cross_chat": COT_CROSS_CHAT,
+    "cot_valuable_reply": COT_VALUABLE_REPLY,
     "cot_outro": COT_OUTRO,
 }
 
@@ -51,6 +53,7 @@ COT_SWITCHES = {
     "no_game_topics": "cot_no_game_topics",
     "no_echo_images": "cot_no_echo_images",
     "cross_chat": "cot_cross_chat",
+    "valuable_reply": "cot_valuable_reply",
 }
 
 
@@ -71,6 +74,13 @@ def test_default_system_starts_with_cot_and_contains_every_subblock(scope, promp
         assert expected in text, block_id
     # </cot> 之后紧接 system 主模板
     assert "</cot>\n<你是谁>" in text
+
+
+def test_valuable_reply_sits_between_cross_chat_and_outro(prompt_store):
+    """新增子块固定在 cot_cross_chat 之后、cot_outro 之前（文本见 COT_PARTS，逐字锁定）。"""
+    text = _system(prompt_store, Scope.GROUP)
+
+    assert text.index(COT_CROSS_CHAT) < text.index(COT_VALUABLE_REPLY) < text.index(COT_OUTRO)
 
 
 @pytest.mark.parametrize(("field", "block_id"), COT_SWITCHES.items(), ids=lambda item: item)

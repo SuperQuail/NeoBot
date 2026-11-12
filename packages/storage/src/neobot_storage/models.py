@@ -40,9 +40,7 @@ class UserData(Base):
     avatar_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: 连续获取失败次数；成功一次即清零。失败冷却与诊断用。
     #: server_default 与迁移 0027 保持一致：既有行 / 不显式赋值的新行都拿到 0。
-    avatar_fail_count: Mapped[int] = mapped_column(
-        Integer, default=0, server_default="0"
-    )
+    avatar_fail_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class GroupData(Base):
@@ -65,6 +63,8 @@ class MessageData(Base):
     sender_name: Mapped[str] = mapped_column(Text, nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    #: 工具调用元数据（JSON 字符串）；NULL = 该消息没有关联工具调用。
+    tool_call_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class EventData(Base):
@@ -328,7 +328,11 @@ class CrossChatSessionData(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "origin_kind", "origin_id", "target_kind", "target_id", "boot_id",
+            "origin_kind",
+            "origin_id",
+            "target_kind",
+            "target_id",
+            "boot_id",
             name="uq_cross_chat_sessions_pair",
         ),
         Index("ix_cross_chat_sessions_origin", "origin_kind", "origin_id"),
@@ -349,9 +353,7 @@ class ModelUsageRecord(Base):
     cache_miss_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cost_cny: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     #: 费用来源（闭集）：builtin / script:<name> / fallback:missing|error|timeout
-    cost_source: Mapped[str] = mapped_column(
-        String, nullable=False, default="builtin", server_default="builtin"
-    )
+    cost_source: Mapped[str] = mapped_column(String, nullable=False, default="builtin", server_default="builtin")
     #: 脚本返回的分项 / 说明（JSON 单行；内建与无分项时为 NULL）
     cost_detail: Mapped[str | None] = mapped_column(String, nullable=True)
     conversation_kind: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -399,4 +401,3 @@ class BilibiliLinkData(Base):
         Index("ix_bilibili_links_bilibili_uid", "bilibili_uid"),
         Index("ix_bilibili_links_qq_number", "qq_number"),
     )
-

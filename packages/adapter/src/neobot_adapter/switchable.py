@@ -8,6 +8,9 @@
 mode=dual 时两个后端同时运行、同时可交互：后端事件在 sink 处标注
 ``neobot_channel``，send / call_api 未显式指定通道时按「会话出现在哪条通道」
 自动选路（默认 OneBot），显式指定不可用通道时返回明确失败而不是静默改投。
+事件处理期间还会钉住来源通道（见 ``channel_context``）：处理中发起的 call_api
+与查询便捷方法默认查同一条通道，官方会话的 get_msg / get_group_member_* 不会
+落到 OneBot 后端。
 
 切换期间 ``send`` / ``call_api`` 立即返回明确失败而不是阻塞等待：回复编排
 与定时任务不应被一次通道切换拖住。
@@ -18,8 +21,10 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import replace
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
 
 from neobot_contracts.models import ConversationRef
 from neobot_contracts.ports.logging import Logger, NullLogger
@@ -51,12 +56,81 @@ _CONVERSATION_LIMIT = 8192
 _QQ_FIELDS = (
     "qq_appid",
     "qq_client_secret",
-    "qq_markdown",
     "qq_base_url",
     "qq_token_url",
     "qq_portal_host",
 )
 _ONEBOT_FIELDS = ("reverse_ws_host", "reverse_ws_port", "reverse_ws_access_token")
+#: OneBot 形状的便捷方法：必须按事件来源通道/目标 ID 形态选后端，不能固定委托 OneBot。
+_CHANNEL_METHODS = frozenset(
+    {
+        "get_friend_list",
+        "get_stranger_info",
+        "get_group_list",
+        "get_group_member_list",
+        "get_group_member_info",
+        "get_friend_msg_history",
+        "get_group_msg_history",
+        "get_msg",
+        "get_forward_msg",
+        "send_private_msg",
+        "send_group_msg",
+    }
+)
+#: 查询方法失败时用哪种响应模型返回明确 failed（get_forward_msg 返回原始 dict）。
+_CHANNEL_METHOD_RESPONSES: Dict[str, Any] = {
+    "get_friend_list": response.GetFriendListResponse,
+    "get_stranger_info": response.StrangerInfoResponse,
+    "get_group_list": response.GetGroupListResponse,
+    "get_group_member_list": response.GetGroupMemberListResponse,
+    "get_group_member_info": response.GetGroupMemberInfoResponse,
+    "get_friend_msg_history": response.GetHistoryMsgListResponse,
+    "get_group_msg_history": response.GetHistoryMsgListResponse,
+    "get_msg": response.GetSignalMsgResponse,
+    "get_forward_msg": None,
+    "send_private_msg": response.SendMsgResponse,
+    "send_group_msg": response.SendMsgResponse,
+}
+
+#: 官方通道的本地 ID（openid）永远不是纯数字；旧 13 位合成号也按官方处理。
+_OFFICIAL_ID_MIN_DIGITS = 13
+#: 事件处理期（含其派生的任务）的来源通道；call_api 未显式指定时跟随它。
+_EVENT_CHANNEL: ContextVar[Optional[str]] = ContextVar("neobot_event_channel", default=None)
+
+
+def _looks_official_target(value: Any) -> bool:
+    """目标 ID 形态判断：非纯数字 openid，或 13 位及以上的旧官方合成号。"""
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if not text.isdigit():
+        return True
+    return len(text) >= _OFFICIAL_ID_MIN_DIGITS
+
+
+def _normalize_channel(channel: Any) -> Optional[str]:
+    name = str(channel or "").strip().casefold()
+    return name if name in _CHANNELS else None
+
+
+def current_channel() -> Optional[str]:
+    """当前事件处理上下文所属通道；后台任务/面板等无事件上下文时返回 None。"""
+    return _EVENT_CHANNEL.get()
+
+
+@contextmanager
+def channel_context(channel: Optional[str]) -> Iterator[None]:
+    """在 with 块内把未显式指定通道的请求钉到 channel；块内新建任务会继承。"""
+    normalized = _normalize_channel(channel)
+    token = _EVENT_CHANNEL.set(normalized)
+    from neobot_adapter.request._proxy import request_channel_context, reset_request_channel
+
+    proxy_token, _ = request_channel_context(normalized)
+    try:
+        yield
+    finally:
+        reset_request_channel(proxy_token)
+        _EVENT_CHANNEL.reset(token)
 
 
 def _unknown_mode_message(mode: Any) -> str:
@@ -315,7 +389,11 @@ class SwitchableAdapter:
                 "data": None,
                 "message": _SWITCHING_MESSAGE,
             }
-        selected, error = self._select_channel(None, channel)
+        requested = str(channel or "").strip().casefold()
+        if requested in ("", "auto"):
+            # 事件处理中默认跟事件来源通道：官方会话的查询不能落到 OneBot。
+            requested = current_channel()
+        selected, error = self._select_channel(None, requested)
         if error is not None:
             return {"status": "failed", "retcode": -1, "data": None, "message": error}
         return await self._backends[selected].call_api(action, params, timeout, wait_response=wait_response)
@@ -327,15 +405,27 @@ class SwitchableAdapter:
         timeout: float = 5.0,
         wait_response: bool = True,
         channel: Optional[str] = None,
+        proactive: bool = False,
     ) -> response.SendMsgResponse:
         if self._switching:
             return response.SendMsgResponse(status="failed", retcode=-1, message=_SWITCHING_MESSAGE)
         selected, error = self._select_channel(conversation, channel)
         if error is not None:
             return response.SendMsgResponse(status="failed", retcode=-1, message=error)
-        return await self._backends[selected].send(conversation, message, timeout, wait_response=wait_response)
+        extra = {"proactive": True} if proactive and selected == "official" else {}
+        return await self._backends[selected].send(
+            conversation, message, timeout, wait_response=wait_response, **extra
+        )
 
     # ── 通道切换 ────────────────────────────────────────────────────
+
+    def supports_action(self, action: str, channel: Optional[str] = None) -> bool:
+        """查询某通道是否明确支持某个 action；无能力信息时返回 False。"""
+        name = str(action or "").strip()
+        target = _normalize_channel(channel) or current_channel() or _DEFAULT_CHANNEL
+        backend = self._backends.get(target)
+        checker = getattr(backend, "supports_action", None) if backend is not None else None
+        return bool(checker(name)) if callable(checker) else False
 
     async def switch(self, mode: str) -> tuple[bool, str]:
         """切到指定模式（含 dual）；失败时旧后端会重新启动并保持可用。"""
@@ -394,7 +484,10 @@ class SwitchableAdapter:
         if channel is not None:
             event = {**event, "neobot_channel": channel}
             self._remember_conversation(channel, event)
-        await self._dispatcher.publish(event)
+        else:
+            channel = _normalize_channel(event.get("neobot_channel"))
+        with channel_context(channel):
+            await self._dispatcher.publish(event)
 
     def channels_for_conversation(self, conversation: ConversationRef) -> tuple[str, ...]:
         """该会话出现过消息的通道（固定顺序）；从未出现过返回 ()。
@@ -548,7 +641,14 @@ class SwitchableAdapter:
 
     def _preferred_channel(self, conversation: Optional[ConversationRef]) -> str:
         # 只在官方通道出现过消息时用官方；两条都出现或从未出现都走默认通道。
-        if conversation is not None and self.channels_for_conversation(conversation) == ("official",):
+        if conversation is None:
+            return _DEFAULT_CHANNEL
+        channels = self.channels_for_conversation(conversation)
+        if channels == ("official",):
+            return "official"
+        # 没见过消息的官方 openid 会话（历史/后台任务）按 ID 形态兜底到官方：
+        # openid 非纯数字，旧 13 位合成号也属于官方。
+        if not channels and _looks_official_target(conversation.id):
             return "official"
         return _DEFAULT_CHANNEL
 
@@ -574,6 +674,8 @@ class SwitchableAdapter:
 
     def __getattr__(self, name: str) -> Any:
         """未在门面上定义的属性/方法（get_group_list 等）按 onebot 优先委托后端。"""
+        if name in _CHANNEL_METHODS:
+            return self._channel_method(name)
         try:
             backends = object.__getattribute__(self, "_backends")
         except AttributeError:
@@ -593,6 +695,35 @@ class SwitchableAdapter:
         if backend is not None:
             return backend
         return next(iter(self._backends.values()))
+
+    def _channel_method(self, name: str) -> Any:
+        """OneBot 形状查询方法的门面版本：按显式/事件来源通道选后端。"""
+
+        async def invoke(*args: Any, channel: Optional[str] = None, **kwargs: Any) -> Any:
+            if self._switching:
+                return self._method_failure(name, _SWITCHING_MESSAGE)
+            requested = str(channel or "").strip().casefold()
+            if requested in ("", "auto"):
+                requested = current_channel()
+            if not requested and name in {"send_private_msg", "send_group_msg"}:
+                # 无事件上下文（后台任务/插件直发）时按目标 ID 形态选通道：
+                # 官方 openid / 旧合成号 → official，OneBot 数字号 → onebot。
+                target = args[0] if args else kwargs.get("user_id", kwargs.get("group_id"))
+                if _looks_official_target(target):
+                    requested = "official"
+            selected, error = self._select_channel(None, requested)
+            if error is not None:
+                return self._method_failure(name, error)
+            return await getattr(self._backends[selected], name)(*args, **kwargs)
+
+        return invoke
+
+    @staticmethod
+    def _method_failure(name: str, message: str) -> Any:
+        model = _CHANNEL_METHOD_RESPONSES.get(name)
+        if model is None:
+            return {"status": "failed", "retcode": -1, "data": None, "message": message}
+        return model(status="failed", retcode=-1, message=message)
 
     def _event_sink_for(self, channel: str) -> Any:
         """把后端事件汇入门面分发器，并标注来源通道。"""
@@ -761,9 +892,12 @@ class SwitchableAdapter:
             reverse_ws_access_token=str(
                 getattr(adapter_cfg, "reverse_ws_access_token", base.reverse_ws_access_token) or ""
             ),
-            qq_appid=str(getattr(adapter_cfg, "qq_appid", base.qq_appid) or ""),
-            qq_client_secret=str(getattr(adapter_cfg, "qq_client_secret", base.qq_client_secret) or ""),
-            qq_markdown=bool(getattr(adapter_cfg, "qq_markdown", base.qq_markdown)),
+            # 官方凭据可只放在环境变量（装配阶段已合入 base）；配置里留空时保留
+            # 装配值，避免热重载把 env-only 的机器人打回扫码绑定。
+            qq_appid=str(getattr(adapter_cfg, "qq_appid", "") or base.qq_appid),
+            qq_client_secret=str(
+                getattr(adapter_cfg, "qq_client_secret", "") or base.qq_client_secret
+            ),
             qq_base_url=str(getattr(adapter_cfg, "qq_base_url", base.qq_base_url) or base.qq_base_url),
             qq_token_url=str(getattr(adapter_cfg, "qq_token_url", base.qq_token_url) or base.qq_token_url),
             qq_portal_host=str(getattr(adapter_cfg, "qq_portal_host", base.qq_portal_host) or base.qq_portal_host),

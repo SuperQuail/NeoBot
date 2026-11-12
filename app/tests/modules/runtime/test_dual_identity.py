@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -12,6 +11,7 @@ from neobot_adapter.model.message import GroupMessage, MessageSegment, PrivateMe
 from neobot_app.bot_detect import BotDetector
 from neobot_app.commands.service import CommandService
 from neobot_app.config.schemas.bot import BotConfig
+from neobot_app.message.addressing import is_addressed_to_bot
 from neobot_app.message.queue import MessageQueue, is_bot_message
 from neobot_app.prompt.role_messages import build_role_messages
 from neobot_app.runtime.event_pipeline import EventPipeline
@@ -346,31 +346,25 @@ def test_command_service_bot_account_uses_message_self_id() -> None:
     assert service._bot_account(None) == 0
 
 
-def test_willing_official_platform_uses_message_channel() -> None:
-    """官方性按消息通道查 detector.profile_for；无通道回退主档。"""
+def test_willing_official_channel_does_not_imply_mention() -> None:
+    """官方通道不再按通道无条件判 @：无 at 段不算，at 到 bot 才算。"""
     service = object.__new__(WillingService)
     service._config = _config()
-    service._bot_detector = SimpleNamespace(
-        profile=SimpleNamespace(kind="unofficial"),
-        profile_for=lambda channel: {
-            "onebot": SimpleNamespace(kind="unofficial"),
-            "official": SimpleNamespace(kind="official"),
-        }.get(channel, SimpleNamespace(kind="unknown")),
-    )
-
-    assert service._is_official_platform(_group(50, user_id=USER_ACCOUNT, channel="official")) is True
-    assert service._is_official_platform(_group(51, user_id=USER_ACCOUNT, channel="onebot")) is False
-    assert service._is_official_platform(_group(52, user_id=USER_ACCOUNT)) is False
-
-
-def test_willing_mentioned_bot_prefers_message_self_id() -> None:
-    """@ 判定优先用消息 self_id，配置里的旧账号不参与。"""
-    service = object.__new__(WillingService)
-    service._config = _config(account=999)
     service._bot_detector = None
 
+    assert service.is_at_mentioned(_group(50, user_id=USER_ACCOUNT, channel="official")) is False
+    assert (
+        service.is_at_mentioned(
+            _group(51, user_id=USER_ACCOUNT, channel="official", at=ONEBOT_ACCOUNT)
+        )
+        is True
+    )
+
+
+def test_addressing_prefers_message_self_id() -> None:
+    """@ 判定优先用消息 self_id，配置里的旧账号不参与。"""
     message = _group(60, user_id=USER_ACCOUNT, self_id=OFFICIAL_ACCOUNT, at=OFFICIAL_ACCOUNT)
-    assert service._mentioned_bot(message) is True
+    assert is_addressed_to_bot(message, _config(account=999)) is True
 
     plain = PrivateMessage(
         message_id=61,
@@ -379,4 +373,4 @@ def test_willing_mentioned_bot_prefers_message_self_id() -> None:
         message=[MessageSegment(type="text", data={"text": "你好"})],
         raw_message="你好",
     )
-    assert service._mentioned_bot(plain) is False
+    assert is_addressed_to_bot(plain, _config(account=999)) is False

@@ -6,7 +6,7 @@ covers:
   - app/src/neobot_app/runtime/gateway.py
   - app/src/neobot_app/runtime/inbound_pipeline.py
 verified_against: d525a5b
-verified_hash: 8071ba9d924c
+verified_hash: e4c6652659b7
 ---
 
 # 02 适配器入站：反向 WS -> 事件网关 -> 队列 -> 事件管道
@@ -17,6 +17,13 @@ verified_hash: 8071ba9d924c
 覆盖 `packages/adapter/src/neobot_adapter/`、`app/src/neobot_app/message/queue.py`、
 `app/src/neobot_app/runtime/gateway.py`。回复怎么产生见 `03-reply-pipeline.md`，
 概率怎么算见 `02b 细节` 与 `03-reply-pipeline.md` 的细节块。
+
+### 双通道下的身份 ID 口径
+
+- OneBot 通道的 `user_id` / `group_id` 保持协议原样的 **int**；官方通道是 **openid 字符串**（本地主键就是 openid，不再派生 13 位合成号）。
+- 门面（`SwitchableAdapter`）在两个后端的 event_sink 上统一注入 `neobot_channel`，并按通道分发；会话键/队列键/chat_flow_id 一律用文本（`str(id)`），所以 `kind:openid` 可以正常入库（`kind:id` 只按第一个冒号切分）。
+- 插件事件视图 `IncomingEvent.user_id/group_id` 是 `int | str` 原值；插件与内置插件数据库按文本持久化，禁止对 openid 做 `int()`（会直接失败）。
+- 旧版合成号只经 `data/qqbot/identities.json` 只读反查，用于迁移/回放旧数据。
 
 ## 流程
 
@@ -263,7 +270,7 @@ flowchart LR
     A["_handle_inbound_raw_event(event)"] --> B["InboundPipeline.handle_raw_event"]
     B --> C["map_to_incoming_message 规范化"]
     C --> D["handle(message)"]
-    D --> E["只打一条『收到入站消息』日志"]
+    D --> E["打一条 DEBUG『收到消息』摘要；INFO 入队明细在事件管道的 message.enqueued"]
     E --> F["短期记忆 remember 整段被注释<br/>（未完成功能, 不要画成有效步骤）"]
 ```
 

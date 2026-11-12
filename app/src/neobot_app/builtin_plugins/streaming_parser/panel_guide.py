@@ -40,7 +40,7 @@ def demonstration() -> dict:
         "url": "https://live.bilibili.com/610001",
     }
     item = {
-        "group_id": 20001,
+        "group_id": "20001",
         "room_id": 610001,
         "uid": 510001,
         "short_id": 1001,
@@ -79,7 +79,7 @@ def demonstration() -> dict:
     return {
         "actions": {
             "groups.settings.get": {
-                "group_id": 20001,
+                "group_id": "20001",
                 "card_style": "minimal",
                 "ai_reply_live": False,
                 "ai_reply_live_end": False,
@@ -88,7 +88,7 @@ def demonstration() -> dict:
                 "inherited": True,
             },
             "groups.settings.update": {
-                "group_id": 20001,
+                "group_id": "20001",
                 "card_style": "minimal",
                 "ai_reply_live": False,
                 "ai_reply_live_end": False,
@@ -97,7 +97,7 @@ def demonstration() -> dict:
                 "inherited": False,
             },
             "subscriptions.groups": {
-                "items": [{"group_id": 20001, "name": "演示交流组", "bot_id": "10001"}]
+                "items": [{"group_id": "20001", "name": "演示交流组", "bot_id": "10001"}]
             },
             "subscriptions.resolve": target,
             "subscriptions.preview": {
@@ -134,7 +134,7 @@ READ_CONTEXT = "在接收通知的同一个 QQ 群里，先 @机器人，再发�
 
 
 def _register_start_guide(plugin: Plugin) -> None:
-    sample = {"group_id": 20001, "target": "https://live.bilibili.com/610001"}
+    sample = {"group_id": "20001", "target": "https://live.bilibili.com/610001"}
     item = demonstration()["actions"]["subscriptions.create"]["item"]
     plugin.guide(
         "first-subscription",
@@ -144,13 +144,13 @@ def _register_start_guide(plugin: Plugin) -> None:
                 "chapter": "打开空白订阅表单",
                 "target": "view.subscriptions.group",
                 "text": "选择插件页面后直接看到订阅表单，不需要再展开。开始时接收群和直播间都未填写；教程只使用合成群和主播，不会读取或改动你的订阅。",
-                "example": {"group_id": 0, "target": ""},
+                "example": {"group_id": "", "target": ""},
             },
             {
                 "chapter": "选择接收通知的群",
                 "target": "view.subscriptions.group",
                 "text": "先选择接收通知的群。真实页面只列出当前机器人加入的群；没有可选群时请先检查机器人连接和加群状态。这里只选群，还没有建立订阅。",
-                "example": {"group_id": 20001, "target": ""},
+                "example": {"group_id": "20001", "target": ""},
             },
             {
                 "chapter": "填写并识别直播间",

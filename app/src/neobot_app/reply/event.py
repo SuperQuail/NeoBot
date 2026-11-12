@@ -60,6 +60,8 @@ class ReplyEvent:
     error: str | None = None
     speech_blocked: SpeechBlocked | None = field(default=None, repr=False)
     background_content: str | None = None
+    #: 后台通知/定时任务等没有被动回复窗口的主动消息
+    proactive: bool = False
     human_request: bool = False
     #: 本轮要预先激活的技能包（插件消息意图入口用；在本轮工具表构建前生效）
     preactivate: tuple[str, ...] = ()

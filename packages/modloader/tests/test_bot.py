@@ -47,18 +47,34 @@ class TestBot(unittest.IsolatedAsyncioTestCase):
     # ── test_bot_send_private ───────────────────────────────────────
 
     async def test_bot_send_private(self) -> None:
-        """Bot.send_private 委托给 adapter.send_private_msg。"""
+        """Bot.send_private 走 ConversationRef + 门面 send（OneBot 数字号）。"""
         await self.bot.send_private(100, "hi")
 
-        self.adapter.send_private_msg.assert_awaited_once_with(100, "hi")
+        self.adapter.send.assert_awaited_once_with(ConversationRef(kind="private", id="100"), "hi")
+
+    async def test_bot_send_private_accepts_openid(self) -> None:
+        """官方 openid 字符串不得被转成数字。"""
+        await self.bot.send_private("2F1B3C4D5E6F7A8B", "hi")
+
+        self.adapter.send.assert_awaited_once_with(
+            ConversationRef(kind="private", id="2F1B3C4D5E6F7A8B"), "hi"
+        )
 
     # ── test_bot_send_group ─────────────────────────────────────────
 
     async def test_bot_send_group(self) -> None:
-        """Bot.send_group 委托给 adapter.send_group_msg。"""
+        """Bot.send_group 走 ConversationRef + 门面 send（OneBot 群号）。"""
         await self.bot.send_group(200, "hello")
 
-        self.adapter.send_group_msg.assert_awaited_once_with(200, "hello")
+        self.adapter.send.assert_awaited_once_with(ConversationRef(kind="group", id="200"), "hello")
+
+    async def test_bot_send_group_accepts_openid(self) -> None:
+        """官方群 openid 字符串原样进入 ConversationRef。"""
+        await self.bot.send_group("A1B2C3D4E5F6", "hello")
+
+        self.adapter.send.assert_awaited_once_with(
+            ConversationRef(kind="group", id="A1B2C3D4E5F6"), "hello"
+        )
 
     # ── test_bot_return_value ───────────────────────────────────────
 

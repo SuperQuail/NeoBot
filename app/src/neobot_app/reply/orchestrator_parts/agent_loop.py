@@ -328,6 +328,8 @@ class AgentLoopMixin:
                 nudge_rounds += 1
                 image_parts = await self._agent_execute_tool_calls(
                     event=event,
+                    queue=queue,
+                    queue_copy=queue_copy,
                     queue_key=queue_key,
                     iteration=iteration,
                     tool_calls=tool_calls,

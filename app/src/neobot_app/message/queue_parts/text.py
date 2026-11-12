@@ -8,6 +8,7 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 from neobot_app.time_context import from_epoch_seconds
+from neobot_app.user_identity import display_user_id
 
 from .common import (
     NotificationEntry,
@@ -17,6 +18,7 @@ from .common import (
     QueueMessage,
     ReactionEntry,
     RecallNotice,
+    SelfSentToolCall,
 )
 from .helpers import _poke_sub_type_text
 
@@ -79,6 +81,16 @@ class _QueueTextMixin:
         )
 
     @staticmethod
+    def _tool_call_to_text(tool_call: SelfSentToolCall) -> str:
+        """非发送工具的 compact 历史行：只显示工具名与成败。
+
+        参数与结果可能很长（搜索结果、文件内容），历史里回放它们既占上下文又容易
+        把模型带偏；完整数据留给存储/调试面板，聊天管线只保留可归因的最小信息。
+        """
+        status = "成功" if tool_call.ok else "失败"
+        return f"[工具调用] {tool_call.name} {status}"
+
+    @staticmethod
     def _notification_to_text(notification: NotificationEntry) -> str:
         """通知条目的统一渲染形态：`[通知:<source>] <content>`。"""
         source = str(notification.source or "unknown")
@@ -91,8 +103,8 @@ class _QueueTextMixin:
             text = poke.action_text
         else:
             action_desc = _poke_sub_type_text(poke.sub_type)
-            sender = poke.sender_name or f"QQ:{poke.user_id}"
-            target = poke.target_name or f"QQ:{poke.target_id}"
+            sender = poke.sender_name or display_user_id(poke.user_id) or "未知用户"
+            target = poke.target_name or display_user_id(poke.target_id) or "未知用户"
             text = f"{sender} 对 {target} 使用了{action_desc}"
 
         if poke_index == 1:
@@ -160,7 +172,11 @@ class _QueueTextMixin:
         if sender is not None and sender.card:
             return str(sender.card)
         if message.user_id is not None:
-            return f"QQ:{message.user_id}"
+            # 全量展示身份：真实 QQ 号显示 QQ:<号>，官方 openid 显示 openid:<完整值>
+            return (
+                display_user_id(message.user_id, getattr(message, "neobot_channel", None))
+                or "未知用户"
+            )
         return "未知用户"
 
     def _message_sender_label(

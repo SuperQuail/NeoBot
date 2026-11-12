@@ -95,7 +95,7 @@ class TestSubscriptions:
             await pdb.upsert_subscription(session, group_id=3, room_id=30)
         async with database.session() as session:
             followers = await pdb.followers_of_room(session, 10)
-        assert sorted(row.group_id for row in followers) == [1, 2]
+        assert sorted(row.group_id for row in followers) == ["1", "2"]
 
 
 class TestGroupSettings:
@@ -107,7 +107,7 @@ class TestGroupSettings:
                 )
             )
         assert setting is not None
-        assert setting.group_id == 5
+        assert setting.group_id == "5"
         assert setting.ai_reply_live is False
         assert setting.card_style == 'neon'
         assert setting.default_push_live is True
@@ -351,7 +351,7 @@ class TestNotifierIntegration:
         assert ctx.sent_images == []
         assert len(ctx.sent_texts) == 1
         group_id, text = ctx.sent_texts[0]
-        assert group_id == 100
+        assert group_id == "100"
         assert '【开播】甲' in text
         assert 'live.bilibili.com/10' in text
         assert len(hub.calls) == 1

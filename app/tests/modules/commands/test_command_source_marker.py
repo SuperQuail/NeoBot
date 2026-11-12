@@ -35,7 +35,7 @@ def test_plugin_command_help_line_keeps_permission_marker() -> None:
 
 
 async def test_help_text_fallback_marks_plugin_commands() -> None:
-    """无 markdown 渲染能力时，/help 的纯文本分支同样带来源标记。"""
+    """卡片渲染不可用时 /help 回退纯文本，文本分支同样带来源标记。"""
     from neobot_app.commands.service import CommandService
     from neobot_app.commands.registry import CommandRegistry
 
@@ -59,8 +59,9 @@ async def test_help_text_fallback_marks_plugin_commands() -> None:
 
     await service.handle_message(message, kind="private", queue_key="1")
 
-    assert replies
+    assert replies, "渲染不可用时应回退纯文本，而不是静默跳过"
     assert "[来源: dashboard]" in replies[0]
+    assert "/status" in replies[0]
 
 
 if __name__ == "__main__":  # pragma: no cover

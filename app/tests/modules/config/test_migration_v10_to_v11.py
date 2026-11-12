@@ -1,4 +1,4 @@
-"""0.10.0 -> 0.11.0：通道模式默认值语义（老配置升级 onebot，新部署 official）。"""
+"""0.10.0 -> 0.11.1：通道模式默认值语义（老配置升级 onebot，新部署 official）。"""
 
 from __future__ import annotations
 
@@ -56,11 +56,11 @@ def test_fresh_config_defaults_to_official(monkeypatch, tmp_path) -> None:
 
     config = Config.load(cfg_path, BotConfig)
 
-    assert config.version == "0.11.0"
+    assert config.version == "0.11.3"
     assert config.adapter.mode == "official"
     raw = cfg_path.read_text(encoding="utf-8")
     assert 'mode = "official"' in raw
-    assert 'version = "0.11.0"' in raw
+    assert 'version = "0.11.3"' in raw
 
 
 def test_upgraded_config_defaults_to_onebot(monkeypatch, tmp_path) -> None:
@@ -76,8 +76,54 @@ def test_upgraded_config_defaults_to_onebot(monkeypatch, tmp_path) -> None:
 
     config = Config.load(cfg_path, BotConfig)
 
-    assert config.version == "0.11.0"
+    assert config.version == "0.11.3"
     assert config.adapter.mode == "onebot"
     raw = cfg_path.read_text(encoding="utf-8")
     assert 'mode = "onebot"' in raw
-    assert 'version = "0.11.0"' in raw
+    assert 'version = "0.11.3"' in raw
+
+
+def test_v11_to_v111_adds_developer_admin_default() -> None:
+    from neobot_app.config.migrations import migrate_v110_to_v111
+
+    new = migrate_v110_to_v111(
+        {"version": "0.11.0", "chat": {"admin_accounts": ["123456789"]}}
+    )
+
+    assert new["version"] == "0.11.1"
+    assert new["chat"]["admin_accounts"] == ["9000000000001", "123456789"]
+
+
+def test_v11_to_v111_does_not_duplicate_developer_admin() -> None:
+    from neobot_app.config.migrations import migrate_v110_to_v111
+
+    new = migrate_v110_to_v111(
+        {"version": "0.11.0", "chat": {"admin_accounts": ["9000000000001"]}}
+    )
+
+    assert new["chat"]["admin_accounts"] == ["9000000000001"]
+
+
+def test_v111_to_v112_drops_qq_markdown() -> None:
+    from neobot_app.config.migrations import migrate_v111_to_v112
+
+    new = migrate_v111_to_v112(
+        {"version": "0.11.1", "adapter": {"mode": "official", "qq_markdown": False}}
+    )
+
+    assert new["version"] == "0.11.2"
+    assert "qq_markdown" not in new["adapter"]
+
+
+def test_v112_to_v113_removes_auto_default_admin() -> None:
+    from neobot_app.config.migrations import migrate_v112_to_v113
+
+    new = migrate_v112_to_v113(
+        {
+            "version": "0.11.2",
+            "chat": {"admin_accounts": ["9000000000001", "123456789"]},
+        }
+    )
+
+    assert new["version"] == "0.11.3"
+    assert new["chat"]["admin_accounts"] == ["123456789"]

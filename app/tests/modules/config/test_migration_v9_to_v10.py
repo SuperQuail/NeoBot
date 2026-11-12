@@ -108,7 +108,7 @@ def test_load_old_false_keeps_gentle_language_disabled(monkeypatch, tmp_path) ->
 
     config = Config.load(cfg_path, BotConfig)
 
-    assert config.version == "0.11.0"
+    assert config.version == "0.11.3"
     assert config.prompt_optimizations.gentle_language is False
     assert config.prompt_optimizations.cot_enabled is True
     assert not hasattr(config.chat, "gentle_language_enabled")
@@ -117,4 +117,4 @@ def test_load_old_false_keeps_gentle_language_disabled(monkeypatch, tmp_path) ->
     assert "gentle_language_enabled =" not in raw
     assert "[prompt_optimizations]" in raw
     assert "gentle_language = false" in raw
-    assert 'version = "0.11.0"' in raw
+    assert 'version = "0.11.3"' in raw

@@ -15,12 +15,29 @@ set_msg_emoji_like / get_robot_uin_range 会落到官方后端并得到「不支
 
 from __future__ import annotations
 
+from contextvars import ContextVar, Token
 from typing import Any, Optional
 
 from neobot_adapter.interfaces import CoreLike
 
 #: request 助手默认面向的通道（它们都是 OneBot 动作）。
 DEFAULT_CHANNEL = "onebot"
+
+#: 当前事件来源通道；由事件分发层设置，请求助手命中对应后端而不是固定 OneBot。
+_CURRENT_CHANNEL: ContextVar[str] = ContextVar("neobot_request_channel", default="")
+
+
+def current_request_channel() -> str:
+    return _CURRENT_CHANNEL.get()
+
+
+def request_channel_context(channel: str | None) -> tuple[Token, str]:
+    value = str(channel or "").strip().casefold()
+    return _CURRENT_CHANNEL.set(value), value
+
+
+def reset_request_channel(token: Token) -> None:
+    _CURRENT_CHANNEL.reset(token)
 
 
 class CoreProxy:
@@ -46,6 +63,12 @@ class CoreProxy:
         return bool(self._cores)
 
     def _get_core(self) -> CoreLike:
+        requested = current_request_channel()
+        if requested:
+            core = self._cores.get(requested)
+            if core is None:
+                raise RuntimeError(f"请求助手所在通道 {requested} 未绑定 AdapterCore")
+            return core
         core = self._cores.get(DEFAULT_CHANNEL)
         if core is not None:
             return core

@@ -155,14 +155,18 @@ class PromptBuilder:
 
     async def _group_context_values(
         self,
-        group_id: int,
+        group_id: int | str,
         message_queue: object,
         *,
         key_word_reaction_list: str = "",
         memory_list: str = "",
         bot_account: int | None = None,
     ) -> dict[str, Any]:
-        """计算群聊 system / 上下文块共用的占位符取值。"""
+        """计算群聊 system / 上下文块共用的占位符取值。
+
+        group_id 可能是官方 openid 字符串或 OneBot 群号：统一按字符串传下游，
+        绝不 int()（openid 会被截断/抛错）。
+        """
         group_id_str = str(group_id)
         account = self._bot_account_value(bot_account)
         group_name = await self._profile_service.get_group_name(group_id_str)
@@ -171,7 +175,7 @@ class PromptBuilder:
         archive_fetch_window = getattr(self._config.chat, "archive_fetch_window", None)
         inject_member_archives = self._inject_member_archives()
         member_list = await self._profile_service.render_group_member_list(
-            group_id,
+            group_id_str,
             message_queue,
             archive_fetch_window=archive_fetch_window,
             include_archives=inject_member_archives,
@@ -179,12 +183,12 @@ class PromptBuilder:
         if member_list and not inject_member_archives:
             member_list = f"{member_list}\n{self.member_archive_hint()}"
         bot_group_admin_status = await self._profile_service.render_bot_group_admin_status(
-            group_id,
+            group_id_str,
             account,
             message_queue,
         )
         group_admin = await self._profile_service.render_group_owner_text(
-            group_id,
+            group_id_str,
             message_queue,
         )
         group_info = (
@@ -217,7 +221,7 @@ class PromptBuilder:
 
     async def build_group_chat_prompt(
         self,
-        group_id: int,
+        group_id: int | str,
         message_queue: object,
         *,
         key_word_reaction_list: str = "",
@@ -259,7 +263,7 @@ class PromptBuilder:
 
     async def _friend_context_values(
         self,
-        user_id: int,
+        user_id: int | str,
         message_queue: object,
         *,
         key_word_reaction_list: str = "",
@@ -298,7 +302,7 @@ class PromptBuilder:
 
     async def build_friend_chat_prompt(
         self,
-        user_id: int,
+        user_id: int | str,
         message_queue: object,
         *,
         key_word_reaction_list: str = "",
@@ -334,7 +338,7 @@ class PromptBuilder:
 
     async def build_group_chat_messages(
         self,
-        group_id: int,
+        group_id: int | str,
         message_queue: object,
         *,
         numbering: MessageNumbering | None = None,
@@ -356,7 +360,7 @@ class PromptBuilder:
 
     async def build_friend_chat_messages(
         self,
-        user_id: int,
+        user_id: int | str,
         message_queue: object,
         *,
         numbering: MessageNumbering | None = None,
@@ -512,7 +516,7 @@ def _merge_prompt_fragments(*parts: str) -> str:
 
 async def get_group_chat_prompt(
     config: BotConfigSchema,
-    group_id: int,
+    group_id: int | str,
     message_queue: object,
     profile_service: UserProfileService,
     *,
@@ -534,7 +538,7 @@ async def get_group_chat_prompt(
 
 async def get_friend_chat_prompt(
     config: BotConfigSchema,
-    user_id: int,
+    user_id: int | str,
     message_queue: object,
     profile_service: UserProfileService,
     *,

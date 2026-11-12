@@ -58,6 +58,7 @@ class LifecycleStartMixin:
         skip_cooldown: bool = False,
         background_content: str | None = None,
         preactivate: Sequence[str] = (),
+        proactive: bool = False,
     ) -> ReplyEvent | None:
         if self._closed:
             self._logger.warning("ReplyOrchestrator 已关闭，拒绝创建回复管线")
@@ -78,6 +79,8 @@ class LifecycleStartMixin:
             pre_reply_message_id=pre_reply_message_id,
             background_content=background_content,
             preactivate=tuple(str(item) for item in (preactivate or ()) if str(item)),
+            # 后台通知/定时任务没有被动回复窗口：官方通道按主动消息发送。
+            proactive=proactive,
         )
 
         # 按 kind:queue_key 组合键去重，避免群号与 QQ 号相同时互相阻塞

@@ -23,6 +23,14 @@ _LATENCY_COVERAGE_SECONDS = 3600.0
 _LATENCY_MIN_SAMPLES = 60
 
 
+def _local_id_text(value: Any) -> str:
+    """用户/群本地 ID 统一成文本：int 与 openid 字符串都能进指标 key。"""
+    if value is None or isinstance(value, bool):
+        return ""
+    text = str(value).strip()
+    return text if text and text != "0" else ""
+
+
 def latency_sample_capacity(interval_seconds: float) -> int:
     """按采样间隔推导延迟样本容量（默认覆盖最近 60 分钟，至少 60 个样本）。
 
@@ -63,7 +71,8 @@ class Metrics:
         self._latency_ok = 0
         self._latency_total = 0
         self._api_calls: dict[str, int] = {}
-        self._user_activity: dict[int, dict[str, Any]] = {}
+        #: 用户本地 ID 文本：OneBot 是数字串，官方通道是 openid 字符串。
+        self._user_activity: dict[str, dict[str, Any]] = {}
         self._user_capacity = max(1, int(user_capacity))
         self._stats: dict[str, Any] = {
             "total": 0,
@@ -119,8 +128,10 @@ class Metrics:
             if total % 20 == 0:
                 self._save()
 
-            user_id = event.get("user_id")
-            if isinstance(user_id, int) and user_id > 0:
+            # 官方通道的 user_id 是 openid 字符串（不是 int）：活跃用户统计必须
+            # 按文本收，否则官方用户会被整段漏掉。
+            user_id = _local_id_text(event.get("user_id"))
+            if user_id:
                 sender = event.get("sender") or {}
                 nickname = str(
                     sender.get("card") or sender.get("nickname") or ""

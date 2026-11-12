@@ -76,8 +76,9 @@ class RuntimeAdapter(Protocol):
         timeout: float = 5.0,
         wait_response: bool = True,
         channel: str | None = None,
+        proactive: bool = False,
     ) -> SendMsgResponse:
-        """channel 指定回复通道（onebot / official）；None 表示按会话自动选路。"""
+        """channel 指定回复通道（onebot / official）；proactive 表示主动消息。"""
         ...
 
 

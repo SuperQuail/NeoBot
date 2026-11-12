@@ -1,7 +1,8 @@
-"""官方机器人：群消息一律按 @ 机器人处理。
+"""官方机器人：被 @ 由适配器 mentioned_self 权威判定，None 回退 OneBot at 段。
 
-官方群事件只在被 @ 时才推送，消息里未必带 at 段；账号解析完成前 bot.account
-还没填、at 段也对不上。非官方通道的判定逻辑保持原样（仍看 at 段）。
+GROUP_AT_MESSAGE_CREATE 本身就是 @ 事件（content 无 @ 前缀），适配器写
+mentioned_self=True，app 侧不得再靠 at 段/通道名/uin 猜；GROUP_MESSAGE_CREATE
+只有明确引用机器人时才是 True。旧消息没有该字段（None）时回退 at 段逻辑。
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from neobot_app.config.schemas.bot import BotConfig
 from neobot_app.willing.service import WillingService
 
 _BOT_ACCOUNT = 123456
+_OTHER_ACCOUNT = 999
 
 
 def _config(*, guaranteed: bool = True) -> BotConfig:
@@ -28,31 +30,73 @@ def _service(kind: str | None, config: BotConfig | None = None) -> WillingServic
     return WillingService(config or _config(), bot_detector=detector)
 
 
-def _group_message(*, with_at: bool = False) -> GroupMessage:
+def _group_message(*, at_qq: int | None = None, self_id: int = _BOT_ACCOUNT) -> GroupMessage:
     segments = []
-    if with_at:
-        segments.append(MessageSegment(type="at", data={"qq": _BOT_ACCOUNT}))
+    if at_qq is not None:
+        segments.append(MessageSegment(type="at", data={"qq": at_qq}))
     segments.append(MessageSegment(type="text", data={"text": "在吗"}))
     return GroupMessage(
         message_id=1,
         user_id=10001,
         group_id=123456,
+        self_id=self_id,
         message=segments,
         raw_message="在吗",
     )
 
 
-def test_official_group_message_without_at_segment_counts_as_mention() -> None:
+def _official_message(
+    *,
+    mentioned_self: bool | None,
+    at_qq: int | None = None,
+    self_id: int = 0,
+) -> GroupMessage:
+    segments = []
+    if at_qq is not None:
+        segments.append(MessageSegment(type="at", data={"qq": at_qq}))
+    segments.append(MessageSegment(type="text", data={"text": "在吗"}))
+    return GroupMessage(
+        message_id=1,
+        user_id="user_openid",
+        group_id="group_openid",
+        self_id=self_id,
+        message=segments,
+        raw_message="在吗",
+        neobot_channel="official",
+        mentioned_self=mentioned_self,
+    )
+
+
+def test_official_at_event_counts_without_at_segment() -> None:
+    """原生 @ 事件：uin 未解析、没有 at 段，也按 mentioned_self=True 算被 @。"""
     service = _service("official")
-    assert service.is_at_mentioned(_group_message()) is True
+    assert service.is_at_mentioned(_official_message(mentioned_self=True)) is True
 
 
-def test_official_group_message_still_counts_before_account_is_resolved() -> None:
-    """账号解析完成前 bot.account 可能是 0：at 段对不上也要按 @ 处理。"""
-    config = _config()
-    config.bot.account = 0
-    service = _service("official", config)
-    assert service.is_at_mentioned(_group_message()) is True
+def test_official_full_group_message_without_at_is_not_mention() -> None:
+    """群全量消息未 @ 机器人：mentioned_self=False，不算被 @。"""
+    service = _service("official")
+    assert service.is_at_mentioned(_official_message(mentioned_self=False)) is False
+
+
+def test_official_mentioned_self_false_ignores_matching_at_segment() -> None:
+    """官方权威结论 False 时不再看 at 段，避免全量消息被旧补丁误判为 @。"""
+    service = _service("official")
+    message = _official_message(mentioned_self=False, at_qq=_BOT_ACCOUNT, self_id=_BOT_ACCOUNT)
+    assert service.is_at_mentioned(message) is False
+
+
+def test_official_mentioned_self_none_falls_back_to_at_segment() -> None:
+    """旧消息没有 mentioned_self：回退 at 段（qq=self_id）判定。"""
+    service = _service("official")
+    message = _official_message(mentioned_self=None, at_qq=_BOT_ACCOUNT)
+    assert service.is_at_mentioned(message) is True
+
+
+def test_official_channel_without_marker_or_at_is_not_mention() -> None:
+    """不再按官方通道无条件判 @：None + 无 at 段不算。"""
+    service = _service("official")
+    assert service.is_at_mentioned(_official_message(mentioned_self=None)) is False
 
 
 def test_unofficial_group_message_without_at_segment_keeps_original_logic() -> None:
@@ -62,7 +106,7 @@ def test_unofficial_group_message_without_at_segment_keeps_original_logic() -> N
 
 def test_unofficial_group_message_with_at_segment_still_counts() -> None:
     service = _service("unofficial")
-    assert service.is_at_mentioned(_group_message(with_at=True)) is True
+    assert service.is_at_mentioned(_group_message(at_qq=_BOT_ACCOUNT)) is True
 
 
 def test_official_private_message_keeps_original_logic() -> None:
@@ -83,4 +127,4 @@ def test_unresolved_profile_falls_back_to_at_segment_logic() -> None:
 
 def test_guaranteed_reply_disabled_still_respected() -> None:
     service = _service("official", _config(guaranteed=False))
-    assert service.is_at_mentioned(_group_message()) is False
+    assert service.is_at_mentioned(_official_message(mentioned_self=True)) is False

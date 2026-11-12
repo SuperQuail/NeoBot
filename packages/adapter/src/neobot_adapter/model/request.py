@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Optional
 
-from .basic import PostRequestType
+from .basic import LocalId, PostRequestType
 from .gengeral import General
 
 class Request(General):
@@ -10,7 +10,7 @@ class Request(General):
 
 class FriendRequest(Request):
     """加好友请求"""
-    user_id : Optional[int] = None #请求者 QQ 号
+    user_id : Optional[LocalId] = None #请求者 QQ 号
     comment : Optional[str] = None #请求信息
     flag : Optional[str] = None #请求标识符
 
@@ -27,8 +27,8 @@ class GroupQuestSubType(Enum):
 class GroupRequest(Request):
     """加群请求"""
     sub_type : Optional[GroupQuestSubType] = None #请求子类型
-    group_id : Optional[int] = None #群号
-    user_id : Optional[int] = None #请求者 QQ 号
+    group_id : Optional[LocalId] = None #群号
+    user_id : Optional[LocalId] = None #请求者 QQ 号
     comment : Optional[str] = None #请求信息
     flag : Optional[str] = None #请求标识符
 

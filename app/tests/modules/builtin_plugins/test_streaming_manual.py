@@ -84,7 +84,7 @@ async def test_start_manual_commands_execute_in_real_host_and_list_current_group
     steps = manual()["group-commands"]["steps"][:3]
     assert (await send_command(manual_host, steps[0]["command"]["text"])).consumed
     row = (await subscriptions(manual_host))[0]
-    assert (row.group_id, row.room_id, row.push_live, row.push_live_end) == (20001, 610001, True, True)
+    assert (row.group_id, row.room_id, row.push_live, row.push_live_end) == ("20001", 610001, True, True)
     assert "已开始监听" in manual_host.replies[-1][2]
     assert "主播: 演示主播" in manual_host.replies[-1][2]
 

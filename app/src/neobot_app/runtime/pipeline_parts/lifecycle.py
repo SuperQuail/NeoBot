@@ -8,6 +8,7 @@ from typing import Dict
 from neobot_adapter.model.message import GroupMessage
 from neobot_adapter.model.message import PrivateMessage
 from neobot_app.bot_accounts import is_bot_message
+from neobot_app.message.addressing import is_addressed_to_bot
 from neobot_app.time_context import epoch_seconds
 
 
@@ -169,17 +170,56 @@ class _PipelineLifecycleMixin:
                 error=str(exc),
             )
 
+    def _is_linked_group_duplicate(self, message: Any) -> bool:
+        """OneBot 已连接的已映射群：官方通道的同一条群消息交给 OneBot 处理。
+
+        显式 @ 了官方 bot 的消息除外：OneBot 侧没有这个 @，丢给 OneBot 会整条
+        丢失（判定走 neobot_app.message.addressing 统一入口）。官方通道断开、
+        无映射、OneBot 不在线时都不去重。
+        """
+        # 解析后 message_type 是枚举（str() 得到 "MessageTypeEnum.group"），先取 value
+        message_type = getattr(message, "message_type", None)
+        if hasattr(message_type, "value"):
+            message_type = message_type.value
+        if str(message_type or "") not in ("", "group"):
+            return False
+        if str(getattr(message, "neobot_channel", "") or "") != "official":
+            return False
+        group_id = getattr(message, "group_id", None)
+        if group_id is None:
+            return False
+        from neobot_app.user_identity import group_number_for
+
+        if group_number_for(group_id, "official") is None:
+            return False
+        adapter = getattr(self, "_adapter", None) or getattr(self, "adapter", None)
+        connected = getattr(adapter, "connected_channels", None)
+        if connected is None:
+            return False
+        return "onebot" in connected and not is_addressed_to_bot(message, getattr(self, "_config", None))
+
     async def _is_duplicate_message(
         self, message: PrivateMessage | GroupMessage
     ) -> bool:
-        """按 message_id 对真实消息去重：断线重连重投的同一条消息直接丢弃。"""
+        """按 message_id 对真实消息去重：断线重连重投的同一条消息直接丢弃。
+
+        官方通道同一 msg_id 会先推 GROUP_MESSAGE_CREATE（全量、未 @）、后推
+        GROUP_AT_MESSAGE_CREATE（@ 事件）；只按 id 去重会把后到的 @ 事件丢掉，
+        命令/@ 必回全灭。记录里带上是否 @，仅允许「未 @ → 被 @」升级一次。
+        """
         message_id = getattr(message, "message_id", None)
         if message_id is None:
             return False
+        addressed = is_addressed_to_bot(message, getattr(self, "_config", None))
         async with self._recent_message_ids_lock:
-            if message_id in self._recent_message_ids:
+            for index, (seen_id, seen_addressed) in enumerate(self._recent_message_ids):
+                if seen_id != message_id:
+                    continue
+                if addressed and not seen_addressed:
+                    self._recent_message_ids[index] = (message_id, True)
+                    return False
                 return True
-            self._recent_message_ids.append(message_id)
+            self._recent_message_ids.append((message_id, addressed))
         return False
 
     def is_standby(self) -> bool:

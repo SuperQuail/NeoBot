@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from neobot_app.bot_accounts import is_bot_message
+from neobot_app.bot_accounts import identity_text, is_bot_message
 
 from typing import TYPE_CHECKING
 
@@ -69,11 +69,15 @@ class MessageNumbering:
         # 自身发言由统一提供者判定（self_id/通道/config 细节不可见）；直接构造
         # MessageNumbering 并显式注入 bot_account 的旧测试/调用在没有绑定时兜底。
         is_self = is_bot_message(message)
-        if not is_self and self._bot_account is not None:
-            is_self = getattr(message, "user_id", None) == self._bot_account
+        bot_text = identity_text(self._bot_account)
+        if not is_self and bot_text:
+            # 未绑定统一提供者的旧路径：user_id 可能是 openid 字符串，按字符串比较
+            is_self = identity_text(getattr(message, "user_id", None)) == bot_text
         marker = "[被回复消息] " if replied else ""
         if is_self:
-            return f"[msg_id={msg_id}] {marker}{content}"
+            # 自身发言不渲染 msg_id：负数合成 id 不是可引用的真实消息号，
+            # 渲染出来只会被模型模仿；与 role_messages 的 assistant 分支一致。
+            return f"{marker}{content}"
         return f"[msg_id={msg_id}] {number}: {marker}{sender}: {content}"
 
     def apply(
@@ -148,6 +152,9 @@ class MessageNumbering:
                 poke_count += 1
                 lines.append(queue._poke_to_text(entry.poke, poke_index=poke_count))
             elif entry.kind.value == "notification" and entry.notification is not None:
+                lines.append(queue._entry_to_text(entry, sender_labels=sender_labels))
+            elif entry.kind.value == "tool_call" and entry.tool_call is not None:
+                # 非发送工具只回放 compact 一行，参数/结果不进聊天管线
                 lines.append(queue._entry_to_text(entry, sender_labels=sender_labels))
             if last_reply_message_id is not None and entry.kind.value == "message" and entry.message is not None and entry.message.message_id == last_reply_message_id:
                 lines.append("<以上是上次对话回复过的内容>")
@@ -226,6 +233,8 @@ class MessageNumbering:
                 poke_count += 1
                 lines.append(queue._poke_to_text(entry.poke, poke_index=poke_count))
             elif entry.kind == QueueEntryType.NOTIFICATION and entry.notification is not None:
+                lines.append(queue._entry_to_text(entry, sender_labels=sender_labels))
+            elif entry.kind == QueueEntryType.TOOL_CALL and entry.tool_call is not None:
                 lines.append(queue._entry_to_text(entry, sender_labels=sender_labels))
         return "\n".join(lines)
 

@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from .core import ID_CONFIG_NOTE
+
 
 @dataclass
 class WebSearchConfig:
@@ -191,8 +193,8 @@ class Bilibili:
         default_factory=list,
         metadata={
             "description": (
-                "直播事件推送到 QQ 的目标列表，格式 group:群号 / private:QQ号；"
-                "留空表示不推送。默认只推礼物/SC/上舰。"
+                f"直播事件推送到 QQ 的目标列表，格式 group:群号或 openid / private:QQ号或 openid；"
+                f"留空表示不推送。{ID_CONFIG_NOTE}默认只推礼物/SC/上舰。"
             )
         },
     )

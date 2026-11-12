@@ -24,6 +24,10 @@ from typing import Any
 
 #: 真实 QQ 号的最长位数（官方 openid 的合成号是 13 位，不能当 QQ 号用）。
 _MAX_QQ_DIGITS = 11
+#: 真实 QQ 群号的最长位数（群号比 QQ 号多一位）。
+_MAX_GROUP_DIGITS = 12
+#: 官方合成号的最小位数：官方 openid 派生的 13 位数字（真实号最多 12 位）。
+_SYNTHETIC_ID_MIN_DIGITS = 13
 
 
 def _to_int(value: Any) -> int:
@@ -31,6 +35,14 @@ def _to_int(value: Any) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def identity_text(value: Any) -> str:
+    """把任意本地 ID 归一化成字符串，供业务层按字符串比较。
+
+    openid 是字母数字串、QQ 号是数字；业务侧不再依赖 int/位数，比较统一走这里。
+    """
+    return str(value or "").strip()
 
 
 class BotAccounts:
@@ -123,20 +135,28 @@ class BotAccounts:
     def is_bot_message(
         self, message: Any, config: Any = None, accounts: Any = None
     ) -> bool:
-        """这条消息是不是机器人自己发的（双待下两条通道各自算自己）。"""
-        user_id = _to_int(getattr(message, "user_id", None))
-        self_id = _to_int(getattr(message, "self_id", None))
-        if self_id and user_id == self_id:
+        """这条消息是不是机器人自己发的（双待下两条通道各自算自己）。
+
+        发送者可能是 openid 字符串或 QQ 数字：统一按字符串比较，机器人账号本身
+        仍是真实 QQ 数字，不受 openid 化影响。
+        """
+        user_text = identity_text(getattr(message, "user_id", None))
+        if not user_text:
+            return False
+        self_text = identity_text(getattr(message, "self_id", None))
+        if self_text and user_text == self_text:
             return True
-        return bool(user_id) and user_id in self.all(config, accounts)
+        return user_text in {str(account) for account in self.all(config, accounts)}
 
     def is_bot_id(self, user_id: Any, channel: str | None = None, config: Any = None) -> bool:
-        uid = _to_int(user_id)
-        if not uid:
+        text = identity_text(user_id)
+        if not text:
             return False
-        if uid in self.all(config):
+        if text in {str(account) for account in self.all(config)}:
             return True
-        return bool(channel) and uid == self.for_channel(channel, config)
+        if not channel:
+            return False
+        return text == str(self.for_channel(channel, config))
 
 
 _singleton = BotAccounts()
@@ -181,28 +201,84 @@ def is_bot_id(user_id: Any, channel: str | None = None, config: Any = None) -> b
 
 
 def id_label(value: Any) -> str:
-    """用户/群 ID 的展示前缀：真实 QQ 号用 QQ，官方合成 ID 用 ID。"""
-    return "QQ" if looks_like_real_qq(value) else "ID"
+    """用户 ID 的展示前缀：真实 QQ 号用 QQ，openid 原样标 openid，旧合成号用 ID。"""
+    text = identity_text(value)
+    if not text:
+        return "ID"
+    if looks_like_real_qq(text):
+        return "QQ"
+    if not text.isdigit():
+        return "openid"
+    return "ID"
 
 
 def display_user_id(value: Any) -> str:
-    """把用户/群 ID 渲染成易读标签（QQ:123 / ID:9000…）。"""
-    text = str(value or "").strip()
+    """把用户 ID 渲染成易读标签（QQ:123 / openid:<完整 openid> / ID:9000…）。"""
+    text = identity_text(value)
     if not text:
         return ""
     return f"{id_label(text)}:{text}"
 
 
-def looks_like_real_qq(value: Any) -> bool:
-    """是否是真实 QQ 号规模的数字。
+def is_synthetic_id(value: Any) -> bool:
+    """是否是官方通道的合成 ID（13 位及以上纯数字，不是真实 QQ 号/群号）。
+
+    真实 QQ 号最多 11 位、群号最多 12 位；合成号来自官方 openid 派生，13 位起。
+    """
+    text = str(value or "").strip()
+    return text.isdigit() and len(text) >= _SYNTHETIC_ID_MIN_DIGITS
+
+
+def looks_like_real_qq(value: Any, *, min_digits: int = 1) -> bool:
+    """是否是真实 QQ 号规模的数字（默认 1~11 位；官方合成号/非数字不算）。
 
     官方通道只给 openid，内部合成号是 13 位（9.xT）；把合成号拿去请求
     qlogo 头像/资料接口必然失败，这里统一判定，调用方不再各自写位数逻辑。
+    min_digits 供 /linkqq 这类输入校验收紧下界（真实 QQ 号 5 位起）。
     """
     text = str(value or "").strip()
     if not text.isdigit():
         return False
-    return 0 < len(text) <= _MAX_QQ_DIGITS
+    return min_digits <= len(text) <= _MAX_QQ_DIGITS
+
+
+def looks_like_real_group_number(value: Any, *, min_digits: int = 1) -> bool:
+    """是否是真实 QQ 群号规模的数字（默认 1~12 位；官方合成号/非数字不算）。"""
+    text = str(value or "").strip()
+    if not text.isdigit():
+        return False
+    return min_digits <= len(text) <= _MAX_GROUP_DIGITS
+
+
+def infer_channel(value: Any, *, kind: str | None = None) -> str:
+    """按本地 ID 规模推断通道：真实号规模 → onebot，其余（合成号/非数字）→ official。
+
+    kind="group" 时按群号上限判断，避免把 12 位真实群号误判成官方合成群。
+    显式通道优先由调用方自己传入，这里只做规模推断，不做通道回退。
+    """
+    if str(kind or "").strip().casefold() == "group":
+        return "onebot" if looks_like_real_group_number(value) else "official"
+    return "onebot" if looks_like_real_qq(value) else "official"
+
+
+def group_label(value: Any) -> str:
+    """群 ID 的展示前缀：真实 QQ 群号用 群号，openid 原样标 openid，旧合成号用 群 ID。"""
+    text = identity_text(value)
+    if not text:
+        return "群 ID"
+    if looks_like_real_group_number(text):
+        return "群号"
+    if not text.isdigit():
+        return "openid"
+    return "群 ID"
+
+
+def display_group_id(value: Any) -> str:
+    """把群 ID 渲染成易读标签（群号:123456 / openid:<完整 openid> / 群 ID:9000…）。"""
+    text = identity_text(value)
+    if not text:
+        return ""
+    return f"{group_label(text)}:{text}"
 
 
 __all__ = [
@@ -212,11 +288,17 @@ __all__ = [
     "bot_account_for_event",
     "bot_account_for_message",
     "bot_accounts",
+    "display_group_id",
     "display_user_id",
     "get_bot_accounts",
+    "group_label",
     "id_label",
+    "identity_text",
+    "infer_channel",
     "is_bot_id",
     "is_bot_message",
+    "is_synthetic_id",
+    "looks_like_real_group_number",
     "looks_like_real_qq",
     "primary_bot_account",
 ]

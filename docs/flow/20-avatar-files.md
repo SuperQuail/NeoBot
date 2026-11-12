@@ -6,7 +6,7 @@ covers:
   - app/src/neobot_app/core/paths.py
   - app/src/neobot_app/image_pool.py
 verified_against: d525a5b
-verified_hash: c3ebffeea45e
+verified_hash: 6ae8ca7959a5
 ---
 
 # 20 头像存储与文件服务

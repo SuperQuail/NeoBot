@@ -106,7 +106,8 @@ class GameRequest:
     command_ctx: Any = None
     args: list[str] = field(default_factory=list)
     raw_args: str = ""
-    user_id: int = 0
+    #: 本地用户 ID：OneBot 是数字 QQ 号，官方通道是 openid 字符串。
+    user_id: int | str = 0
     user_name: str = ""
     kind: str = "group"
     conversation_id: str = ""

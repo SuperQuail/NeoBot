@@ -100,12 +100,22 @@ class OfficialAdapter:
         self._event_sink = event_sink
         self._data_dir = Path(data_dir) if data_dir else Path(settings.data_dir)
         self._credentials = CredentialStore(self._data_dir)
-        self._identity = IdentityMap(self._data_dir)
+        #: 构造时的配置凭据；用于区分凭据来源（配置/环境变量 vs 扫码落盘）。
+        self._config_credentials = (
+            Credentials(settings.app_id, settings.client_secret)
+            if settings.app_id and settings.client_secret
+            else None
+        )
+        self._credentials_source = ""
+        self._identity = IdentityMap(
+            self._data_dir,
+            namespace=self._settings.app_id,
+            logger=self._logger,
+        )
         self._message_ids = MessageIdMap()
         self._passive = PassiveReplyCache()
         self._media = MediaUploader(self._logger)
         self._mapper = EventMapper(
-            identity=self._identity,
             message_ids=self._message_ids,
             logger=self._logger,
         )
@@ -118,15 +128,20 @@ class OfficialAdapter:
         self._connected = False
         self._robot_uin = 0
         self._robot_nickname = ""
+        #: READY 缺 d.user.id 只告警一次；RESUMED 缺 user 属正常情况，不告警。
+        self._missing_ready_openid_warned = False
         self._bound = self._load_credentials() is not None
         self._bind_state = BindState()
+        #: 连续登录失败后给面板的说明文案；成功连接后清空。
+        self._relogin_notice = ""
         self._bind_flow: QrBindFlow | None = None
         self._bind_task: asyncio.Task[None] | None = None
         self._connected_event = threading.Event()
         self._ready_event = asyncio.Event()
         self._recent_messages: OrderedDict[int, dict[str, Any]] = OrderedDict()
-        self._known_users: dict[int, dict[str, Any]] = {}
-        self._known_groups: dict[int, dict[str, Any]] = {}
+        #: 官方通道的已知用户/群：键是 openid 字符串（旧合成号按迁移表解析后也会是 openid）。
+        self._known_users: dict[str, dict[str, Any]] = {}
+        self._known_groups: dict[str, dict[str, Any]] = {}
 
     # ── RuntimeAdapter 契约 ─────────────────────────────────────────
 
@@ -189,15 +204,18 @@ class OfficialAdapter:
         return self._sender
 
     @property
-    def known_users(self) -> dict[int, dict[str, Any]]:
+    def known_users(self) -> dict[str, dict[str, Any]]:
         return self._known_users
 
     @property
-    def known_groups(self) -> dict[int, dict[str, Any]]:
+    def known_groups(self) -> dict[str, dict[str, Any]]:
         return self._known_groups
 
     def get_recent_message(self, message_id: int) -> dict[str, Any] | None:
         return self._recent_messages.get(int(message_id))
+
+    def forget_recent_message(self, message_id: int) -> None:
+        self._recent_messages.pop(int(message_id), None)
 
     async def start(self) -> None:
         """有凭据就直接连；没有凭据则后台拉起扫码绑定，立即返回。"""
@@ -250,12 +268,13 @@ class OfficialAdapter:
         message: str | list[dict[str, Any]],
         timeout: float = 5.0,
         wait_response: bool = True,
+        proactive: bool = False,
     ) -> response.SendMsgResponse:
         check_speech(self._core.speaking_policy, conversation, self._logger)
         sender = self._sender
         if sender is None:
             return _failed_response("QQ 官方机器人尚未连接，无法发送消息")
-        return await sender.send(conversation, message, timeout)
+        return await sender.send(conversation, message, timeout, proactive=proactive)
 
     async def rebind(self) -> None:
         """重新发起扫码绑定；绑定成功后用新凭据重连，旧连接在成功前保持。"""
@@ -263,9 +282,19 @@ class OfficialAdapter:
         self._bind_state = BindState()
         self._start_bind_flow()
 
+    async def unbind(self) -> None:
+        """删除扫码落盘的凭据并断开；下次启动可重新扫码或改用配置凭据。"""
+        self._credentials.delete()
+        self._bound = False
+        self._bind_state = BindState()
+        await self.stop()
+
+    def supports_action(self, action: str) -> bool:
+        return actions.supports_action(action)
+
     async def ensure_robot_identity(self) -> None:
-        """缓存机器人自身 uin/昵称（get_login_info 与群聊 at 段都要用）。"""
-        if self._robot_uin or self._api is None:
+        """缓存机器人自身 uin/openid/昵称（@ 判定与 get_login_info 都要用）。"""
+        if self._api is None or (self._robot_uin and self._mapper.bot_openid):
             return
         gateway = self._gateway
         if gateway is None or not gateway.connected:
@@ -276,9 +305,16 @@ class OfficialAdapter:
             self._logger.warning("获取官方机器人自身信息失败", error=str(exc))
             return
         data = api_data(payload)
+        # READY 缺 user.id 时用 /users/@me 的 id 兜底：群全量消息的 @ 判定要用它。
+        openid = str(data.get("id") or data.get("user_openid") or "").strip()
+        if openid and openid != self._mapper.bot_openid:
+            self._mapper.bot_openid = openid
+            self._logger.info("已获取官方机器人 openid", bot_openid=openid)
         nickname = str(data.get("username") or data.get("nickname") or "").strip()
         if nickname:
             self._robot_nickname = nickname
+            # 群场景 @bot 的 mention id 与 READY openid 不同，昵称是兜底判定的依据。
+            self._mapper.bot_username = nickname
         uin = _extract_robot_uin(data)
         if not uin:
             uin = await self._generate_robot_uin()
@@ -302,7 +338,7 @@ class OfficialAdapter:
         return safe_parse_model(result, response.GetGroupListResponse)
 
     async def get_group_member_list(
-        self, group_id: int, no_cache: bool = False, timeout: float = 5.0
+        self, group_id: int | str, no_cache: bool = False, timeout: float = 5.0
     ) -> response.GetGroupMemberListResponse:
         result = await self.call_api(
             "get_group_member_list",
@@ -313,8 +349,8 @@ class OfficialAdapter:
 
     async def get_group_member_info(
         self,
-        group_id: int,
-        user_id: int,
+        group_id: int | str,
+        user_id: int | str,
         no_cache: bool = False,
         timeout: float = 5.0,
     ) -> response.GetGroupMemberInfoResponse:
@@ -327,7 +363,7 @@ class OfficialAdapter:
 
     async def get_friend_msg_history(
         self,
-        user_id: int,
+        user_id: int | str,
         message_seq: int = 0,
         count: int = 20,
         reverse_order: bool = False,
@@ -347,7 +383,7 @@ class OfficialAdapter:
 
     async def get_group_msg_history(
         self,
-        group_id: int,
+        group_id: int | str,
         message_seq: int = 0,
         count: int = 20,
         reverse_order: bool = False,
@@ -374,7 +410,7 @@ class OfficialAdapter:
 
     async def send_private_msg(
         self,
-        user_id: int,
+        user_id: int | str,
         message: str | list[dict[str, Any]],
         timeout: float = 5.0,
         wait_response: bool = True,
@@ -388,7 +424,7 @@ class OfficialAdapter:
 
     async def send_group_msg(
         self,
-        group_id: int,
+        group_id: int | str,
         message: str | list[dict[str, Any]],
         timeout: float = 5.0,
         wait_response: bool = True,
@@ -417,7 +453,28 @@ class OfficialAdapter:
                 timeout_seconds=_CONNECT_TIMEOUT_SECONDS,
             )
 
+    async def _on_auth_exhausted(self) -> None:
+        """连续登录/鉴权失败：停自动重连，按凭据来源决定是否删除落盘凭据并转扫码。"""
+        if not self._started:
+            return
+        if self._credentials_source == "config":
+            # 配置/环境变量是用户资产，不静默删除；提示修好配置或清空后改为扫码。
+            self._logger.error(
+                "配置中的 AppID/AppSecret 失效，请检查配置或清空后重新扫码"
+            )
+        else:
+            self._credentials.delete()
+            self._bound = False
+            self._logger.error("已删除失效的扫码凭据，请用手机 QQ 重新扫码登录")
+        self._relogin_notice = "连续登录失败，请用手机 QQ 重新扫码登录"
+        if self._bind_task is None or self._bind_task.done():
+            self._bind_state = BindState()
+        self._start_bind_flow()
+
     def _apply_credentials(self, credentials: Credentials) -> None:
+        self._credentials_source = (
+            "config" if credentials == self._config_credentials else "store"
+        )
         if (credentials.app_id, credentials.client_secret) != (
             self._settings.app_id,
             self._settings.client_secret,
@@ -429,12 +486,12 @@ class OfficialAdapter:
             )
         self._robot_uin = 0
         self._robot_nickname = ""
-        self._mapper.self_id = 0
+        self._missing_ready_openid_warned = False
+        self._mapper.reset_identity()
         self._token_provider = TokenProvider(self._settings)
         self._api = OfficialApi(self._settings, self._token_provider, self._logger)
         self._sender = MessageSender(
             api=self._api,
-            settings=self._settings,
             identity=self._identity,
             message_ids=self._message_ids,
             passive=self._passive,
@@ -446,6 +503,7 @@ class OfficialAdapter:
             self._token_provider,
             self._on_event,
             self._logger,
+            on_auth_exhausted=self._on_auth_exhausted,
         )
 
     async def _shutdown_runtime(self) -> None:
@@ -475,15 +533,13 @@ class OfficialAdapter:
                 self._logger.warning("官方 HTTP 会话关闭失败", error=str(exc))
 
     def _load_credentials(self) -> Credentials | None:
-        stored = self._credentials.load()
-        if stored is not None:
-            return stored
+        # 显式配置优先于扫码落盘的凭据：否则面板/配置里换了 AppID 会被旧凭据静默覆盖。
         if self._settings.app_id and self._settings.client_secret:
             return Credentials(
                 app_id=self._settings.app_id,
                 client_secret=self._settings.client_secret,
             )
-        return None
+        return self._credentials.load()
 
     async def _generate_robot_uin(self) -> int:
         if self._api is None:
@@ -511,7 +567,7 @@ class OfficialAdapter:
         event_type = str(payload.get("t") or "")
         if event_type in {"READY", "RESUMED"}:
             data = payload.get("d")
-            self._remember_bot_openid(data if isinstance(data, dict) else {})
+            self._remember_bot_openid(data if isinstance(data, dict) else {}, event_type)
             if self._ready_event.is_set():
                 # 断线重连：身份已缓存，补一帧 lifecycle.connect 让上层重新判定。
                 self._connected = True
@@ -531,6 +587,7 @@ class OfficialAdapter:
             # 停止与 READY 竞争时不要把已停止的适配器重新标记成已连接。
             return
         self._connected = True
+        self._relogin_notice = ""
         self._ready_event.set()
         self._connected_event.set()
         self._logger.info("QQ 官方机器人已连接", robot_uin=self._robot_uin)
@@ -548,18 +605,26 @@ class OfficialAdapter:
     def _self_id(self) -> int:
         return self._robot_uin or self._mapper.self_id
 
-    def _remember_bot_openid(self, data: dict[str, Any]) -> None:
+    def _remember_bot_openid(self, data: dict[str, Any], event_type: str) -> None:
+        """READY 的 d.user.id / username 是机器人身份最可靠的来源；RESUMED 可能不带 user。"""
         user = data.get("user") if isinstance(data.get("user"), dict) else {}
+        username = str(user.get("username") or "").strip()
+        if username:
+            self._mapper.bot_username = username
         openid = str(user.get("id") or user.get("user_openid") or "").strip()
-        if not openid or self._robot_uin:
+        if not openid:
+            if event_type == "READY" and not self._missing_ready_openid_warned:
+                self._missing_ready_openid_warned = True
+                self._logger.warning(
+                    "官方 READY 未提供机器人 openid（d.user.id），群全量消息只能靠昵称/mention 兜底判定 @",
+                    event_type=event_type,
+                )
             return
-        # READY 只带机器人 openid；在拿到 /users/@me 的 uin 前，先用它的合成号
-        # 当 self_id，保证 at 段有个稳定值。
-        try:
-            synthetic = self._identity.user_id(openid)
-        except ValueError:
-            return
-        self._mapper.self_id = synthetic
+        if openid != self._mapper.bot_openid:
+            self._mapper.bot_openid = openid
+            self._logger.info("已获取官方机器人 openid", bot_openid=openid)
+        # 机器人 at 段固定用真 QQ 号（uin）；还没拿到 uin 时不制造假号，
+        # self_id 保持 0，由 _append_bot_at 跳过，等 /users/@me 返回后补齐。
 
     async def _publish(self, event: dict[str, Any]) -> None:
         sink = self._event_sink
@@ -585,16 +650,16 @@ class OfficialAdapter:
             while len(self._recent_messages) > _RECENT_MESSAGE_LIMIT:
                 self._recent_messages.popitem(last=False)
         sender = event.get("sender") if isinstance(event.get("sender"), dict) else {}
-        user_id = int(event.get("user_id") or 0)
-        if user_id:
-            self._known_users[user_id] = {
-                "user_id": user_id,
+        user_id = event.get("user_id")
+        if user_id not in (None, "", 0):
+            self._known_users[str(user_id)] = {
+                "user_id": str(user_id),
                 "nickname": str(sender.get("nickname") or ""),
             }
         if event.get("message_type") == "group":
-            group_id = int(event.get("group_id") or 0)
-            if group_id:
-                self._known_groups.setdefault(group_id, {"group_id": group_id, "group_name": ""})
+            group_id = event.get("group_id")
+            if group_id not in (None, "", 0):
+                self._known_groups.setdefault(str(group_id), {"group_id": str(group_id), "group_name": ""})
         official_id = str(event.get("_official_message_id") or "")
         kind = str(event.get("message_type") or "")
         if official_id and kind in {"group", "private"}:
@@ -647,6 +712,8 @@ class OfficialAdapter:
         await self._restart_with_new_credentials()
 
     def _on_bind_state(self, state: BindState) -> None:
+        if self._relogin_notice and state.phase == "pending" and not state.error:
+            state = replace(state, error=self._relogin_notice)
         self._bind_state = state
 
     async def _cancel_bind_flow(self) -> None:
@@ -659,6 +726,14 @@ class OfficialAdapter:
 
     async def _restart_with_new_credentials(self) -> None:
         was_started = self._started
+        # 扫码得到的新凭据要覆盖运行期 settings，否则 start() 仍会拿旧配置
+        stored = self._credentials.load()
+        if stored is not None:
+            self._settings = replace(
+                self._settings,
+                app_id=stored.app_id,
+                client_secret=stored.client_secret,
+            )
         await self._shutdown_runtime()
         self._started = False
         if was_started:

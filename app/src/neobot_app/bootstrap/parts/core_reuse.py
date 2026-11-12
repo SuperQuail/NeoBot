@@ -8,6 +8,7 @@ from typing import Any
 from neobot_storage import backup_sqlite_database, run_migrations
 from neobot_app.assembly.storage import build_storage
 from neobot_app.core import DATA_DIR
+from neobot_app.database.legacy_identity_migration import migrate_legacy_identity_ids
 
 
 def _facade() -> Any:
@@ -128,12 +129,17 @@ def _run_once(key: str, action: Callable[[], Any]) -> None:
 
 
 def _build_storage(db_path: Path, db_url: str, logger_factory: Any) -> Any:
-    """迁移前备份 → 跑迁移 → 建引擎（核心对象，软重启复用）。"""
+    """迁移前备份 → 跑 schema 迁移 → 旧合成号数据迁移 → 建引擎（核心对象，软重启复用）。"""
     backup_logger = logger_factory.get_logger("app.db_backup")
     backup_path = backup_sqlite_database(db_path, DATA_DIR / "db_backup", logger=backup_logger)
     if backup_path is not None:
         backup_logger.info("迁移前已备份数据库", path=str(backup_path))
     run_migrations(db_url)
+    # schema 就绪后、任何服务读数据前，把旧合成号本地 ID 改成 openid；
+    # 上面的 db_backup 快照就是这次数据迁移的回滚点。
+    migrate_legacy_identity_ids(
+        db_path, DATA_DIR, logger=logger_factory.get_logger("app.db_migration")
+    )
     return build_storage(db_url)
 
 

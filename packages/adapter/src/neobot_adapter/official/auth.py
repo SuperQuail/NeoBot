@@ -39,10 +39,19 @@ _BIND_PENDING = 1
 _BIND_COMPLETED = 2
 _BIND_EXPIRED = 3
 _JSON_HEADERS = {"Accept": "application/json"}
+#: HTTP 状态里只有 401/403 代表凭据/鉴权失败；5xx/429 等只是瞬时故障。
+_AUTH_HTTP_STATUSES = frozenset({401, 403})
+#: getAppAccessToken 即使失败也返回 HTTP 200，只有这些业务码才是凭据无效；
+#: 100001（限频）等其它码按网络异常处理，不计入连续登录失败。
+_TOKEN_AUTH_ERROR_CODES = frozenset({10004, 100007, 100016})
 
 
 class OfficialAuthError(RuntimeError):
     """官方协议鉴权/绑定失败；消息可直接展示给用户。"""
+
+
+class OfficialNetworkError(OfficialAuthError):
+    """访问官方接口时的网络层失败：不代表凭据失效，不计入连续登录失败。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,8 +75,15 @@ async def http_scope(http: Any | None):
         await session.close()
 
 
+def classify_http_error(status: int, message: str) -> OfficialAuthError:
+    """按 HTTP 状态判定错误类型：只有 401/403 才是鉴权失败，其余不算凭据失效。"""
+    if status in _AUTH_HTTP_STATUSES:
+        return OfficialAuthError(message)
+    return OfficialNetworkError(message)
+
+
 async def _post_json(http: Any, url: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """POST JSON 并统一收敛错误；非 200 或非对象响应一律抛 OfficialAuthError。"""
+    """POST JSON 并统一收敛错误；非 200 时只有 401/403 归鉴权失败。"""
     try:
         async with http.post(url, json=payload, headers=_JSON_HEADERS) as response:
             status = int(getattr(response, "status", 0) or 0)
@@ -75,12 +91,15 @@ async def _post_json(http: Any, url: str, payload: dict[str, Any]) -> dict[str, 
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        raise OfficialAuthError(f"请求官方接口失败: {type(exc).__name__}: {exc}") from exc
+        raise OfficialNetworkError(f"请求官方接口失败: {type(exc).__name__}: {exc}") from exc
     if not isinstance(data, dict):
-        raise OfficialAuthError("官方接口响应格式异常")
+        raise OfficialNetworkError("官方接口响应格式异常")
     if status != 200:
         message = str(data.get("message") or data.get("msg") or "").strip()
-        raise OfficialAuthError(f"官方接口返回 HTTP {status}" + (f"：{message}" if message else ""))
+        raise classify_http_error(
+            status,
+            f"官方接口返回 HTTP {status}" + (f"：{message}" if message else ""),
+        )
     return data
 
 
@@ -212,9 +231,12 @@ class TokenProvider:
         token = str(data.get("access_token") or "").strip()
         if not token:
             message = str(data.get("message") or data.get("msg") or "").strip()
-            raise OfficialAuthError(
-                "获取 access token 失败" + (f"：{message}" if message else "：响应缺少 access_token")
-            )
+            code = _int_value(data.get("code"), 0)
+            detail = "获取 access token 失败" + (f"：{message}" if message else "：响应缺少 access_token")
+            if code in _TOKEN_AUTH_ERROR_CODES:
+                raise OfficialAuthError(f"{detail}（code={code}）")
+            # 限频等非鉴权业务码只按网络异常处理，不能删凭据。
+            raise OfficialNetworkError(f"{detail}" + (f"（code={code}）" if code else ""))
         ttl = _positive_float(data.get("expires_in"), _DEFAULT_TOKEN_TTL_SECONDS)
         return token, ttl
 

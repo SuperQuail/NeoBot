@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from neobot_app.agent_tools.invocation import human_message_entry
 import asyncio
+from collections import deque
 from typing import Any
 from typing import Dict
 from neobot_adapter.model.message import GroupMessage
 from neobot_adapter.model.message import PrivateMessage
 from neobot_adapter.utils.parse import safe_parse_model
+from neobot_app.message.addressing import is_addressed_to_bot
 from neobot_app.message.fast_reply_keywords import matches_reply_trigger
 from neobot_app.message.process import event_message__to_text
 from neobot_app.message.queue import MessageQueue
@@ -31,6 +33,12 @@ class _PipelineGroupMixin:
             self._logger.debug(
                 "重复消息已丢弃（message_id 去重）",
                 message_id=message.message_id,
+                group_id=message.group_id,
+            )
+            return
+        if self._is_linked_group_duplicate(message):
+            self._logger.debug(
+                "已映射群在 OneBot 通道在线，官方重复消息交给 OneBot 处理",
                 group_id=message.group_id,
             )
             return
@@ -61,24 +69,47 @@ class _PipelineGroupMixin:
         if self._skip_while_standby(kind="group", queue_key=queue_key, message=message):
             return
 
+        # 官方同 msg_id 的 FULL→AT 升级会再次走这里：队列里已有同 id 的未 @ 副本，
+        # push 会原地替换（size 不涨）；资料/头像/图片解析/档案总结等副作用首次已做，
+        # 不重复执行。命令/意愿处理不受影响（仍按 AT 事件走）。
+        queued_message_id = getattr(message, "message_id", None)
+        queued_before = (
+            self._group_queue.find_by_message_id(queue_key, queued_message_id)
+            if queued_message_id is not None
+            else None
+        )
+        addressed_upgrade = bool(
+            queued_before is not None
+            and not is_addressed_to_bot(queued_before, self._config)
+            and is_addressed_to_bot(message, self._config)
+        )
+
         # 消息始终入队(命令消息作为上下文保留),但命令消息打上"已消费"标记,
         # 挂起中的回复管线(_collect_new_entries)不会把它当作新消息再次注入回复
         self._group_queue.push(queue_key, message, replied_messages=replied_messages)
         if command_consumed:
             self._group_queue.mark_command_consumed(queue_key, getattr(message, "message_id", None))
 
-        await self._refresh_profile_for_message(message)
-        await self._maybe_refresh_avatar(message)
-        if self._image_parse_service is not None:
-            await self._image_parse_service.parse_message_images(message, queue_key)
-        text = await event_message__to_text(message)
-        self._schedule_archive_summary(
-            conversation_kind="group",
-            conversation_id=queue_key,
-            message_text=text,
-            sender_id=str(message.user_id or ""),
-            sender_name=_sender_name(message),
-        )
+        message_text: str | None = None
+        if addressed_upgrade:
+            self._logger.debug(
+                "同 msg_id 的 @ 升级消息跳过重复副作用",
+                message_id=message.message_id,
+                group_id=message.group_id,
+            )
+        else:
+            await self._refresh_profile_for_message(message)
+            await self._maybe_refresh_avatar(message)
+            if self._image_parse_service is not None:
+                await self._image_parse_service.parse_message_images(message, queue_key)
+            message_text = await event_message__to_text(message)
+            self._schedule_archive_summary(
+                conversation_kind="group",
+                conversation_id=queue_key,
+                message_text=message_text,
+                sender_id=str(message.user_id or ""),
+                sender_name=_sender_name(message),
+            )
 
         # 命令已消费:回复管线在此拦截(不再进入意愿判断/回复触发);
         # sync_reply 命令额外以命令结果为背景触发回复管线
@@ -91,6 +122,31 @@ class _PipelineGroupMixin:
                     background=command_background or "",
                     preactivate=agent_preactivate,
                 )
+            return
+
+        # FULL→AT 升级：如果同 msg_id 的 FULL 已经触发过回复（概率命中），
+        # AT 只补 @ 语义，不再第二次 willing/回复；命令已在上面处理完。
+        if addressed_upgrade and self._reply_started_for_message(getattr(message, "message_id", None)):
+            self._logger.debug(
+                "同 msg_id 已触发过回复，@ 升级消息不再重复触发",
+                message_id=message.message_id,
+                group_id=message.group_id,
+            )
+            return
+
+        # 官方全量消息里的命令文本如果没有 @ 机器人：不要先当闲聊回一句，
+        # 同 msg_id 的 AT 事件到达后会正常执行命令（这里不消费命令，只不触发意愿）。
+        if (
+            message_text
+            and getattr(message, "mentioned_self", None) is not None
+            and not is_addressed_to_bot(message, self._config)
+            and self._looks_like_registered_command(message)
+        ):
+            self._logger.debug(
+                "未 @ 的官方命令文本不触发闲聊回复",
+                message_id=message.message_id,
+                group_id=message.group_id,
+            )
             return
 
         # 凭据签发:管理员发送凭据文本
@@ -192,4 +248,39 @@ class _PipelineGroupMixin:
             # 正在运行的另一条管线的标记一并删掉（分流守卫被静默破坏）。
             return False
         self._replying_queues.add(queue_key)
+        self._register_reply_started(message)
         return True
+
+    def _looks_like_registered_command(self, message: Any) -> bool:
+        """消息文本是否是已注册命令形态（不消费命令，仅用于抑制未 @ 的闲聊回复）。"""
+        service = self._command_service
+        registry = getattr(service, "registry", None)
+        extract_text = getattr(service, "_message_text", None)
+        match = getattr(registry, "match", None)
+        if not callable(extract_text) or not callable(match):
+            return False
+        try:
+            matched = match(extract_text(message))
+        except Exception:  # pragma: no cover - 命令表异常只降级
+            return False
+        # match 对「/ 开头但未注册」返回 (None, raw, args) 元组，也算命令形态；
+        # 只有真正命中已注册命令（matched[0] 非 None）才抑制闲聊回复。
+        return bool(matched is not None and matched[0] is not None)
+
+    def _register_reply_started(self, message: Any) -> None:
+        """登记该 message_id 已触发过回复（有界窗口）：FULL→AT 升级不再重复回复。"""
+        message_id = getattr(message, "message_id", None)
+        if message_id is None:
+            return
+        started = getattr(self, "_reply_started_message_ids", None)
+        if started is None:
+            started = deque(maxlen=200)
+            self._reply_started_message_ids = started
+        if message_id not in started:
+            started.append(message_id)
+
+    def _reply_started_for_message(self, message_id: Any) -> bool:
+        if message_id is None:
+            return False
+        started = getattr(self, "_reply_started_message_ids", None)
+        return started is not None and message_id in started

@@ -29,16 +29,17 @@ class Bot:
         """
         return await self._adapter.send(conversation, normalize_message_payload(message))
 
-    async def send_private(self, user_id: int, message: Any) -> Any:
+    async def send_private(self, user_id: int | str, message: Any) -> Any:
         """将 *message* 发送到由 *user_id* 标识的私聊。
 
-        将消息对象归一化后交给适配器，保持返回值和异常原样。
+        user_id 可以是 OneBot 数字 QQ 号，也可以是官方通道的 openid 字符串；
+        统一走 ConversationRef + 门面 send，由适配器按会话/通道选路。
         """
-        return await self._adapter.send_private_msg(user_id, normalize_message_payload(message))
+        return await self.send(ConversationRef(kind="private", id=str(user_id)), message)
 
-    async def send_group(self, group_id: int, message: Any) -> Any:
+    async def send_group(self, group_id: int | str, message: Any) -> Any:
         """将 *message* 发送到由 *group_id* 标识的群聊。
 
-        将消息对象归一化后交给适配器，保持返回值和异常原样。
+        group_id 可以是 OneBot 群号，也可以是官方通道的 openid 字符串。
         """
-        return await self._adapter.send_group_msg(group_id, normalize_message_payload(message))
+        return await self.send(ConversationRef(kind="group", id=str(group_id)), message)

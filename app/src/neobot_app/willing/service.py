@@ -11,9 +11,10 @@ from neobot_adapter.model.message import GroupMessage, MessageSegment, PrivateMe
 from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.bot_accounts import bot_account_for_message, bot_accounts
-from neobot_app.user_identity import group_number_for, qq_for_user
+from neobot_app.user_identity import trusted_group_number_for, trusted_qq_for_user
 from neobot_app.config.schemas.bot import BotConfig
 from neobot_app.core.paths import get_data_dir
+from neobot_app.message.addressing import is_addressed_to_bot
 from neobot_app.message.queue import MessageQueue
 from neobot_app.willing.builtin import QuailWillingManager, clamp_probability
 from neobot_app.willing.models import (
@@ -360,7 +361,7 @@ class WillingService:
         allowed, block_reason = self._is_conversation_allowed(conversation_type, queue_key)
         base_probability = self._base_probability(conversation_type)
         conversation_coefficient = self._conversation_coefficient(message)
-        mentioned_bot = self._mentioned_bot(message)
+        mentioned_bot = is_addressed_to_bot(message, self._config)
         called_bot_name = self._called_bot_name(text)
         replied_to_message = self._has_reply_segment(message)
         matched_keywords = self._matched_keywords(text)
@@ -426,10 +427,12 @@ class WillingService:
         return [item for item in rendered if item]
 
     def _is_conversation_allowed(self, conversation_type: str, queue_key: str) -> tuple[bool, str]:
+        # 黑白名单是访问控制：只认管理员命令写入的 trusted 映射，
+        # agent 自己写的映射只影响展示，不能让会话绕过/落入名单
         if conversation_type == "group":
             if self._config.message.enable_group is False:
                 return False, "group_disabled"
-            mapped_group = group_number_for(queue_key)
+            mapped_group = trusted_group_number_for(queue_key)
             return self._check_list_rule(
                 queue_key,
                 self._config.chat.group_use_black_list,
@@ -441,7 +444,7 @@ class WillingService:
 
         if self._config.message.enable_private is False:
             return False, "private_disabled"
-        mapped = qq_for_user(queue_key)
+        mapped = trusted_qq_for_user(queue_key)
         return self._check_list_rule(
             queue_key,
             self._config.chat.friend_use_black_list,
@@ -479,9 +482,11 @@ class WillingService:
             # live:<room> 是 evaluate_live 的查找键（与同号 QQ 群区分）；
             # 剥掉前缀会导致直播间系数/黑名单写进同号群聊的键上
             return value
-        if ":" in value:
-            _, value = value.split(":", 1)
-            value = value.strip()
+        # 只剥已知的 pipeline 前缀（group:/private:）：openid 本身可能含冒号，
+        # 不能见到「:」就切。
+        prefix, _sep, rest = value.partition(":")
+        if prefix in {"group", "private"} and rest.strip():
+            value = rest.strip()
         if not value:
             raise ValueError("会话 ID 不能为空")
         return value
@@ -503,48 +508,34 @@ class WillingService:
                 or getattr(self._config.chat, "group_Response_coefficient", None)
                 or {}
             )
-            return max(0.0, float(coefficients.get(str(message.group_id), 1.0)))
+            if not isinstance(coefficients, dict):
+                return 1.0
+            group_text = str(message.group_id).strip()
+            if not group_text:
+                return 1.0
+            # 配置里的系数按真实群号写；官方通道消息带 openid 时先走 trusted 映射。
+            # 同时保留按 openid 直接配置的写法（取第一个命中的 key）。
+            channel = str(getattr(message, "neobot_channel", "") or "").strip() or None
+            mapped = trusted_group_number_for(group_text, channel)
+            for key in (str(mapped) if mapped else "", group_text):
+                if key and key in coefficients:
+                    try:
+                        return max(0.0, float(coefficients[key]))
+                    except (TypeError, ValueError):
+                        return 1.0
+            return 1.0
 
         return 1.0
 
     def is_at_mentioned(self, message: ChatMessage) -> bool:
-        """检查机器人是否被 @提及，且配置了被@必回。"""
+        """检查机器人是否被 @提及，且配置了被@必回。
+
+        判定本身交给统一入口：官方通道用适配器给出的 mentioned_self 权威结论，
+        非官方/未知回退 OneBot 的 at 段逻辑（见 neobot_app.message.addressing）。
+        """
         if not getattr(self._config.chat, "at_mention_guaranteed_reply", True):
             return False
-        # 官方群事件只会推送 @ 机器人的消息，没有 at 段也按被 @ 处理；账号解析完成前
-        # bot.account 还没填，at 段对不上，走这段兜住
-        if isinstance(message, GroupMessage) and self._is_official_platform(message):
-            return True
-        return self._mentioned_bot(message)
-
-    def _is_official_platform(self, message: Any = None) -> bool:
-        """消息所在通道是否为 QQ 官方机器人协议；无通道信息时回退主档。"""
-        detector = self._bot_detector
-        if detector is None:
-            return False
-        channel = getattr(message, "neobot_channel", None)
-        lookup = getattr(detector, "profile_for", None)
-        profile = lookup(channel) if callable(lookup) else getattr(detector, "profile", None)
-        return getattr(profile, "kind", None) == "official"
-
-    def _mentioned_bot(self, message: ChatMessage) -> bool:
-        target = str(bot_account_for_message(message, self._config))
-        if message.message:
-            for segment in message.message:
-                segment_type = getattr(segment, "type", None)
-                if hasattr(segment_type, "value"):
-                    segment_type = segment_type.value
-                if str(segment_type) != "at":
-                    continue
-                raw_data = getattr(segment, "data", None)
-                data = raw_data if isinstance(raw_data, dict) else (
-                    raw_data.model_dump(exclude_none=True) if hasattr(raw_data, "model_dump") else {}
-                )
-                if str(data.get("qq") or "") == target:
-                    return True
-
-        raw_message = str(message.raw_message or "")
-        return f"[CQ:at,qq={target}" in raw_message
+        return is_addressed_to_bot(message, self._config)
 
     def _called_bot_name(self, text: str) -> bool:
         names = [self._config.bot.nick_name, *(self._config.bot.alias_name or [])]

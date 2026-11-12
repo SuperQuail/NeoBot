@@ -149,7 +149,7 @@ async def test_analyze_avatar_success_updates_profile():
 
     assert result["ok"] is True
     assert result["avatar_analysis"] == "黑色猫耳头像"
-    assert adapter.calls == [("get_qq_avatar", {"user_id": 123456})]
+    assert adapter.calls == [("get_qq_avatar", {"user_id": "123456"})]
     assert service.update_calls == [("123456", "黑色猫耳头像")]
     assert vision.calls[0][0]["content"][1]["source"]["url"] == "http://avatar.qq.com/x.png"
 
@@ -164,7 +164,7 @@ async def test_analyze_avatar_passes_group_id():
     result = _parse(await skill.execute("analyze_user_avatar", {"user_id": "123456", "group_id": "888"}))
 
     assert result["ok"] is True
-    assert adapter.calls == [("get_qq_avatar", {"user_id": 123456, "group_id": 888})]
+    assert adapter.calls == [("get_qq_avatar", {"user_id": "123456", "group_id": "888"})]
 
 
 async def test_analyze_avatar_missing_url_rejected():

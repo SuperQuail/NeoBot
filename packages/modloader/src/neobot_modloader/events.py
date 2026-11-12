@@ -20,14 +20,14 @@ class IncomingEvent:
         return str(self.raw.get("post_type") or "")
 
     @property
-    def user_id(self) -> int | None:
-        value = self.raw.get("user_id")
-        return int(value) if value is not None else None
+    def user_id(self) -> int | str | None:
+        """发送者本地 ID：OneBot 为 int，官方通道为 openid 字符串。"""
+        return self.raw.get("user_id")
 
     @property
-    def group_id(self) -> int | None:
-        value = self.raw.get("group_id")
-        return int(value) if value is not None else None
+    def group_id(self) -> int | str | None:
+        """会话本地 ID：OneBot 为 int 群号，官方通道为 openid 字符串。"""
+        return self.raw.get("group_id")
 
     @property
     def sender(self) -> UserProfile:

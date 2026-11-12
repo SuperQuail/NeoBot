@@ -11,6 +11,7 @@ from neobot_app.bootstrap._services import build_vision_detect_service
 from neobot_app.bootstrap._skills import build_skill_manager
 from neobot_app.core import DATA_DIR
 from neobot_app.skills.balance_guide import sync_balance_query_skill
+from neobot_app.skills.official_markdown_guide import sync_official_markdown_skill
 from .core_reuse import _reuse_or
 from .maintenance_services import _web_search_config_dict
 from .state import _BuildState
@@ -73,6 +74,11 @@ def _build_agent_services(state: _BuildState) -> None:
         config=config,
         logger=logger_factory.get_logger("app.skills"),
     )
+    sync_official_markdown_skill(
+        registry=markdown_skill_registry,
+        data_dir=DATA_DIR,
+        logger=logger_factory.get_logger("app.skills"),
+    )
 
     async def _reload_side_effects() -> None:
         """重载后重放构建期副作用：余额 Skill 同步 + 身份判定。"""
@@ -80,6 +86,11 @@ def _build_agent_services(state: _BuildState) -> None:
             registry=markdown_skill_registry,
             data_dir=DATA_DIR,
             config=config,
+            logger=logger_factory.get_logger("app.skills"),
+        )
+        sync_official_markdown_skill(
+            registry=markdown_skill_registry,
+            data_dir=DATA_DIR,
             logger=logger_factory.get_logger("app.skills"),
         )
         # bot.account / bot.official_mode 可热重载：已连接时按新配置重新判定身份

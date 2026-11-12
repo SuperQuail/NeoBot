@@ -20,11 +20,14 @@ from neobot_app.commands.model import (
     CommandContext,
     permission_name,
 )
-from neobot_app.bot_accounts import looks_like_real_qq
+from neobot_app.bot_accounts import identity_text, looks_like_real_qq
 from neobot_app.user_identity import (
     link_group_number,
     link_user_qq,
+    openid_for_qq,
     trusted_qq_for_user,
+    unlink_group_number,
+    unlink_user_qq,
 )
 from neobot_app.panel_auth import (
     MAX_PASSWORD_LENGTH,
@@ -106,7 +109,7 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
             name="linkqq",
             description=(
                 "把用户与本通道真实 QQ 号映射：只给 QQ 号时映射发送者本人；"
-                "@ 一个用户再给 QQ 号时映射对方。官方合成 ID 之后会显示为 QQ 号，"
+                "@ 一个用户再给 QQ 号时映射对方。官方 openid 之后会显示为 QQ 号，"
                 "管理员/名单也能按真实 QQ 号识别"
             ),
             permission=PERM_SUB_ADMIN,
@@ -120,13 +123,32 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
         Command(
             name="linkgroup",
             description=(
-                "把当前群与真实 QQ 群号映射：官方群的合成 ID 之后会显示为群号，"
+                "把当前群与真实 QQ 群号映射：官方群的 openid 之后会显示为群号，"
                 "群黑白名单也按真实群号识别"
             ),
             permission=PERM_SUB_ADMIN,
             usage="<群号>",
             params=(("群号", "必填。当前群的真实 QQ 群号（5~12 位纯数字）"),),
             handler=_handle_link_group,
+        ),
+        Command(
+            name="unlinkqq",
+            description="解除用户与真实 QQ 号的 trusted 映射（仅超级管理员）",
+            permission=PERM_SUPER_ADMIN,
+            usage="<用户ID|QQ号> 或 <@用户>",
+            params=(
+                ("用户ID|QQ号", "必填。要解除映射的用户 ID 或已映射的真实 QQ 号"),
+                ("@用户", "可选。直接 @ 对应用户"),
+            ),
+            handler=_handle_unlink_qq,
+        ),
+        Command(
+            name="unlinkgroup",
+            description="解除当前群与真实群号的 trusted 映射（仅超级管理员）",
+            permission=PERM_SUPER_ADMIN,
+            usage="",
+            params=(),
+            handler=_handle_unlink_group,
         ),
         Command(
             name="sleep",
@@ -288,9 +310,9 @@ async def _handle_reload(ctx: CommandContext) -> str:
 async def _handle_help(ctx: CommandContext) -> str | None:
     """列出当前用户可见的命令;带参数时显示指定命令的详情。
 
-    首选自包含 HTML 卡片(命中预渲染缓存时直接发图),依次降级到
-    markdown→图片与纯文本;任一级成功即视为已回复(spec(5) §4.2 / R5-R9)。
-    返回 None 表示已自行发送回复。
+    首选自包含 HTML 卡片(命中预渲染缓存时直接发图);渲染或发送失败时回退
+    等价纯文本(spec(5) §4.2 / R5-R9)。返回 None 表示已自行发送图片，返回
+    文本表示由命令服务补发纯文本。
     """
     from neobot_app.runtime import help_cache, help_card
 
@@ -371,11 +393,7 @@ def _help_cache_dir(ctx: CommandContext) -> Any:
 
 
 async def _send_text_with_optional_image(ctx: CommandContext, text: str) -> str | None:
-    """提示类文案：先试既有 markdown→图片，失败则交回命令服务发纯文本。"""
-    if await ctx.service.send_markdown_image(
-        ctx.kind, ctx.conv_id, text, at_user_id=ctx.user_id
-    ):
-        return None
+    """提示类文案直接交回命令服务发纯文本，不再尝试图片降级。"""
     return text
 
 
@@ -421,11 +439,7 @@ async def _send_help_card(
     pages: int = 1,
     allow_cache: bool = True,
 ) -> str | None:
-    """三级降级发送 /help 卡片：HTML 卡片 → markdown 图片 → 纯文本。
-
-    任一级成功即返回 None（已回复）；全部失败才把纯文本交回命令服务发送，
-    保证用户一定有反馈（spec(5) R8 / A13）。
-    """
+    """发送 /help 卡片；渲染/发送失败写日志并回退等价纯文本。"""
     from neobot_app.runtime import help_card
     from neobot_app.runtime.html_card import render_card_image
 
@@ -483,16 +497,10 @@ async def _send_help_card(
     ):
         return None
 
-    markdown = help_card.render_payload_markdown(payload)
-    if await ctx.service.send_markdown_image(
-        ctx.kind, ctx.conv_id, markdown, at_user_id=ctx.user_id
-    ):
-        return None
-
-    text = help_card.render_payload_text(payload)
-    if help_card.FALLBACK_HINT not in text:
-        text = f"{text}\n{help_card.FALLBACK_HINT}"
-    return text
+    log = getattr(ctx.service, "_log", None)
+    if callable(log):
+        log("帮助卡片发送失败，已回退纯文本", kind=ctx.kind, conversation_id=ctx.conv_id)
+    return with_hint(help_card.render_payload_text(payload))
 
 
 async def _handle_standby(ctx: CommandContext) -> str:
@@ -765,7 +773,8 @@ async def _handle_link_qq(ctx: CommandContext) -> str:
     """
     message = ctx.message
     bot_account = ctx.service._bot_account(message)
-    targets = [qq for qq in ctx.at_qqs if qq != bot_account]
+    bot_id = identity_text(bot_account)
+    targets = [qq for qq in ctx.at_qqs if identity_text(qq) != bot_id]
     if len(targets) > 1:
         return "一次只能 @ 一个用户。"
     qq_args = [arg for arg in ctx.args if arg.isdigit()]
@@ -775,13 +784,16 @@ async def _handle_link_qq(ctx: CommandContext) -> str:
             "（QQ 号为 5~11 位纯数字）"
         )
     qq_number = int(qq_args[0])
-    if not looks_like_real_qq(qq_number):
+    if not looks_like_real_qq(qq_number, min_digits=5):
         return "QQ 号必须是 5~11 位纯数字。"
-    target = targets[0] if targets else int(ctx.user_id or 0)
+    target = targets[0] if targets else identity_text(ctx.user_id)
     if not target:
         return "无法确定要映射的用户。"
-    if target == bot_account:
+    if identity_text(target) == bot_id:
         return "不能把机器人账号映射成普通用户。"
+    permissions = ctx.service.permissions
+    if identity_text(qq_number) in permissions.super_admins and not permissions.is_super_admin(ctx.user_id):
+        return "超级管理员 QQ 的映射只允许超级管理员操作。"
     channel = str(getattr(message, "neobot_channel", "") or "") or None
     ok, message_text = link_user_qq(
         target, qq_number, channel=channel, trusted=True
@@ -803,6 +815,42 @@ async def _handle_link_group(ctx: CommandContext) -> str:
     return message_text if ok else f"映射失败：{message_text}"
 
 
+async def _handle_unlink_qq(ctx: CommandContext) -> str:
+    """解除用户与真实 QQ 号的 trusted 映射（仅超管）。"""
+    message = ctx.message
+    bot_account = ctx.service._bot_account(message)
+    bot_id = identity_text(bot_account)
+    targets = [qq for qq in ctx.at_qqs if identity_text(qq) != bot_id]
+    channel = str(getattr(message, "neobot_channel", "") or "") or None
+    target: str | None = None
+    if targets:
+        target = identity_text(targets[0])
+    else:
+        args = [arg.strip() for arg in ctx.args if arg.strip()]
+        if len(args) != 1:
+            return "用法：/unlinkqq <用户ID|QQ号> 或 /unlinkqq @用户"
+        raw = identity_text(args[0])
+        if looks_like_real_qq(raw):
+            # 输入真实 QQ 号：反查已映射的本地 ID（openid / 旧合成号）
+            target = openid_for_qq(int(raw), channel) or openid_for_qq(int(raw))
+            if target is None:
+                return f"没有找到 QQ {raw} 对应的已映射用户"
+        else:
+            # 输入 openid / 本地用户 ID：直接解绑
+            target = raw
+    ok, text = unlink_user_qq(target, channel, force=True)
+    return text if ok else f"解除映射失败：{text}"
+
+
+async def _handle_unlink_group(ctx: CommandContext) -> str:
+    """解除当前群与真实群号的 trusted 映射（仅超管）。"""
+    if ctx.kind != "group":
+        return "请在群聊中使用 /unlinkgroup。"
+    channel = str(getattr(ctx.message, "neobot_channel", "") or "") or None
+    ok, text = unlink_group_number(ctx.conv_id, channel, force=True)
+    return text if ok else f"解除映射失败：{text}"
+
+
 async def _handle_add_admin(ctx: CommandContext) -> str:
     return await _modify_admin(ctx, add=True)
 
@@ -819,7 +867,7 @@ async def _modify_admin(ctx: CommandContext, *, add: bool) -> str:
     """
     target_qq = _extract_target_qq(ctx)
     if target_qq is not None:
-        # 官方合成 ID 已人工映射时，管理员名单统一存真实 QQ 号。
+        # 本地 ID（openid/QQ）已人工映射时，管理员名单统一存真实 QQ 号。
         target_qq = trusted_qq_for_user(target_qq) or target_qq
     if target_qq is None:
         # 参数缺失：一行提示就够，不上卡片；但仍然**不带任何号码**
@@ -829,19 +877,20 @@ async def _modify_admin(ctx: CommandContext, *, add: bool) -> str:
         )
 
     permissions = ctx.service.permissions
-    if target_qq in permissions.super_admins:
+    target_text = identity_text(target_qq)
+    if target_text in permissions.super_admins:
         return "该用户是超级管理员,超级管理员只能通过配置增减,不能通过命令修改。"
 
     current = set(permissions.sub_admins)
     if add:
-        if target_qq in current:
+        if target_text in current:
             return "该用户已是次级管理员。"
-        current.add(target_qq)
+        current.add(target_text)
         action = "添加"
     else:
-        if target_qq not in current:
+        if target_text not in current:
             return "该用户不是次级管理员。"
-        current.discard(target_qq)
+        current.discard(target_text)
         action = "删除"
 
     result = await ctx.service.save_sub_admins(sorted(current))
@@ -850,7 +899,7 @@ async def _modify_admin(ctx: CommandContext, *, add: bool) -> str:
 
     # 以"磁盘上回读到的列表"为准回复：写盘静默失败时不能再报成功
     persisted = list(result.accounts)
-    wanted = str(target_qq)
+    wanted = target_text
     if (add and wanted not in persisted) or (not add and wanted in persisted):
         return (
             "错误: 配置写入后内容不符合预期，"
@@ -935,12 +984,23 @@ async def _handle_set_password(ctx: CommandContext) -> str:
 
 
 def _extract_target_qq(ctx: CommandContext) -> int | None:
-    """从参数或 @ 段提取目标 QQ 号(排除 @bot 触发段)。"""
+    """从参数或 @ 段提取目标真实 QQ 号（排除 @bot 触发段）。
+
+    @ 段可能是 openid：只有 trusted 映射能落到真实 QQ 号；映射不到时继续看
+    显式 QQ 号参数，避免把 openid 当管理员 QQ 写进配置。
+    """
     bot_account = ctx.service._bot_account(getattr(ctx, "message", None))
+    bot_id = identity_text(bot_account)
     # 优先 @ 段(排除 bot 自己)
     for qq in sorted(ctx.at_qqs):
-        if qq != bot_account:
-            return qq
+        text = identity_text(qq)
+        if not text or text == bot_id:
+            continue
+        if looks_like_real_qq(text, min_digits=5):
+            return int(text)
+        mapped = trusted_qq_for_user(text)
+        if mapped:
+            return int(mapped)
     # 参数中的 QQ 号
     for arg in ctx.args:
         candidate = arg.strip()

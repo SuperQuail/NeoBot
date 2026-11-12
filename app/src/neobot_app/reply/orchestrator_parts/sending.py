@@ -13,9 +13,16 @@ from neobot_app.reply.sender import ReplySender, SelfSentSink
 
 class SendingMixin:
     async def _send_with_timeout(
-        self, conversation_ref: ConversationRef, payload: object, channel: str | None = None
+        self,
+        conversation_ref: ConversationRef,
+        payload: object,
+        channel: str | None = None,
+        *,
+        proactive: bool = False,
     ) -> Any:
-        return await self._sender.send_with_timeout(conversation_ref, payload, channel=channel)
+        return await self._sender.send_with_timeout(
+            conversation_ref, payload, channel=channel, proactive=proactive
+        )
 
     async def _call_api_with_timeout(self, action: str, params: dict[str, Any]) -> Any:
         return await self._sender.call_api_with_timeout(action, params)
@@ -51,7 +58,7 @@ class SendingMixin:
         event: ReplyEvent,
         text: str,
         reply_to_message_id: int | None = None,
-        mention_user_ids: list[int] | None = None,
+        mention_user_ids: list[int | str] | None = None,
         segments: list[str] | None = None,
         send_original: bool = False,
         images: list[int] | None = None,
@@ -173,7 +180,7 @@ class SendingMixin:
         text: str,
         conversation_kind: str,
         reply_to_message_id: int | None = None,
-        mention_user_ids: list[int] | None = None,
+        mention_user_ids: list[int | str] | None = None,
         channel: str | None = None,
     ) -> list[dict]:
         return ReplySender.build_reply_segments(

@@ -117,7 +117,8 @@ class _PipelineNoticeMixin:
             queue = self._group_queue
             sender_id = notice.user_id or 0
             target_id = notice.target_id or 0
-            resolved_group_id = notice.group_id or int(group_id)
+            # 群 ID 可能是官方 openid 字符串：原样透传，绝不 int()
+            resolved_group_id = notice.group_id if notice.group_id is not None else group_id
 
             sender_name = await self._resolve_name(
                 sender_id, group_id=resolved_group_id
@@ -170,13 +171,15 @@ class _PipelineNoticeMixin:
         if queue_key:
             queue.push_poke(queue_key, poke)
 
-    async def _resolve_name(self, user_id: int, group_id: int | None = None) -> str:
+    async def _resolve_name(self, user_id: Any, group_id: Any = None) -> str:
         """解析用户的显示名称。
 
         优先级：
         1. 数据库（user_profiles.nick_name / remark）
         2. API：群聊取群成员信息（card > nickname），私聊取陌生人信息
-        3. 兜底返回 QQ:xxx
+        3. 兜底返回 display_user_id（真实 QQ 号 QQ:<号> / 官方 openid openid:<完整值>）
+
+        user_id/group_id 可能是官方 openid 字符串：原样交给适配器，绝不 int()。
         """
         if not user_id:
             return ""

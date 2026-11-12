@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 from neobot_contracts.models import ConversationRef
-from neobot_app.bot_accounts import bot_account_for_event, looks_like_real_qq
-from neobot_app.user_identity import group_number_for, id_label, qq_for_user
+from neobot_app.bot_accounts import bot_account_for_event
+from neobot_app.user_identity import group_label, group_number_for, id_label, qq_for_user
 from neobot_app.prompt.blocks import Stage, blocks_for
 from neobot_app.prompt.context import Scope
 from neobot_app.reply.event import ReplyEvent, ReplyState
@@ -150,7 +150,7 @@ class PromptBuildMixin:
             try:
                 prompt = await asyncio.wait_for(
                     self._prompt_builder.build_group_chat_prompt(
-                        group_id=int(queue_key),
+                        group_id=str(queue_key),
                         message_queue=queue,
                         numbering=numbering,
                         last_reply_message_id=last_reply_message_id,
@@ -194,7 +194,7 @@ class PromptBuildMixin:
         try:
             prompt = await asyncio.wait_for(
                 self._prompt_builder.build_friend_chat_prompt(
-                    user_id=int(queue_key),
+                    user_id=str(queue_key),
                     message_queue=queue,
                     numbering=numbering,
                     last_reply_message_id=last_reply_message_id,
@@ -244,7 +244,7 @@ class PromptBuildMixin:
         bot_account = self._event_bot_account(event)
         if event.conversation_ref is not None and event.conversation_ref.kind == "group":
             return await self._prompt_builder.build_group_chat_messages(
-                group_id=int(queue_key),
+                group_id=str(queue_key),
                 message_queue=queue,
                 numbering=numbering,
                 last_reply_message_id=last_reply_message_id,
@@ -252,7 +252,7 @@ class PromptBuildMixin:
                 bot_account=bot_account,
             )
         return await self._prompt_builder.build_friend_chat_messages(
-            user_id=int(queue_key),
+            user_id=str(queue_key),
             message_queue=queue,
             numbering=numbering,
             last_reply_message_id=last_reply_message_id,
@@ -314,20 +314,16 @@ class PromptBuildMixin:
             sender_id = str(message.user_id)
 
         msg_type = getattr(message, "message_type", "")
-        # 官方通道的 user/group id 是开放平台 13 位合成 ID，不是 QQ 号；提示词
-        # 里按 ID 规模统一标注，避免模型拿合成 ID 去拼 qlogo/资料链接或加好友。
+        # 官方通道的 user/group id 是完整 openid，不是 QQ 号；提示词
+        # 统一标 openid，避免模型拿它去拼 qlogo/资料链接或加好友。
         event_channel = str(getattr(event, "neobot_channel", "") or "") or None
-        # 人工映射过的官方合成 ID 在提示词里直接显示真实 QQ 号。
+        # 人工映射过的 openid 在提示词里直接显示真实 QQ 号。
         sender_value = (qq_for_user(sender_id, event_channel) or sender_id) if sender_id else ""
         sender_label = id_label(sender_id, event_channel) if sender_id else "QQ"
         if isinstance(message, GroupMessage) or msg_type == "group":
             group_id = getattr(message, "group_id", None) or queue_key
             mapped_group = group_number_for(group_id, event_channel)
-            group_line = (
-                f"群号：{mapped_group}"
-                if mapped_group
-                else f"{'群号' if looks_like_real_qq(group_id) else '群 ID'}：{group_id}"
-            )
+            group_line = f"{group_label(group_id, event_channel)}：{mapped_group or group_id}"
             lines = ["[当前聊天环境]", "会话类型：群聊", group_line]
             if sender_name and sender_id:
                 lines.append(f"消息发送者：{sender_name}（{sender_label}：{sender_value}）")

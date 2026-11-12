@@ -362,15 +362,18 @@ class SkillManager:
         owner = self._final_owners.get(prefixed_name)
         return self._skills.get(owner) if owner else None
 
-    def get_instructions(self) -> str:
+    def get_instructions(self, *, hidden: Collection[str] = ()) -> str:
         """聚合所有 Skill 的一行摘要(默认注入提示词,节省 token)。
 
         完整操作说明不再全量注入,由 `skills__view_instructions` 按需查看
         (与 Markdown 技能「默认元数据 + 按需读取正文」的模式一致)。
+        hidden 中的技能不出现：调用方按当前平台/模型能力过滤官方不可用或
+        当前模型用不上的技能（例如官方通道没有 OneBot 群管理能力）。
         """
+        hidden_names = {str(name) for name in hidden}
         lines: list[str] = []
         for registration in self._skills.values():
-            if not registration.exposed:
+            if not registration.exposed or registration.name in hidden_names:
                 continue
             summary = self._instructions_summary(registration)
             if summary:

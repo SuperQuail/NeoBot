@@ -1,4 +1,7 @@
-"""官方富媒体上传：URL 直传、850026 回退分片、配额错误与 file_info 缓存。"""
+"""官方富媒体上传：URL 直传、分片上传、配额错误与 file_info 缓存。
+
+URL 直传失败不再下载后改走分片：直接报错，由发送层返回 failed。
+"""
 
 from __future__ import annotations
 
@@ -73,42 +76,6 @@ def _prepare_payload(*, block_size: int = 4, indexes=(0, 1)) -> dict:
     }
 
 
-
-async def test_private_file_server_url_downloads_and_uploads_bytes(workdir, monkeypatch) -> None:
-    """官方平台拉不到 127.0.0.1/内网 FileServer；本地下载后走分片上传。"""
-    api = _FakeApi()
-    api.on("/files", _OK_FILE)
-    api.on("/upload_prepare", _prepare_payload())
-    api.on("/upload_part_finish", {"code": 0, "data": {}})
-    puts: list[tuple[str, bytes]] = []
-
-    async def fake_download(url: str) -> bytes:
-        assert url == "http://127.0.0.1:8099/files/a.png"
-        return b"abcdefgh"
-
-    async def fake_put(url: str, data: bytes) -> None:
-        puts.append((url, data))
-
-    monkeypatch.setattr(media_module, "_download_url", fake_download)
-    monkeypatch.setattr(media_module, "_put_part", fake_put)
-    uploader = MediaUploader(NullLogger())
-
-    result = await uploader.upload(
-        api,
-        kind="group",
-        openid="group-openid",
-        segment_type="image",
-        source="http://127.0.0.1:8099/files/a.png",
-    )
-
-    assert result.file_info == "FILE-INFO"
-    assert puts == [("https://cos.example/0", b"abcd"), ("https://cos.example/1", b"efgh")]
-    # 不走 URL 直传的 /files body，而是分片完成后的 /files 合并请求
-    assert api.calls[0]["body"]["file_type"] == 1
-    assert "url" not in api.calls[0]["body"]
-    assert api.calls[0]["path"].endswith("upload_prepare")
-
-
 async def test_url_source_uploads_by_url(workdir) -> None:
     api = _FakeApi()
     api.on("/files", _OK_FILE)
@@ -132,43 +99,25 @@ async def test_url_source_uploads_by_url(workdir) -> None:
     }
 
 
-async def test_url_rejected_with_850026_falls_back_to_chunked_upload(workdir, monkeypatch) -> None:
+async def test_url_upload_failure_is_not_retried_as_chunked_upload(workdir) -> None:
     api = _FakeApi()
-    api.on(
-        "/files",
-        OfficialApiError("url not reachable", code=850026),
-        _OK_FILE,
-    )
-    api.on("/upload_prepare", _prepare_payload())
-    api.on("/upload_part_finish", {"code": 0, "data": {}})
-    puts: list[tuple[str, bytes]] = []
-
-    async def fake_download(url: str) -> bytes:
-        assert url == "https://example.com/big.png"
-        return b"abcdef"
-
-    async def fake_put(url: str, data: bytes) -> None:
-        puts.append((url, data))
-
-    monkeypatch.setattr(media_module, "_download_url", fake_download)
-    monkeypatch.setattr(media_module, "_put_part", fake_put)
+    api.on("/files", OfficialApiError("url not reachable", code=850026))
     uploader = MediaUploader(NullLogger())
 
-    result = await uploader.upload(
-        api,
-        kind="private",
-        openid="user-openid",
-        segment_type="image",
-        source="https://example.com/big.png",
-    )
+    with pytest.raises(MediaUploadError) as excinfo:
+        await uploader.upload(
+            api,
+            kind="private",
+            openid="user-openid",
+            segment_type="image",
+            source="http://127.0.0.1:8099/files/a.png",
+        )
 
-    assert result.file_info == "FILE-INFO"
-    assert puts == [
-        ("https://cos.example/0", b"abcd"),
-        ("https://cos.example/1", b"ef"),
-    ]
-    suffixes = [call["path"].rsplit("/", 1)[-1] for call in api.calls]
-    assert suffixes[-4:] == ["upload_prepare", "upload_part_finish", "upload_part_finish", "files"]
+    assert excinfo.value.code == 850026
+    # 只尝试了一次 URL 转存，没有下载/分片请求。
+    assert len(api.calls) == 1
+    assert api.calls[0]["path"] == "/v2/users/user-openid/files"
+    assert api.calls[0]["body"]["url"] == "http://127.0.0.1:8099/files/a.png"
 
 
 @pytest.mark.parametrize(
@@ -271,6 +220,105 @@ async def test_file_info_is_cached_until_ttl_expires(workdir) -> None:
     assert len(api.calls) == 2
 
 
+async def test_url_source_cache_still_reused(workdir) -> None:
+    """URL 来源缓存键保持 source：同一 URL 在 ttl 内仍复用 file_info。"""
+    api = _FakeApi()
+    api.on("/files", dict(_OK_FILE))
+    uploader = MediaUploader(NullLogger())
+
+    kwargs = {
+        "kind": "group",
+        "openid": "group-openid",
+        "segment_type": "image",
+        "source": "https://example.com/same.png",
+    }
+    first = await uploader.upload(api, **kwargs)
+    second = await uploader.upload(api, **kwargs)
+
+    assert first == second
+    assert len(api.calls) == 1
+
+
+def _write_card_atomically(target: Path, data: bytes) -> None:
+    """复刻 CommandService._write_image_bytes：固定文件名 + 临时文件原子覆写。"""
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(target)
+
+
+async def test_local_file_cache_is_invalidated_after_overwrite(workdir, monkeypatch) -> None:
+    """同一路径覆写内容后必须重新上传（本地文件按内容哈希缓存）。"""
+    api = _FakeApi()
+    api.on("/upload_prepare", _prepare_payload(block_size=100, indexes=(0,)))
+    api.on("/upload_part_finish", {"code": 0, "data": {}})
+    api.on(
+        "/files",
+        dict(_OK_FILE),
+        {"code": 0, "data": {"file_info": "SECOND-FILE-INFO", "file_uuid": "FU2", "ttl": 60}},
+    )
+    puts: list[bytes] = []
+
+    async def fake_put(url: str, data: bytes) -> None:
+        puts.append(data)
+
+    monkeypatch.setattr(media_module, "_put_part", fake_put)
+    path = workdir / "help-0-detail.png"
+    path.write_bytes(b"IMAGE-A")
+    uploader = MediaUploader(NullLogger())
+    kwargs = {
+        "kind": "group",
+        "openid": "group-openid",
+        "segment_type": "image",
+        "source": str(path),
+    }
+
+    first = await uploader.upload(api, **kwargs)
+    # 同路径、同字节数快速覆写（Windows 上 st_mtime_ns 可能同毫秒不变）：
+    # 缓存键带内容哈希才能可靠区分两张图。
+    path.write_bytes(b"IMAGE-B")
+    second = await uploader.upload(api, **kwargs)
+
+    assert first.file_info == "FILE-INFO"
+    assert second.file_info == "SECOND-FILE-INFO"
+    assert puts == [b"IMAGE-A", b"IMAGE-B"]
+    assert sum(1 for call in api.calls if call["path"].endswith("/upload_prepare")) == 2
+
+
+async def test_fixed_filename_card_overwrite_does_not_reuse_file_info(workdir, monkeypatch) -> None:
+    """/help 详情卡片固定文件名（help-{perm}-detail.png）覆写两张不同图：不复用。"""
+    api = _FakeApi()
+    api.on("/upload_prepare", _prepare_payload(block_size=100, indexes=(0,)))
+    api.on("/upload_part_finish", {"code": 0, "data": {}})
+    api.on(
+        "/files",
+        dict(_OK_FILE),
+        {"code": 0, "data": {"file_info": "CARD-TWO-INFO", "file_uuid": "FU2", "ttl": 60}},
+    )
+    puts: list[bytes] = []
+
+    async def fake_put(url: str, data: bytes) -> None:
+        puts.append(data)
+
+    monkeypatch.setattr(media_module, "_put_part", fake_put)
+    path = workdir / "help-0-detail.png"
+    uploader = MediaUploader(NullLogger())
+    kwargs = {
+        "kind": "group",
+        "openid": "group-openid",
+        "segment_type": "image",
+        "source": str(path),
+    }
+
+    _write_card_atomically(path, b"CARD-ONE")
+    first = await uploader.upload(api, **kwargs)
+    _write_card_atomically(path, b"CARD-TWO")
+    second = await uploader.upload(api, **kwargs)
+
+    assert first.file_info == "FILE-INFO"
+    assert second.file_info == "CARD-TWO-INFO"
+    assert puts == [b"CARD-ONE", b"CARD-TWO"]
+
+
 async def test_missing_file_info_is_an_error(workdir) -> None:
     api = _FakeApi()
     api.on("/files", {"code": 0, "data": {}})
@@ -315,3 +363,48 @@ async def test_missing_local_file_is_an_error(workdir) -> None:
 def test_media_file_is_frozen() -> None:
     media = MediaFile(file_info="FI", file_uuid="FU", ttl=1)
     assert media == MediaFile(file_info="FI", file_uuid="FU", ttl=1)
+
+
+async def test_unsupported_media_extension_fails_before_upload(workdir) -> None:
+    uploader = MediaUploader(NullLogger())
+    api = _FakeApi()
+
+    for segment_type, source in (
+        ("image", "file:///tmp/pic.txt"),
+        ("video", "file:///tmp/clip.avi"),
+        ("voice", "file:///tmp/voice.pcm"),
+    ):
+        with pytest.raises(MediaUploadError):
+            await uploader.upload(
+                api,
+                kind="group",
+                openid="group-openid",
+                segment_type=segment_type,
+                source=source,
+            )
+    assert api.calls == []
+
+
+async def test_supported_media_extension_enters_upload(workdir, monkeypatch) -> None:
+    from neobot_adapter.official import media as media_module
+
+    uploader = MediaUploader(NullLogger())
+    api = _FakeApi()
+    api.on("/upload_prepare", _prepare_payload())
+    api.on("/upload_part_finish", {"code": 0, "data": {}})
+    api.on("/files", _OK_FILE)
+
+    async def no_put(url: str, data: bytes) -> None:
+        return None
+
+    monkeypatch.setattr(media_module, "_put_part", no_put)
+    clip = workdir / "clip.mp4"
+    clip.write_bytes(b"abcdefgh")
+    result = await uploader.upload(
+        api,
+        kind="group",
+        openid="group-openid",
+        segment_type="video",
+        source=str(clip),
+    )
+    assert result.file_info == "FILE-INFO"

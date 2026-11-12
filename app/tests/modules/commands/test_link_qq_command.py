@@ -10,6 +10,7 @@ from neobot_app.commands.service import CommandService
 from neobot_app.user_identity import (
     bind_user_identity,
     group_number_for,
+    link_user_qq,
     qq_for_user,
     trusted_qq_for_user,
 )
@@ -143,6 +144,21 @@ async def test_one_arg_links_sender_self():
     assert "已映射" in sent[-1][2]
 
 
+async def test_sub_admin_cannot_map_to_super_admin_qq():
+    """超管 QQ 的映射只允许超管操作，防止次级管理员自提权。"""
+    sent: list[tuple] = []
+    service = _service(sent)
+
+    await service.handle_message(
+        _message("/linkqq 10000", user_id=SUB, at_qqs=[BOT]),
+        kind="group",
+        queue_key="100",
+    )
+
+    assert trusted_qq_for_user(SUB) is None
+    assert "只允许超级管理员" in sent[-1][2]
+
+
 async def test_at_segment_separates_command_and_argument():
     """没有显式空格的「/linkqq@用户 123」也要能按 at 段分隔出命令参数。"""
     sent: list[tuple] = []
@@ -190,3 +206,129 @@ async def test_invalid_qq_rejected():
 
     assert qq_for_user(SYNTHETIC) is None
     assert "5~11" in sent[-1][2]
+
+
+async def test_super_admin_can_unlink_trusted_qq_mapping():
+    sent: list[tuple] = []
+    service = _service(sent)
+    assert link_user_qq(SYNTHETIC, REAL_QQ, trusted=True)[0]
+
+    result = await service.handle_message(
+        _message("/unlinkqq", user_id=SUPER, at_qqs=[BOT, SYNTHETIC]),
+        kind="group",
+        queue_key="100",
+    )
+
+    assert result.consumed is True
+    assert trusted_qq_for_user(SYNTHETIC) is None
+    assert "已移除" in sent[-1][2]
+
+
+@pytest.mark.asyncio
+async def test_super_admin_can_unlink_by_synthetic_id_argument():
+    """参数是 13 位合成 ID 时直接按用户 ID 解除映射（不再自己数位数）。"""
+    sent: list[tuple] = []
+    service = _service(sent)
+    assert link_user_qq(SYNTHETIC, REAL_QQ, trusted=True)[0]
+
+    await service.handle_message(
+        _message(f"/unlinkqq {SYNTHETIC}", user_id=SUPER, at_qqs=[BOT]),
+        kind="group",
+        queue_key="100",
+    )
+
+    assert trusted_qq_for_user(SYNTHETIC) is None
+    assert "已移除" in sent[-1][2]
+
+
+@pytest.mark.asyncio
+async def test_super_admin_can_unlink_by_real_qq_argument():
+    """参数是真实 QQ 号时反查映射到合成 ID 再解除。"""
+    sent: list[tuple] = []
+    service = _service(sent)
+    assert link_user_qq(SYNTHETIC, REAL_QQ, trusted=True)[0]
+
+    await service.handle_message(
+        _message(f"/unlinkqq {REAL_QQ}", user_id=SUPER, at_qqs=[BOT]),
+        kind="group",
+        queue_key="100",
+    )
+
+    assert trusted_qq_for_user(SYNTHETIC) is None
+    assert "已移除" in sent[-1][2]
+
+
+async def test_sub_admin_cannot_unlink_command():
+    sent: list[tuple] = []
+    service = _service(sent)
+
+    await service.handle_message(
+        _message("/unlinkqq", user_id=SUB, at_qqs=[BOT, SYNTHETIC]),
+        kind="group",
+        queue_key="100",
+    )
+
+    assert "权限" in sent[-1][2]
+
+
+OPENID_ADMIN = "ADMIN-user-openid"
+OPENID_TARGET = "TARGET-user-openid"
+
+
+def _trusted_admin_openid() -> None:
+    """模拟已完成的首次绑定：管理员 openid → 真实超管 QQ（trusted）。"""
+    assert link_user_qq(OPENID_ADMIN, SUPER, trusted=True)[0]
+
+
+async def test_admin_links_openid_sender_to_qq():
+    """官方通道发送者是 openid 字符串：/linkqq 直接按 openid 建 trusted 映射。"""
+    sent: list[tuple] = []
+    service = _service(sent)
+    _trusted_admin_openid()
+
+    result = await service.handle_message(
+        _message("/linkqq 123456789", user_id=OPENID_ADMIN, at_qqs=[BOT]),
+        kind="private",
+        queue_key=OPENID_ADMIN,
+    )
+
+    assert result.consumed is True
+    assert qq_for_user(OPENID_ADMIN) == REAL_QQ
+    assert trusted_qq_for_user(OPENID_ADMIN) == REAL_QQ
+    assert "已映射" in sent[-1][2]
+
+
+async def test_super_admin_can_unlink_openid_argument():
+    """参数是 openid 字符串时直接按本地 ID 解绑，不再依赖 13 位数字判断。"""
+    sent: list[tuple] = []
+    service = _service(sent)
+    _trusted_admin_openid()
+    assert link_user_qq(OPENID_TARGET, REAL_QQ, trusted=True)[0]
+
+    result = await service.handle_message(
+        _message(f"/unlinkqq {OPENID_TARGET}", user_id=OPENID_ADMIN, at_qqs=[BOT]),
+        kind="private",
+        queue_key=OPENID_ADMIN,
+    )
+
+    assert result.consumed is True
+    assert trusted_qq_for_user(OPENID_TARGET) is None
+    assert "已移除" in sent[-1][2]
+
+
+async def test_super_admin_can_unlink_openid_by_real_qq_argument():
+    """参数是真实 QQ 号时反查 openid 映射后解绑。"""
+    sent: list[tuple] = []
+    service = _service(sent)
+    _trusted_admin_openid()
+    assert link_user_qq(OPENID_TARGET, REAL_QQ, trusted=True)[0]
+
+    result = await service.handle_message(
+        _message(f"/unlinkqq {REAL_QQ}", user_id=OPENID_ADMIN, at_qqs=[BOT]),
+        kind="private",
+        queue_key=OPENID_ADMIN,
+    )
+
+    assert result.consumed is True
+    assert trusted_qq_for_user(OPENID_TARGET) is None
+    assert "已移除" in sent[-1][2]

@@ -9,6 +9,7 @@ import pytest
 
 from neobot_app.utils.media_sender import (
     prepare_audio_segment,
+    prepare_file_segment,
     prepare_image_segment,
     send_audio,
     send_image,
@@ -151,3 +152,52 @@ def test_prepare_audio_segment_enabled(tmp_path: Path) -> None:
 
     assert segment["type"] == "record"
     assert segment["data"]["file"].endswith("/voice.amr?token=faketoken")
+
+
+# ── local_path：官方通道分片上传的来源 ──────────────────────────────────
+
+
+def test_prepare_image_segment_attaches_local_path(tmp_path: Path) -> None:
+    """file 保留 HTTP URL（OneBot 用），local_path 给官方走本地分片上传。"""
+    fs = _make_file_server(enabled=True)
+    path = tmp_path / "photo.jpg"
+    path.write_bytes(b"fake photo data")
+
+    segment = prepare_image_segment(fs, path)
+
+    assert segment["data"]["file"].startswith("http://127.0.0.1:8765/")
+    assert segment["data"]["local_path"] == str(path)
+
+
+def test_prepare_image_segment_attaches_local_path_when_disabled(tmp_path: Path) -> None:
+    fs = _make_file_server(enabled=False)
+    path = tmp_path / "photo.jpg"
+    path.write_bytes(b"fake photo data")
+
+    segment = prepare_image_segment(fs, path)
+
+    assert segment["data"]["file"].startswith("file:///")
+    assert segment["data"]["local_path"] == str(path)
+
+
+def test_prepare_audio_segment_attaches_local_path(tmp_path: Path) -> None:
+    fs = _make_file_server(enabled=True)
+    path = tmp_path / "voice.amr"
+    path.write_bytes(b"fake audio data")
+
+    segment = prepare_audio_segment(fs, path)
+
+    assert segment["data"]["local_path"] == str(path)
+
+
+def test_prepare_file_segment_attaches_local_path_and_name(tmp_path: Path) -> None:
+    fs = _make_file_server(enabled=True)
+    path = tmp_path / "报告.pdf"
+    path.write_bytes(b"fake pdf data")
+
+    segment = prepare_file_segment(fs, path)
+
+    assert segment["type"] == "file"
+    assert segment["data"]["file"].startswith("http://127.0.0.1:8765/")
+    assert segment["data"]["name"] == "报告.pdf"
+    assert segment["data"]["local_path"] == str(path)

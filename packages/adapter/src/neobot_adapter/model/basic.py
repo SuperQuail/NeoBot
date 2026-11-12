@@ -1,6 +1,11 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Union
 from enum import Enum
+
+#: 适配器层的本地 ID：OneBot 通道是真实 QQ 号/群号（int），官方通道是 openid（str）。
+#: 用 Union（Pydantic 智能联合）而不是 str：数字保持 int、字符串保持 str，
+#: 数字字符串不会被静默转换成 int；message_id/self_id 仍固定为 int。
+LocalId = Union[int, str]
 
 class PostType(Enum):
     """一个枚举, 传输使用字符串, 表示上报类型"""
@@ -107,12 +112,12 @@ class Role(Enum):
 
 class PostMessageMessagesender(BaseModel):
     """表示消息发送者的信息"""
-    user_id: Optional[int] = None #发送者 QQ 号
+    user_id: Optional[LocalId] = None #发送者 ID（OneBot QQ 号 / 官方 openid）
     nickname: Optional[str] = None #昵称
     sex: Optional[Sex] = None #性别
     age: Optional[int] = None #年龄
     """当私聊类型为群临时会话时的额外字段:"""
-    group_id: Optional[int] = None #临时群消息来源群号
+    group_id: Optional[LocalId] = None #临时群消息来源群 ID
     """如果是群聊:"""
     card: Optional[str] = None #群名片/备注
     area: Optional[str] = None #地区

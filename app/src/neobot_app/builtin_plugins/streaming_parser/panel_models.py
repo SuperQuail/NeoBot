@@ -1,9 +1,27 @@
 """订阅向导的公开输入输出，页面不另行定义一份业务校验。"""
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+
+
+def _group_id_text(value: Any) -> str:
+    """群会话 ID 统一成非空文本：兼容页面/旧调用的数字入参和官方 openid。"""
+    if value is None or isinstance(value, bool) or isinstance(value, float):
+        raise ValueError("group_id 必须是正整数或非空字符串")
+    if isinstance(value, int):
+        if value <= 0:
+            raise ValueError("group_id 必须是正整数或非空字符串")
+        return str(value)
+    text = str(value).strip()
+    if not text:
+        raise ValueError("group_id 必须是正整数或非空字符串")
+    return text
+
+
+#: 接收群 ID：数字群号与 openid 字符串都接受，输出总是文本。
+GroupId = Annotated[str, BeforeValidator(_group_id_text)]
 
 
 class Input(BaseModel):
@@ -15,7 +33,8 @@ class TargetInput(Input):
 
 
 class GroupInput(Input):
-    group_id: int = Field(gt=0, title="接收通知的群")
+    #: 接收通知的群会话 ID：OneBot 数字群号或官方 openid 字符串。
+    group_id: GroupId = Field(max_length=128, title="接收通知的群")
 
 
 class GroupSettingsInput(GroupInput):
@@ -41,7 +60,7 @@ class CreateInput(GroupInput, TargetInput):
 
 
 class ListInput(Input):
-    group_id: int | None = Field(default=None, gt=0, title="接收通知的群")
+    group_id: GroupId | None = Field(default=None, max_length=128, title="接收通知的群")
 
 
 class SubscriptionInput(GroupInput):
@@ -54,7 +73,7 @@ class ToggleInput(SubscriptionInput):
 
 
 class GroupChoice(BaseModel):
-    group_id: int = Field(title="接收群号")
+    group_id: str = Field(title="接收群 ID")
     name: str = Field(title="群名称")
     bot_id: str = Field(title="机器人账号")
 
@@ -73,7 +92,7 @@ class Target(BaseModel):
 
 
 class SubscriptionItem(BaseModel):
-    group_id: int = Field(title="接收群号")
+    group_id: str = Field(title="接收群 ID")
     room_id: int = Field(title="直播间号")
     uid: int = Field(default=0, title="UP 主 UID")
     short_id: int = Field(default=0, title="直播间短号")

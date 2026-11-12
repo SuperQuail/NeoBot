@@ -208,7 +208,7 @@ class CrossChatSkill(SkillModule):
                         },
                         "target_id": {
                             "type": "string",
-                            "description": "目标会话 ID（OneBot 为群号/QQ 号；官方通道为合成 ID）；"
+                            "description": "目标会话 ID（OneBot 为群号/QQ 号；官方通道为 openid）；"
                             "B站通道为 private:<UID> 或 "
                             "comment:<oid>:<root>:<parent>（dynamic/opus/article 前缀同理）",
                         },
@@ -243,7 +243,7 @@ class CrossChatSkill(SkillModule):
                         },
                         "target_id": {
                             "type": "string",
-                            "description": "目标会话 ID（OneBot 为群号/QQ 号；官方通道为合成 ID）；"
+                            "description": "目标会话 ID（OneBot 为群号/QQ 号；官方通道为 openid）；"
                             "B站通道为 private:<UID> 或 "
                             "comment:<oid>:<root>:<parent>（dynamic/opus/article 前缀同理）",
                         },
@@ -734,9 +734,9 @@ async def _handle_cross_chat_query(self: CrossChatSkill, args: dict) -> str:
 
         if queue.size(target_id) == 0:
             if target_kind == "private":
-                history = await self._adapter.get_friend_msg_history(int(target_id), count=count)
+                history = await self._adapter.get_friend_msg_history(target_id, count=count)
             else:
-                history = await self._adapter.get_group_msg_history(int(target_id), count=count)
+                history = await self._adapter.get_group_msg_history(target_id, count=count)
             messages = getattr(getattr(history, "data", None), "messages", None)
             if messages:
                 for msg in messages:

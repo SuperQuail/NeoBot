@@ -539,6 +539,57 @@ def migrate_v10_to_v11(old: dict) -> dict:
     return new
 
 
+@Config.migration(from_version="0.11.0", to_version="0.11.1")
+def migrate_v110_to_v111(old: dict) -> dict:
+    """迁移 0.11.0 -> 0.11.1：官方开放平台默认开发者写入超管配置默认值。
+
+    第一个真实用户就是创建机器人时的号主；不再把 9000000000001 硬编码在权限
+    判定里，而是作为 chat.admin_accounts 的默认值写进配置，便于部署者查看/修改。
+    """
+    new: dict[str, Any] = dict(old)
+    new["version"] = "0.11.1"
+    chat = old.get("chat")
+    migrated = dict(chat) if isinstance(chat, dict) else {}
+    admins = migrated.get("admin_accounts")
+    admins = [str(item) for item in admins] if isinstance(admins, list) else []
+    if "9000000000001" not in admins:
+        admins.insert(0, "9000000000001")
+    migrated["admin_accounts"] = admins
+    new["chat"] = migrated
+    return new
+
+
+@Config.migration(from_version="0.11.1", to_version="0.11.2")
+def migrate_v111_to_v112(old: dict) -> dict:
+    """迁移 0.11.1 -> 0.11.2：移除 qq_markdown（普通文本固定纯文本，Markdown 走显式工具）。"""
+    new: dict[str, Any] = dict(old)
+    new["version"] = "0.11.2"
+    adapter = old.get("adapter")
+    migrated = dict(adapter) if isinstance(adapter, dict) else {}
+    migrated.pop("qq_markdown", None)
+    new["adapter"] = migrated
+    return new
+
+
+@Config.migration(from_version="0.11.2", to_version="0.11.3")
+def migrate_v112_to_v113(old: dict) -> dict:
+    """迁移 0.11.2 -> 0.11.3：移除自动写入的开发者默认管理员。
+
+    超管必须由部署者显式配置；之前 0.11.1 迁移自动加的 9000000000001 一并移除。
+    """
+    new: dict[str, Any] = dict(old)
+    new["version"] = "0.11.3"
+    chat = old.get("chat")
+    migrated = dict(chat) if isinstance(chat, dict) else {}
+    admins = migrated.get("admin_accounts")
+    if isinstance(admins, list):
+        migrated["admin_accounts"] = [
+            str(item) for item in admins if str(item) != "9000000000001"
+        ]
+    new["chat"] = migrated
+    return new
+
+
 def ensure_legacy_adapter_mode(data: dict) -> None:
     """没有 version 字段的更老配置：按「老配置升级」语义补 onebot mode（就地修改）。"""
     adapter = data.get("adapter")

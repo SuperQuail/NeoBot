@@ -12,8 +12,13 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.utils.prompt_text import escape_prompt_text
 
-from neobot_app.bot_accounts import looks_like_real_qq
-from neobot_app.user_identity import display_user_id, group_number_for, qq_for_user
+from neobot_app.bot_accounts import identity_text
+from neobot_app.user_identity import (
+    display_user_id,
+    group_number_for,
+    profile_identity,
+    qq_for_user,
+)
 from neobot_app.favorability import (
     FAVORABILITY_MAX,
     FAVORABILITY_MIN,
@@ -25,17 +30,6 @@ from neobot_storage._retry import _is_locked_error
 
 
 _FAVORABILITY_UPDATE_ATTEMPTS = 12
-
-
-def _profile_identity(user_id: object) -> str:
-    """用户档案里的身份展示：映射后同时给真实 QQ 号和官方合成 QQ ID。"""
-    text = str(user_id or "").strip()
-    if not text:
-        return ""
-    mapped = qq_for_user(text)
-    if mapped:
-        return f"QQ:{mapped}（QQ ID:{text}）"
-    return f"QQ号:{text}" if looks_like_real_qq(text) else f"QQ ID:{text}"
 
 
 def _sex_to_text(value: object) -> str | None:
@@ -238,17 +232,16 @@ class UserProfileService:
         message_queue: Any | None = None,
     ) -> str:
         """获取群主信息文本：'群主：name（QQ：123456）'，从队列或 API 动态查找。"""
-        group_id_int = _safe_int(group_id)
         members = None
 
         # 先从消息队列中查找（轻量，无 API 调用）
         members = self._collect_group_members_from_queue(group_id, message_queue)
 
-        # 队列中找不到则调用 API
-        if not members and group_id_int is not None:
+        # 队列中找不到则调用 API（群 ID 原样传：OneBot 数字 / 官方 openid）
+        if not members and identity_text(group_id):
             try:
                 response = await self._adapter_call(
-                    self._adapter.get_group_member_list(group_id_int),
+                    self._adapter.get_group_member_list(group_id),
                     action="get_group_member_list",
                     group_id=str(group_id),
                 )
@@ -269,7 +262,7 @@ class UserProfileService:
                     # 群昵称/昵称是用户可控文本，直接拼进提示词会破坏区块结构
                     return (
                         f"群主：{escape_prompt_text(name)}"
-                        f"（{_profile_identity(user_id)}）"
+                        f"（{profile_identity(user_id)}）"
                     )
 
         return ""
@@ -294,7 +287,7 @@ class UserProfileService:
         if members is None:
             try:
                 response = await self._adapter_call(
-                    self._adapter.get_group_member_list(int(group_id)),
+                    self._adapter.get_group_member_list(group_id),
                     action="get_group_member_list",
                     group_id=str(group_id),
                 )
@@ -343,7 +336,7 @@ class UserProfileService:
                 await self._fetch_user_archive(str(user_id)) if include_archives else None
             )
             member = SimpleNamespace(
-                user_id=int(user_id),
+                user_id=identity_text(user_id),
                 nickname=getattr(profile, "nick_name", None),
                 card=None,
                 sex=getattr(profile, "sex", None),
@@ -552,51 +545,50 @@ class UserProfileService:
         *,
         message_queue: Any | None = None,
     ) -> str | None:
-        bot_account_int = _safe_int(bot_account)
-        if bot_account_int is None:
+        group_text = identity_text(group_id)
+        bot_text = identity_text(bot_account)
+        if not group_text or not bot_text:
             return None
 
-        group_id_int = _safe_int(group_id)
-        if group_id_int is not None:
-            getter = getattr(self._adapter, "get_group_member_info", None)
-            if getter is not None:
-                try:
-                    response = await self._adapter_call(
-                        getter(group_id_int, bot_account_int),
-                        action="get_group_member_info",
-                        group_id=str(group_id),
-                        bot_account=str(bot_account),
-                    )
-                    role = _normalize_role(getattr(getattr(response, "data", None), "role", None))
-                    if role:
-                        return role
-                except Exception as exc:
-                    self._logger.warning(
-                        "查询 Bot 群成员信息失败",
-                        group_id=str(group_id),
-                        bot_account=str(bot_account),
-                        error=str(exc),
-                    )
-
+        getter = getattr(self._adapter, "get_group_member_info", None)
+        if getter is not None:
             try:
                 response = await self._adapter_call(
-                    self._adapter.get_group_member_list(group_id_int),
-                    action="get_group_member_list",
+                    getter(group_text, bot_text),
+                    action="get_group_member_info",
                     group_id=str(group_id),
+                    bot_account=str(bot_account),
                 )
-                role = _find_member_role(getattr(response, "data", None), bot_account_int)
+                role = _normalize_role(getattr(getattr(response, "data", None), "role", None))
                 if role:
                     return role
             except Exception as exc:
                 self._logger.warning(
-                    "查询群成员列表失败",
+                    "查询 Bot 群成员信息失败",
                     group_id=str(group_id),
                     bot_account=str(bot_account),
                     error=str(exc),
                 )
 
+        try:
+            response = await self._adapter_call(
+                self._adapter.get_group_member_list(group_text),
+                action="get_group_member_list",
+                group_id=str(group_id),
+            )
+            role = _find_member_role(getattr(response, "data", None), bot_account)
+            if role:
+                return role
+        except Exception as exc:
+            self._logger.warning(
+                "查询群成员列表失败",
+                group_id=str(group_id),
+                bot_account=str(bot_account),
+                error=str(exc),
+            )
+
         members = self._collect_group_members_from_queue(group_id, message_queue)
-        return _find_member_role(members, bot_account_int)
+        return _find_member_role(members, bot_account)
 
     def _needs_refresh(self, profile: Any) -> bool:
         if not getattr(self._config.chat, "enable_periodic_user_info_update", False):
@@ -644,7 +636,7 @@ class UserProfileService:
     ) -> Any | None:
         try:
             response = await self._adapter_call(
-                self._adapter.get_stranger_info(int(user_id)),
+                self._adapter.get_stranger_info(identity_text(user_id)),
                 action="get_stranger_info",
                 user_id=user_id,
             )
@@ -791,7 +783,7 @@ class UserProfileService:
         card = escape_prompt_text(getattr(member, "card", None))
         if card:
             segments.append(f"群昵称:{card}")
-        segments.append(_profile_identity(user_id))
+        segments.append(profile_identity(user_id))
 
         qq_gender = _sex_to_text(getattr(member, "sex", None)) or _sex_to_text(getattr(profile, "sex", None))
         if qq_gender:
@@ -837,7 +829,7 @@ class UserProfileService:
         if remark:
             nickname_part += f"(你对Ta的备注:{remark})"
 
-        segments = [nickname_part, _profile_identity(user_id)]
+        segments = [nickname_part, profile_identity(user_id)]
 
         qq_gender = _sex_to_text(getattr(profile, "sex", None))
         if qq_gender:
@@ -871,13 +863,6 @@ class UserProfileService:
         return f"<聊天对象>{','.join(segments)}</聊天对象>"
 
 
-def _safe_int(value: object) -> int | None:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _normalize_role(value: object) -> str | None:
     role = getattr(value, "value", value)
     if role is None:
@@ -886,12 +871,16 @@ def _normalize_role(value: object) -> str | None:
     return role_text or None
 
 
-def _find_member_role(members: Any, bot_account: int) -> str | None:
+def _find_member_role(members: Any, bot_account: object) -> str | None:
+    """在成员列表里找 Bot 自己的角色：ID 按字符串比较，映射到同一真实 QQ 也算。"""
     if not members:
         return None
+    target = identity_text(bot_account)
+    target_qq = qq_for_user(bot_account) if target else None
     for member in members:
-        user_id = _safe_int(getattr(member, "user_id", None))
-        if user_id != bot_account:
+        user_text = identity_text(getattr(member, "user_id", None))
+        if not user_text:
             continue
-        return _normalize_role(getattr(member, "role", None))
+        if user_text == target or (target_qq is not None and qq_for_user(user_text) == target_qq):
+            return _normalize_role(getattr(member, "role", None))
     return None
