@@ -128,6 +128,8 @@ class OfficialAdapter:
         self._connected = False
         self._robot_uin = 0
         self._robot_nickname = ""
+        #: READY 缺 d.user.id 只告警一次；RESUMED 缺 user 属正常情况，不告警。
+        self._missing_ready_openid_warned = False
         self._bound = self._load_credentials() is not None
         self._bind_state = BindState()
         #: 连续登录失败后给面板的说明文案；成功连接后清空。
@@ -311,6 +313,8 @@ class OfficialAdapter:
         nickname = str(data.get("username") or data.get("nickname") or "").strip()
         if nickname:
             self._robot_nickname = nickname
+            # 群场景 @bot 的 mention id 与 READY openid 不同，昵称是兜底判定的依据。
+            self._mapper.bot_username = nickname
         uin = _extract_robot_uin(data)
         if not uin:
             uin = await self._generate_robot_uin()
@@ -482,8 +486,8 @@ class OfficialAdapter:
             )
         self._robot_uin = 0
         self._robot_nickname = ""
-        self._mapper.self_id = 0
-        self._mapper.bot_openid = ""
+        self._missing_ready_openid_warned = False
+        self._mapper.reset_identity()
         self._token_provider = TokenProvider(self._settings)
         self._api = OfficialApi(self._settings, self._token_provider, self._logger)
         self._sender = MessageSender(
@@ -602,14 +606,19 @@ class OfficialAdapter:
         return self._robot_uin or self._mapper.self_id
 
     def _remember_bot_openid(self, data: dict[str, Any], event_type: str) -> None:
-        """READY/RESUMED 的 d.user.id 是机器人 openid 的唯一可靠来源。"""
+        """READY 的 d.user.id / username 是机器人身份最可靠的来源；RESUMED 可能不带 user。"""
         user = data.get("user") if isinstance(data.get("user"), dict) else {}
+        username = str(user.get("username") or "").strip()
+        if username:
+            self._mapper.bot_username = username
         openid = str(user.get("id") or user.get("user_openid") or "").strip()
         if not openid:
-            self._logger.warning(
-                "官方 READY/RESUMED 未提供机器人 openid（d.user.id），群全量消息无法判定是否 @ 了机器人",
-                event_type=event_type,
-            )
+            if event_type == "READY" and not self._missing_ready_openid_warned:
+                self._missing_ready_openid_warned = True
+                self._logger.warning(
+                    "官方 READY 未提供机器人 openid（d.user.id），群全量消息只能靠昵称/mention 兜底判定 @",
+                    event_type=event_type,
+                )
             return
         if openid != self._mapper.bot_openid:
             self._mapper.bot_openid = openid

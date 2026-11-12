@@ -14,7 +14,6 @@ import pytest
 from neobot_contracts.ports.logging import NullLogger
 
 from neobot_adapter.model.message import GroupMessage, PrivateMessage
-from neobot_adapter.official import events as events_module
 from neobot_adapter.official.events import EventMapper
 from neobot_adapter.official.identity import MessageIdMap
 from neobot_adapter.utils.parse import safe_parse_model
@@ -319,9 +318,8 @@ def test_full_group_message_msg_elements_entry_for_bot_is_true(workdir) -> None:
     assert event["mentioned_self"] is True
 
 
-def test_full_group_message_without_bot_openid_is_false_and_warns_once(workdir, monkeypatch) -> None:
-    """READY 没给出机器人 openid 时不能猜：全量消息一律 False，且只告警一次。"""
-    monkeypatch.setattr(events_module, "_missing_bot_openid_warned", False)
+def test_full_group_message_without_bot_openid_is_false_and_warns_once(workdir) -> None:
+    """READY 没给出机器人 openid 且没有 mention 证据时：False，且只告警一次。"""
     logger = _RecordingLogger()
     mapper = EventMapper(message_ids=MessageIdMap(), logger=logger, self_id=1020304)
 
@@ -337,6 +335,127 @@ def test_full_group_message_without_bot_openid_is_false_and_warns_once(workdir, 
     warnings = [msg for msg, _kw in logger.warnings if "openid" in msg]
     assert len(warnings) == 1
     assert "无法判定" in warnings[0]
+
+
+# 线上真实形态（2026-11-12 15:27）：READY 的 d.user.id 与群场景 member_openid 不同，
+# content 的 @ 标记和 mentions 的 bot=true 条目都用群场景 id。
+_REAL_BOT_OPENID = "3380288042268959343"
+_REAL_GROUP_SCENE_BOT_ID = "9B219BEA924B74503313310AD80A308D"
+
+
+def test_full_group_message_group_scene_bot_mention_is_true(workdir) -> None:
+    """READY openid 对不上群场景 member_openid 时，按正文标记 + bot mention 兜底判 @。"""
+    logger = _RecordingLogger()
+    mapper = EventMapper(message_ids=MessageIdMap(), logger=logger, self_id=0)
+    mapper.bot_openid = _REAL_BOT_OPENID
+    mentions = [{"id": _REAL_GROUP_SCENE_BOT_ID, "username": "NeoBot", "bot": True}]
+
+    first = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_MESSAGE_CREATE",
+            _group_data(content=f"<@!{_REAL_GROUP_SCENE_BOT_ID}> /help", mentions=mentions),
+            event_id="evt-real-1",
+        )
+    )
+    second = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_MESSAGE_CREATE",
+            _group_data(content=f"<@!{_REAL_GROUP_SCENE_BOT_ID}> /help", mentions=mentions),
+            event_id="evt-real-2",
+        )
+    )
+
+    assert first is not None and first["mentioned_self"] is True
+    assert second is not None and second["mentioned_self"] is True
+    fields = next(kw for _msg, kw in logger.infos if kw.get("mentioned_self") is True)
+    assert fields["source"] == "bot_mention"
+    assert fields["content_at_ids"] == [_REAL_GROUP_SCENE_BOT_ID]
+    assert fields["bot_mention_ids"] == [_REAL_GROUP_SCENE_BOT_ID]
+    assert fields["bot_mention_names"] == ["NeoBot"]
+    fallback_warnings = [msg for msg, _kw in logger.warnings if "群场景" in msg]
+    assert len(fallback_warnings) == 1
+
+
+def test_full_group_message_bot_mention_matched_by_username(workdir) -> None:
+    """机器人昵称已知时优先按 mention.username 认定，不依赖标记位置。"""
+    mapper = _mapper(workdir)
+    mapper.bot_openid = _REAL_BOT_OPENID
+    mapper.bot_username = "NeoBot"
+
+    event = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_MESSAGE_CREATE",
+            _group_data(
+                content=f"/help <@!{_REAL_GROUP_SCENE_BOT_ID}>",
+                mentions=[{"id": _REAL_GROUP_SCENE_BOT_ID, "username": "NeoBot", "bot": True}],
+            ),
+        )
+    )
+
+    assert event is not None
+    assert event["mentioned_self"] is True
+
+
+def test_full_group_message_other_bot_marker_not_matching_mention_is_false(workdir) -> None:
+    """正文 @ 的 id 与 mentions 里的 bot=true 条目对不上：不得误判成 @ 机器人。"""
+    mapper = _mapper(workdir)
+    mapper.bot_openid = _REAL_BOT_OPENID
+
+    event = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_MESSAGE_CREATE",
+            _group_data(
+                content="<@!OTHERBOTID> /help",
+                mentions=[{"id": _REAL_GROUP_SCENE_BOT_ID, "username": "NeoBot", "bot": True}],
+            ),
+        )
+    )
+
+    assert event is not None
+    assert event["mentioned_self"] is False
+
+
+def test_full_group_message_bot_marker_not_at_start_with_other_mentions_is_false(workdir) -> None:
+    """bot 标记不在开头且正文还有别的 @：证据不足时不兜底（宁漏判不误判）。"""
+    mapper = _mapper(workdir)
+    mapper.bot_openid = _REAL_BOT_OPENID
+
+    event = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_MESSAGE_CREATE",
+            _group_data(
+                content=f"<@!member-openid-2> 你看 <@!{_REAL_GROUP_SCENE_BOT_ID}>",
+                mentions=[
+                    {"id": "member-openid-2", "username": "小明", "bot": False},
+                    {"id": _REAL_GROUP_SCENE_BOT_ID, "username": "NeoBot", "bot": True},
+                ],
+            ),
+        )
+    )
+
+    assert event is not None
+    assert event["mentioned_self"] is False
+
+
+def test_quoted_message_msg_elements_do_not_count_as_mention(workdir) -> None:
+    """引用消息（message_type=103）的 msg_elements 是原消息，不能当本条 @ 来源。"""
+    mapper = _mapper(workdir)
+    mapper.bot_openid = "bot-openid"
+
+    event = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_MESSAGE_CREATE",
+            _group_data(
+                content="/help",
+                message_type=103,
+                msg_elements=[{"id": "bot-openid", "username": "机器人", "bot": True}],
+            ),
+        )
+    )
+
+    assert event is not None
+    assert event["message"] == [{"type": "text", "data": {"text": "/help"}}]
+    assert event["mentioned_self"] is False
 
 
 def test_group_at_event_is_authoritative_without_robot_uin(workdir) -> None:

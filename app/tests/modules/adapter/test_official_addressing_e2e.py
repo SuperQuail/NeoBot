@@ -13,13 +13,21 @@ GROUP_AT_MESSAGE_CREATE 事件类型本身就是 @ 机器人；GROUP_MESSAGE_CRE
 from __future__ import annotations
 
 import itertools
+import shutil
+import tempfile
 from typing import Any
 
 from neobot_adapter.model.message import GroupMessage
+from neobot_adapter.official.adapter import OfficialAdapter
 from neobot_adapter.official.events import EventMapper
 from neobot_adapter.official.identity import MessageIdMap
+from neobot_adapter.official.settings import OfficialSettings
 from neobot_adapter.utils.parse import safe_parse_model
 from neobot_contracts.ports.logging import NullLogger
+
+# 线上真实形态（2026-11-12）：READY 的 d.user.id 与群场景 member_openid 不同。
+_REAL_BOT_OPENID = "3380288042268959343"
+_REAL_GROUP_SCENE_BOT_ID = "9B219BEA924B74503313310AD80A308D"
 
 _EVENT_SEQ = itertools.count(1)
 
@@ -219,6 +227,65 @@ def test_non_official_message_mentioned_self_defaults_to_none() -> None:
     )
 
     assert message.mentioned_self is None
+
+
+# ── 线上「群场景 member_openid」形态 ────────────────────────────────
+
+
+def test_full_group_message_group_scene_bot_mention_maps_to_true() -> None:
+    """真实日志形态：READY openid 与群场景 id 不同，正文标记 + bot mention 兜底判 @。"""
+    mapper = _mapper(bot_openid=_REAL_BOT_OPENID)
+    event, message = _map_and_parse(
+        _full_group_payload(
+            f"<@!{_REAL_GROUP_SCENE_BOT_ID}> /help",
+            mentions=[{"id": _REAL_GROUP_SCENE_BOT_ID, "username": "NeoBot", "bot": True}],
+        ),
+        mapper,
+    )
+
+    assert event["mentioned_self"] is True
+    assert message.mentioned_self is True
+    assert message.raw_message.strip() == "/help"
+
+
+# ── 适配器 READY 身份写入（兜底判定的依据） ──────────────────────────
+
+
+class _WarningLogger(NullLogger):
+    def __init__(self) -> None:
+        self.warnings: list[tuple[str, dict]] = []
+
+    def bind(self, **ctx: object) -> "_WarningLogger":
+        return self
+
+    def warning(self, msg: str, **kw: object) -> None:
+        self.warnings.append((msg, kw))
+
+
+def test_ready_identity_feeds_fallback_and_missing_openid_warns_once() -> None:
+    """READY 写入 openid/username；缺 user.id 只告警一次，RESUMED 缺 user 不重复告警。"""
+    logger = _WarningLogger()
+    data_dir = tempfile.mkdtemp(prefix="neobot-official-e2e-")
+    try:
+        adapter = OfficialAdapter(
+            OfficialSettings(app_id="", client_secret="", data_dir=data_dir),
+            logger=logger,
+            data_dir=data_dir,
+        )
+
+        adapter._remember_bot_openid({}, "READY")
+        adapter._remember_bot_openid({}, "READY")
+        adapter._remember_bot_openid({}, "RESUMED")
+        assert len([msg for msg, _kw in logger.warnings if "openid" in msg]) == 1
+
+        adapter._remember_bot_openid(
+            {"user": {"id": _REAL_BOT_OPENID, "username": "NeoBot"}},
+            "READY",
+        )
+        assert adapter._mapper.bot_openid == _REAL_BOT_OPENID
+        assert adapter._mapper.bot_username == "NeoBot"
+    finally:
+        shutil.rmtree(data_dir, ignore_errors=True)
 
 
 # ── AT + FULL 双事件同一消息 ────────────────────────────────────────
