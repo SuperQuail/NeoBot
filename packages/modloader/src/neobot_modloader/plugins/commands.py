@@ -31,7 +31,9 @@ def bind_command(plugin: Any, registration: Any, context: Any) -> None:
         event.setdefault("message_type", command_context.kind)
         event.setdefault("user_id", command_context.user_id)
         if command_context.kind == "group":
-            event.setdefault("group_id", int(command_context.conv_id))
+            # setdefault 的默认值参数会被无条件求值：官方群 conv_id 是 openid 字符串，
+            # int() 会在这里抛 ValueError，导致插件命令整条失败。保留原始 conv_id 类型。
+            event.setdefault("group_id", command_context.conv_id)
         if not event.get("message"):
             event["message"] = f"/{pattern.command_name} {command_context.raw_args}"
         # 重名回退改变外部命令名，仍以同一份参数声明解析，保留原始消息段。
