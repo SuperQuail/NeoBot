@@ -89,7 +89,7 @@ NeoBot 支持两种 QQ 接入通道，并可以**同时运行**：
 - **数据位置**：`data/qqbot/identities.json`（openid ↔ 旧合成号，迁移期只读反查源）、`data/user_qq_map.json`（真实 QQ/群号 ↔ 本地 ID 的人工映射）、本体数据库 `data/neobot.db`（会话/消息/档案/定时任务/跨聊天记录里的本地 ID 都是文本，按 `identities.json` 改写旧值）。
 - **自动迁移**：升级后首次启动时，`user_data`/`group_data`/`messages`/`memories`/`archive_memories`/`archive_snapshots`/`cross_chat_sessions`/`model_usage_records` 里的旧合成号会按 `identities.json` 自动改写成 openid（单个 SQLite 事务、可重复执行；`_build_storage` 在 schema 迁移前已写 `data/db_backup/` 快照；失败只记 WARNING 不阻塞启动，下次启动重试）；有迁移或跳过时汇总一条 INFO（迁移条数、跳过条数，有迁移时附各表条数），无迁移无跳过不记日志。
 - **冲突处理**：若目标 openid 行已存在（典型：迁移后又从旧备份恢复），保留新旧两份数据、逐条只记 DEBUG 并跳过该条，不删除旧数据，需要人工核对合并；结束时的 INFO 汇总会带跳过条数（只要冲突还在，每次启动会出现这一条 INFO，不再逐条 WARNING 刷屏）；头像文件（`data/avatars/<旧合成号>.png`）不随迁移改名，下次出面会重新拉取并产生孤儿文件。
-- **插件私有库**：`streaming_parser` 的 `group_id` 已从 BigInteger 迁移为 TEXT（插件库 Migration v2，旧数字群号自动 CAST）；`minigame` 的用户 ID 列加宽到 128 并接受 openid（Migration v3）；其它插件按自己的迁移版本随插件升级执行。
+- **插件私有库**：`streaming_parser` 的 `group_id` 已从 BigInteger 迁移为 TEXT（Migration v2，旧数字群号自动 CAST），Migration v3 再把旧 13 位合成号群 ID 按 `identities.json` 改写成 openid（订阅与群设置）；`minigame` 的用户/会话 ID 列加宽到 128 并接受 openid（Migration v3 重建表按显式列清单拷贝，避免 v2 追加列导致字段错位），Migration v4 把旧合成号用户 ID 改写成 openid（积分/签到/运势/榜单/漂流瓶/流水）。两处都在无 `identities.json` 或目标 openid 行已存在时保留旧数据、不删除；其它插件按自己的迁移版本随插件升级执行。
 - **面板**：机器人/活跃用户页面显示**完整** openid（`ID:<openid>`）；openid 不是 QQ 号，页面不再为它请求 qlogo 头像，也不把它拼进 `nk=` 参数。
 - **备份**：迁移前请同时备份 `data/neobot.db`、`data/qqbot/`、`data/user_qq_map.json` 和各插件数据目录（插件库在主数据库快照之外）。恢复旧备份后，旧合成号仍可经 `identities.json` 反查使用一个发布周期；迁移完成后不要立即删除 `identities.json`。
 
