@@ -415,6 +415,90 @@ def test_full_group_message_other_bot_marker_not_matching_mention_is_false(workd
     assert event["mentioned_self"] is False
 
 
+def test_full_group_message_other_bot_with_username_vetoes_fallback(workdir) -> None:
+    """昵称已知且 mentions 里是别的 bot 昵称：即使 @ 标记在开头也不得判成本机器人。"""
+    mapper = _mapper(workdir)
+    mapper.bot_openid = _REAL_BOT_OPENID
+    mapper.bot_username = "NeoBot"
+
+    event = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_MESSAGE_CREATE",
+            _group_data(
+                content="<@!OTHER-BOT-ID> /help",
+                mentions=[{"id": "OTHER-BOT-ID", "bot": True, "username": "OtherBot"}],
+            ),
+        )
+    )
+
+    assert event is not None
+    assert event["mentioned_self"] is False
+
+
+def test_full_group_message_known_username_but_mention_name_missing_keeps_fallback(workdir) -> None:
+    """昵称已知但 mention 没给 username：保持谨慎的位置兜底现状。"""
+    mapper = _mapper(workdir)
+    mapper.bot_openid = _REAL_BOT_OPENID
+    mapper.bot_username = "NeoBot"
+
+    event = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_MESSAGE_CREATE",
+            _group_data(
+                content=f"<@!{_REAL_GROUP_SCENE_BOT_ID}> /help",
+                mentions=[{"id": _REAL_GROUP_SCENE_BOT_ID, "bot": True}],
+            ),
+        )
+    )
+
+    assert event is not None
+    assert event["mentioned_self"] is True
+
+
+def test_addressing_log_plain_user_mention_is_debug(workdir) -> None:
+    """普通群友 @（只有 content_at_ids，没有 bot 信号）只记 DEBUG，避免活跃群刷屏。"""
+    logger = _RecordingLogger()
+    mapper = EventMapper(message_ids=MessageIdMap(), logger=logger, self_id=1020304)
+    mapper.bot_openid = "bot-openid"
+
+    event = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_MESSAGE_CREATE",
+            _group_data(
+                content="<@!member-openid-9> 你看",
+                mentions=[{"id": "member-openid-9", "bot": False}],
+            ),
+        )
+    )
+
+    assert event is not None
+    assert event["mentioned_self"] is False
+    assert not [kw for _msg, kw in logger.infos if "mentioned_self" in kw]
+    fields = next(kw for _msg, kw in logger.debugs if "mentioned_self" in kw)
+    assert fields["content_at_ids"] == ["member-openid-9"]
+    assert fields["mentioned_self"] is False
+
+
+def test_addressing_log_bot_mention_signal_is_info(workdir) -> None:
+    """mentions 里出现 bot=true（真正的 bot 信号）时即使未被 @ 也记 INFO。"""
+    logger = _RecordingLogger()
+    mapper = EventMapper(message_ids=MessageIdMap(), logger=logger, self_id=1020304)
+    mapper.bot_openid = "bot-openid"
+
+    event = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_MESSAGE_CREATE",
+            _group_data(content="随便聊聊", mentions=[{"id": "other-bot-openid", "bot": True}]),
+        )
+    )
+
+    assert event is not None
+    assert event["mentioned_self"] is False
+    fields = next(kw for _msg, kw in logger.infos if "mentioned_self" in kw)
+    assert fields["bot_mention_ids"] == ["other-bot-openid"]
+    assert fields["mentioned_self"] is False
+
+
 def test_full_group_message_bot_marker_not_at_start_with_other_mentions_is_false(workdir) -> None:
     """bot 标记不在开头且正文还有别的 @：证据不足时不兜底（宁漏判不误判）。"""
     mapper = _mapper(workdir)

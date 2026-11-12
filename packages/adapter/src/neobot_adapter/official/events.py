@@ -214,17 +214,23 @@ class EventMapper:
         线上证据（2026-11-12）：content 标记与 mentions 的 bot=true 条目是同一个群场景
         id，但都不等于 READY openid，导致正文明明 @ 了机器人却判成未 @。兜底只认
         「mentions 里 bot=true 的 id 出现在正文 @ 标记里」；机器人昵称已知时优先按昵称，
-        否则要求命中标记在正文开头或为唯一候选，降低把「@别的机器人」误判成 @ 自己的概率。
+        否则要求命中标记在正文开头或为唯一候选。
+        昵称已知时它就是权威身份：mentions 里的 bot 全是别的昵称就不再猜位置，否则
+        多机器人群里 @ 另一个机器人会被误判成本机器人。昵称全为空时保持谨慎的位置兜底。
         """
         bot_items = [item for item in _mention_items(data) if item.get("bot") is True]
         if not bot_items:
             return False
         bot_username = self.bot_username.strip()
         if bot_username:
-            for item in bot_items:
-                if str(item.get("username") or "").strip() == bot_username:
+            usernames = [str(item.get("username") or "").strip() for item in bot_items]
+            for name in usernames:
+                if name == bot_username:
                     self._warn_bot_mention_fallback(data)
                     return True
+            if any(usernames):
+                # mentions 里标明是别的机器人：位置兜底会把「@别的 bot」误判成 @ 自己。
+                return False
         content = str(data.get("content") or "")
         content_ids = _content_mention_ids(content)
         if not content_ids:
@@ -273,7 +279,7 @@ class EventMapper:
         mentioned_self: bool | None,
         source: str,
     ) -> None:
-        """@ 判定诊断：见到任何 @ 信号就 INFO，纯无信号用 DEBUG，避免群消息刷屏。"""
+        """@ 判定诊断：权威 @ 或 mentions 里有 bot=true 才 INFO；普通群友 @ 只留 DEBUG，避免刷屏。"""
         content_at_ids = _content_mention_ids(data.get("content"))
         bot_mention_ids = _bot_mention_ids(data)
         bot_mention_names = _bot_mention_names(data)
@@ -292,7 +298,7 @@ class EventMapper:
             "bot_mention_names": bot_mention_names,
             "has_at_signal": bool(content_at_ids or bot_mention_ids),
         }
-        if mentioned_self or content_at_ids or bot_mention_ids:
+        if mentioned_self or bot_mention_ids:
             self._logger.info("官方消息 @ 判定", **fields)
         else:
             self._logger.debug("官方消息 @ 判定", **fields)
