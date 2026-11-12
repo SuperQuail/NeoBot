@@ -64,12 +64,19 @@ class _QueueSegmentMixin:
         return "[无消息内容]"
 
     def _is_at_bot_segment(self, segment: object, message: object = None) -> bool:
-        """该 at 段是否指向任一 bot（消息级 self_id 优先，其次队列登记的 bot_accounts）。"""
+        """该 at 段是否指向任一 bot。
+
+        官方消息优先用适配器的权威结论 mentioned_self（uin/at 段 qq=0 时也能判）；
+        非官方/未知回退 at 段匹配（消息级 self_id 优先，其次 bot_accounts）。
+        """
         seg_type = getattr(segment, "type", None)
         if isinstance(seg_type, Enum):
             seg_type = seg_type.value
         if str(seg_type) != "at":
             return False
+        mentioned_self = getattr(message, "mentioned_self", None)
+        if mentioned_self is not None:
+            return bool(mentioned_self)
         raw_data = getattr(segment, "data", None)
         data = self._segment_data_to_dict(raw_data)
         qq = str(data.get("qq") or "")

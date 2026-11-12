@@ -269,3 +269,22 @@ async def test_duplicate_full_then_at_events_keep_addressed_result() -> None:
         kept, kind="group", queue_key="group-openid-1"
     )
     assert result.consumed is True
+
+
+async def test_duplicate_full_without_bot_info_then_at_upgrades_to_addressed() -> None:
+    """FULL 先到但没拿到 bot 信息（mentioned_self=False）占住 msg_id，AT 后到必须放行。"""
+    mapper = _mapper(bot_openid="")
+    full_message = _map_message(_full_group_payload("/reboot", message_id="ROBOT1.0_late-at"), mapper)
+    at_message = _map_message(_user_group_at_payload(" /reboot ", message_id="ROBOT1.0_late-at"), mapper)
+    pipeline = _event_pipeline()
+
+    assert full_message.message_id == at_message.message_id
+    assert full_message.mentioned_self is False
+    assert at_message.mentioned_self is True
+    assert await pipeline._is_duplicate_message(full_message) is False
+    assert await pipeline._is_duplicate_message(at_message) is False  # 未 @ → 被 @ 升级放行
+    assert await pipeline._is_duplicate_message(at_message) is True  # 只升级一次
+
+    result = await _command_service().handle_message(at_message, kind="group", queue_key="group-openid-1")
+    assert result.consumed is True
+    assert _willing_service().is_at_mentioned(at_message) is True

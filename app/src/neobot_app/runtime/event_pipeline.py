@@ -93,7 +93,9 @@ class EventPipeline(
         self._replying_queues: set[str] = set()
         self._post_reply_willing: dict[str, list] = {}
         self._pending_image_willing: dict[str, list] = {}
-        self._recent_message_ids: deque[int] = deque(maxlen=200)
+        # 滑动窗口：(message_id, 是否 @ 了机器人)；同一 msg_id 的全量/AT 双事件
+        # 需要按「未@ → 被@」放行一次，见 _is_duplicate_message。
+        self._recent_message_ids: deque[tuple[int, bool]] = deque(maxlen=200)
         self._recent_message_ids_lock = asyncio.Lock()
         self._image_willing_locks: dict[str, asyncio.Lock] = {}
         self._background_tasks: set[asyncio.Task[None]] = set()

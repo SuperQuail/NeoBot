@@ -18,7 +18,12 @@ from neobot_app.runtime.sleep_service import DEFAULT_WAKE_PROMPT, SleepService
 from neobot_app.skills.image_parse_skill import ImageParseSkill
 
 
-def _group_message(message_id: int, text: str = "hello") -> GroupMessage:
+def _group_message(
+    message_id: int,
+    text: str = "hello",
+    *,
+    mentioned_self: bool | None = None,
+) -> GroupMessage:
     return GroupMessage(
         message_id=message_id,
         user_id=7,
@@ -26,6 +31,7 @@ def _group_message(message_id: int, text: str = "hello") -> GroupMessage:
         sender=PostMessageMessagesender(user_id=7, nickname="tester"),
         message=[MessageSegment(type="text", data={"text": text})],
         raw_message=text,
+        mentioned_self=mentioned_self,
     )
 
 
@@ -69,6 +75,32 @@ async def test_event_pipeline_dedup_window_is_bounded():
     assert not await pipeline._is_duplicate_message(_group_message(2))
     assert not await pipeline._is_duplicate_message(_group_message(3))
     assert not await pipeline._is_duplicate_message(_group_message(1))
+
+
+@pytest.mark.asyncio
+async def test_duplicate_message_id_allows_full_then_at_upgrade():
+    """同 msg_id：先到全量消息（未 @）占位，后到 AT 事件（被 @）必须放行一次。"""
+    pipeline = _new_pipeline()
+    full = _group_message(9201, "/reboot", mentioned_self=False)
+    at = _group_message(9201, "/reboot", mentioned_self=True)
+
+    assert not await pipeline._is_duplicate_message(full)
+    assert not await pipeline._is_duplicate_message(at)
+    # 升级只发生一次：之后同 id 的重复仍丢弃
+    assert await pipeline._is_duplicate_message(full)
+    assert await pipeline._is_duplicate_message(at)
+
+
+@pytest.mark.asyncio
+async def test_duplicate_message_id_addressed_first_drops_later_full():
+    """同 msg_id：AT 先到（被 @）后到全量消息仍只处理一次。"""
+    pipeline = _new_pipeline()
+    at = _group_message(9202, "/reboot", mentioned_self=True)
+    full = _group_message(9202, "/reboot", mentioned_self=False)
+
+    assert not await pipeline._is_duplicate_message(at)
+    assert await pipeline._is_duplicate_message(full)
+    assert await pipeline._is_duplicate_message(at)
 
 
 @pytest.mark.asyncio
@@ -1150,5 +1182,39 @@ def test_linked_group_official_at_bot_message_kept_when_onebot_connected(
             )
             is True
         )
+    finally:
+        bind_user_identity(None)
+
+
+@pytest.mark.asyncio
+async def test_linked_group_full_then_at_same_msg_id_keeps_at_processing(tmp_path) -> None:
+    """映射群双事件：FULL（未 @）先到被去重交给 OneBot，同 msg_id 的 AT 后到仍按 @ 处理。"""
+    from neobot_app.user_identity import bind_user_identity, link_group_number
+
+    bind_user_identity(tmp_path)
+    try:
+        assert link_group_number(8000000000009, 123456789, channel="official", trusted=True)[0]
+        pipeline = object.__new__(EventPipeline)
+        pipeline._recent_message_ids = deque(maxlen=200)
+        pipeline._recent_message_ids_lock = asyncio.Lock()
+        pipeline.adapter = SimpleNamespace(connected_channels=("onebot", "official"))
+        event = {
+            "post_type": "message",
+            "message_type": "group",
+            "message_id": 9103,
+            "self_id": 123456789,
+            "group_id": 8000000000009,
+            "user_id": "user_openid",
+            "neobot_channel": "official",
+            "message": [{"type": "text", "data": {"text": "/reboot"}}],
+            "raw_message": "/reboot",
+        }
+        full = safe_parse_model({**event, "mentioned_self": False}, GroupMessage)
+        at = safe_parse_model({**event, "mentioned_self": True}, GroupMessage)
+
+        assert await pipeline._is_duplicate_message(full) is False
+        assert pipeline._is_linked_group_duplicate(full) is True  # 全量重复交给 OneBot
+        assert await pipeline._is_duplicate_message(at) is False  # 同 msg_id 升级放行
+        assert pipeline._is_linked_group_duplicate(at) is False  # @ 消息必须官方通道处理
     finally:
         bind_user_identity(None)

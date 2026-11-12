@@ -64,6 +64,10 @@ class _QueueDiffMixin:
                 )
             ):
                 return False
+            # 官方消息以适配器权威结论为准（全量消息没有可用 at 段也能标 @）
+            mentioned_self = getattr(message, "mentioned_self", None)
+            if mentioned_self is not None:
+                return bool(mentioned_self)
             # at 目标匹配任一 bot：消息级 self_id 优先，其次队列登记的 bot_accounts
             bot_ids = self._bot_ids(message)
             if not bot_ids:
