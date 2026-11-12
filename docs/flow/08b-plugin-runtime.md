@@ -31,7 +31,7 @@ covers:
   - scripts/plugin_demo.py
   - scripts/plugin_demo/
 verified_against: d525a5b
-verified_hash: 3555c497160d
+verified_hash: 2bd398980cff
 ---
 
 # 08b 插件运行时：门面动作矩阵 · 热重载回滚 · 安装器 · 钩子总线
