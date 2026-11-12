@@ -220,6 +220,105 @@ async def test_file_info_is_cached_until_ttl_expires(workdir) -> None:
     assert len(api.calls) == 2
 
 
+async def test_url_source_cache_still_reused(workdir) -> None:
+    """URL 来源缓存键保持 source：同一 URL 在 ttl 内仍复用 file_info。"""
+    api = _FakeApi()
+    api.on("/files", dict(_OK_FILE))
+    uploader = MediaUploader(NullLogger())
+
+    kwargs = {
+        "kind": "group",
+        "openid": "group-openid",
+        "segment_type": "image",
+        "source": "https://example.com/same.png",
+    }
+    first = await uploader.upload(api, **kwargs)
+    second = await uploader.upload(api, **kwargs)
+
+    assert first == second
+    assert len(api.calls) == 1
+
+
+def _write_card_atomically(target: Path, data: bytes) -> None:
+    """复刻 CommandService._write_image_bytes：固定文件名 + 临时文件原子覆写。"""
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(target)
+
+
+async def test_local_file_cache_is_invalidated_after_overwrite(workdir, monkeypatch) -> None:
+    """同一路径覆写内容后必须重新上传（本地文件按内容哈希缓存）。"""
+    api = _FakeApi()
+    api.on("/upload_prepare", _prepare_payload(block_size=100, indexes=(0,)))
+    api.on("/upload_part_finish", {"code": 0, "data": {}})
+    api.on(
+        "/files",
+        dict(_OK_FILE),
+        {"code": 0, "data": {"file_info": "SECOND-FILE-INFO", "file_uuid": "FU2", "ttl": 60}},
+    )
+    puts: list[bytes] = []
+
+    async def fake_put(url: str, data: bytes) -> None:
+        puts.append(data)
+
+    monkeypatch.setattr(media_module, "_put_part", fake_put)
+    path = workdir / "help-0-detail.png"
+    path.write_bytes(b"IMAGE-A")
+    uploader = MediaUploader(NullLogger())
+    kwargs = {
+        "kind": "group",
+        "openid": "group-openid",
+        "segment_type": "image",
+        "source": str(path),
+    }
+
+    first = await uploader.upload(api, **kwargs)
+    # 同路径、同字节数快速覆写（Windows 上 st_mtime_ns 可能同毫秒不变）：
+    # 缓存键带内容哈希才能可靠区分两张图。
+    path.write_bytes(b"IMAGE-B")
+    second = await uploader.upload(api, **kwargs)
+
+    assert first.file_info == "FILE-INFO"
+    assert second.file_info == "SECOND-FILE-INFO"
+    assert puts == [b"IMAGE-A", b"IMAGE-B"]
+    assert sum(1 for call in api.calls if call["path"].endswith("/upload_prepare")) == 2
+
+
+async def test_fixed_filename_card_overwrite_does_not_reuse_file_info(workdir, monkeypatch) -> None:
+    """/help 详情卡片固定文件名（help-{perm}-detail.png）覆写两张不同图：不复用。"""
+    api = _FakeApi()
+    api.on("/upload_prepare", _prepare_payload(block_size=100, indexes=(0,)))
+    api.on("/upload_part_finish", {"code": 0, "data": {}})
+    api.on(
+        "/files",
+        dict(_OK_FILE),
+        {"code": 0, "data": {"file_info": "CARD-TWO-INFO", "file_uuid": "FU2", "ttl": 60}},
+    )
+    puts: list[bytes] = []
+
+    async def fake_put(url: str, data: bytes) -> None:
+        puts.append(data)
+
+    monkeypatch.setattr(media_module, "_put_part", fake_put)
+    path = workdir / "help-0-detail.png"
+    uploader = MediaUploader(NullLogger())
+    kwargs = {
+        "kind": "group",
+        "openid": "group-openid",
+        "segment_type": "image",
+        "source": str(path),
+    }
+
+    _write_card_atomically(path, b"CARD-ONE")
+    first = await uploader.upload(api, **kwargs)
+    _write_card_atomically(path, b"CARD-TWO")
+    second = await uploader.upload(api, **kwargs)
+
+    assert first.file_info == "FILE-INFO"
+    assert second.file_info == "CARD-TWO-INFO"
+    assert puts == [b"CARD-ONE", b"CARD-TWO"]
+
+
 async def test_missing_file_info_is_an_error(workdir) -> None:
     api = _FakeApi()
     api.on("/files", {"code": 0, "data": {}})

@@ -113,16 +113,24 @@ class MediaUploader:
         if not source:
             raise MediaUploadError("富媒体来源为空")
         _validate_extension(source, file_name, file_type)
-        cache_key = (kind, openid, file_type, source)
-        cached = self._cache_get(cache_key)
-        if cached is not None:
-            return cached
 
         if source.startswith(("http://", "https://")):
             # 官方只认它能访问到的 URL；拉不到就报错，不下载后改走分片。
+            cache_key = (kind, openid, file_type, source)
+            cached = self._cache_get(cache_key)
+            if cached is not None:
+                return cached
             result = await self._upload_url(api, kind, openid, file_type, source, file_name, timeout)
         else:
             data, name = _read_source(source, file_name)
+            # 本地/内联来源按内容哈希缓存：app 的卡片图用固定文件名覆写
+            # （help-{perm}-{page}.png / reload.png），Windows 上快速覆写时
+            # st_mtime_ns 可能同毫秒不变，只有内容才能可靠区分新旧图。
+            digest = hashlib.sha1(data, usedforsecurity=False).hexdigest()
+            cache_key = (kind, openid, file_type, f"{source}|{digest}")
+            cached = self._cache_get(cache_key)
+            if cached is not None:
+                return cached
             result = await self._upload_bytes(api, kind, openid, file_type, data, name, timeout)
         self._cache_put(cache_key, result)
         return result
