@@ -4,7 +4,7 @@ covers:
   - app/src/neobot_app/runtime/event_pipeline.py
   - app/src/neobot_app/message/queue.py
 verified_against: d525a5b
-verified_hash: 78e427d66ebd
+verified_hash: 56755bb4d6ef
 ---
 
 # 02c 事件管道：去重 · 命令 · 入队 · 挂起 · 通知
