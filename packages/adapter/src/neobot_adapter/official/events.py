@@ -4,6 +4,10 @@
 这里把它落成 OneBot 形状的 dict 交给门面的事件分发器；本模块不持有网络状态，
 也不认识 HTTP。官方只给 openid/字符串消息 ID：用户/群 ID 直接透传 openid，
 消息 ID 仍经 MessageIdMap 换成 OneBot 的合成 int。
+
+「是否 @ 了机器人」只有两个权威来源：GROUP_AT_MESSAGE_CREATE 事件类型本身，
+以及群全量消息（GROUP_MESSAGE_CREATE）里指向机器人 openid 的正文标记 / mentions；
+结论写入 mentioned_self，不依赖 QQ uin / self_id。
 """
 
 from __future__ import annotations
@@ -44,6 +48,8 @@ _QUOTE_ATTACHMENT = "[附件]"
 _VOICE_PLACEHOLDER = "[语音消息]"
 #: 官方文本里 @ 机器人的标记：<@!openid> 或 <qqbot-at-user id="openid" />。
 _MENTION_MARKUP = re.compile(r'(?:<qqbot-at-user\s+id="([^"]*)"\s*/>|<@!?([^>\s]+)>)')
+#: 机器人 openid 未知时群全量消息无法判定 @；只告警一次，避免每条群消息刷屏。
+_missing_bot_openid_warned = False
 _DEDUPE_TTL_SECONDS = 300.0
 _DEDUPE_MAX_SIZE = 1000
 _VOICE_CONTENT_PREFIXES = ("voice", "audio")
@@ -157,14 +163,66 @@ class EventMapper:
         if event_type == "C2C_MESSAGE_CREATE":
             self._fill_private(event, data, message)
         else:
-            self._fill_group(event, data, message, require_at=event_type == "GROUP_AT_MESSAGE_CREATE")
+            self._fill_group(event, data, message, at_event=event_type == "GROUP_AT_MESSAGE_CREATE")
         if event.get("message_type") is None:
             return None
+        mentioned_self: bool | None = None
+        mention_source = "none"
+        if event_type != "C2C_MESSAGE_CREATE":
+            mentioned_self, mention_source = self._judge_group_mention(event_type, data)
+            event["mentioned_self"] = mentioned_self
         event["message"] = message
         event["raw_message"] = "".join(
             str(segment.get("data", {}).get("text") or "") for segment in message if segment.get("type") == "text"
         )
+        self._log_addressing(event_type, event, data, mentioned_self, mention_source)
         return event
+
+    def _judge_group_mention(self, event_type: str, data: dict[str, Any]) -> tuple[bool, str]:
+        """群消息是否 @ 了机器人；返回 (权威结论, 判定来源)。"""
+        if event_type == "GROUP_AT_MESSAGE_CREATE":
+            # 官方契约：该事件类型本身就表示用户在群里 @ 了机器人（content 已去掉 @ 前缀）。
+            return True, "event_type"
+        bot_openid = self.bot_openid
+        if not bot_openid:
+            # READY 没给 d.user.id 时无法把全量消息里的 @ 对应到机器人，不能猜。
+            _warn_missing_bot_openid(self._logger)
+            return False, "none"
+        if _content_mentions_bot(data.get("content"), bot_openid):
+            return True, "content"
+        if _structured_mentions_bot(data, bot_openid):
+            return True, "mentions"
+        return False, "none"
+
+    def _log_addressing(
+        self,
+        event_type: str,
+        event: dict[str, Any],
+        data: dict[str, Any],
+        mentioned_self: bool | None,
+        source: str,
+    ) -> None:
+        """@ 判定诊断：见到任何 @ 信号就 INFO，纯无信号用 DEBUG，避免群消息刷屏。"""
+        content_at_ids = _content_mention_ids(data.get("content"))
+        bot_mention_ids = _bot_mention_ids(data)
+        fields = {
+            "event_type": event_type,
+            "message_id": event.get("message_id"),
+            "group_openid": event.get("group_id") if event.get("message_type") == "group" else "",
+            "sender_id": event.get("user_id"),
+            "mentioned_self": mentioned_self,
+            "source": source,
+            "bot_openid": self.bot_openid,
+            "self_id": event.get("self_id"),
+            # 排查用：正文里抽到的 @ 标记、mentions 里 bot=true 的 id（未必等于 bot_openid）。
+            "content_at_ids": content_at_ids,
+            "bot_mention_ids": bot_mention_ids,
+            "has_at_signal": bool(content_at_ids or bot_mention_ids),
+        }
+        if mentioned_self or content_at_ids or bot_mention_ids:
+            self._logger.info("官方消息 @ 判定", **fields)
+        else:
+            self._logger.debug("官方消息 @ 判定", **fields)
 
     def map_notice(self, event_type: str, data: dict[str, Any]) -> dict[str, Any]:
         """官方非消息事件 → OneBot notice/request；缺少 openid 时返回 None。"""
@@ -313,7 +371,7 @@ class EventMapper:
         data: dict[str, Any],
         message: list[dict[str, Any]],
         *,
-        require_at: bool,
+        at_event: bool,
     ) -> None:
         author = data.get("author") if isinstance(data.get("author"), dict) else {}
         group_openid = str(data.get("group_openid") or data.get("group_id") or "").strip()
@@ -323,8 +381,9 @@ class EventMapper:
             return
         group_id = group_openid
         user_id = user_openid
-        if require_at:
-            # GROUP_AT_MESSAGE_CREATE 必然 @ 了机器人：OneBot 消费方按 at 段判断。
+        if at_event:
+            # GROUP_AT_MESSAGE_CREATE 是 @ 事件：at 段留给 OneBot 形状的文本渲染，
+            # 是否被 @ 以 mentioned_self 为权威，不看这个段的 qq。
             message.append({"type": "at", "data": {"qq": self.self_id}})
         _append_quote(message, data)
         _append_content_with_mentions(
@@ -333,7 +392,6 @@ class EventMapper:
             data.get("mentions"),
             bot_self_id=self.self_id,
             bot_openid=self.bot_openid,
-            unknown_is_bot=True,
         )
         _append_attachments(message, data.get("attachments"))
         role = str(author.get("member_role") or "").strip().casefold()
@@ -343,8 +401,6 @@ class EventMapper:
             {
                 "message_type": "group",
                 "sub_type": "normal",
-                # 原生 @ 事件标记：机器 uin 未解析时 at 段 qq=0，命令层仍须判定为被 @。
-                "official_at": bool(require_at),
                 "group_id": group_id,
                 "user_id": user_id,
                 "sender": {
@@ -413,6 +469,66 @@ def _mention_openid(item: Any) -> str:
     return str(item.get("member_openid") or item.get("id") or item.get("user_openid") or "").strip()
 
 
+def _warn_missing_bot_openid(logger: Logger) -> None:
+    global _missing_bot_openid_warned
+    if _missing_bot_openid_warned:
+        return
+    _missing_bot_openid_warned = True
+    logger.warning(
+        "官方机器人 openid 未知，群全量消息无法判定是否 @ 了机器人，按未 @ 处理",
+    )
+
+
+def _content_mention_ids(content: Any) -> list[str]:
+    """content 里的 @ 标记 id（按出现顺序去重）；用于诊断日志。"""
+    seen: list[str] = []
+    for match in _MENTION_MARKUP.finditer(str(content or "")):
+        value = str(match.group(1) or match.group(2) or "").strip()
+        if value and value not in seen:
+            seen.append(value)
+    return seen
+
+
+def _bot_mention_ids(data: dict[str, Any]) -> list[str]:
+    """mentions/msg_elements 里 bot=true 的 id；用于诊断“有 bot mention 但没对上”。"""
+    found: list[str] = []
+    for key in ("mentions", "msg_elements"):
+        items = data.get(key)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict) and item.get("bot") is True:
+                value = _mention_openid(item)
+                if value and value not in found:
+                    found.append(value)
+    return found
+
+
+def _content_mentions_bot(content: Any, bot_openid: str) -> bool:
+    """content 里的 @ 标记（<@!openid> / <@openid> / <qqbot-at-user id=...>）是否指向机器人。"""
+    text = str(content or "")
+    if not text or not bot_openid:
+        return False
+    return any(
+        str(match.group(1) or match.group(2) or "").strip() == bot_openid
+        for match in _MENTION_MARKUP.finditer(text)
+    )
+
+
+def _structured_mentions_bot(data: dict[str, Any], bot_openid: str) -> bool:
+    """mentions / msg_elements 里是否有 bot=true 且指向机器人 openid 的条目。"""
+    if not bot_openid:
+        return False
+    for key in ("mentions", "msg_elements"):
+        items = data.get(key)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict) and item.get("bot") is True and _mention_openid(item) == bot_openid:
+                return True
+    return False
+
+
 def _append_bot_at(message: list[dict[str, Any]], bot_self_id: int) -> None:
     if not bot_self_id:
         return
@@ -431,7 +547,6 @@ def _append_content_with_mentions(
     *,
     bot_self_id: int = 0,
     bot_openid: str = "",
-    unknown_is_bot: bool = False,
 ) -> None:
     """按官方 content 里的 @ 标记顺序生成 text/at 段。
 
@@ -471,12 +586,7 @@ def _append_content_with_mentions(
             seen.add(openid)
         elif bot_openid and openid == bot_openid:
             _append_bot_at(message, bot_self_id)
-        elif unknown_is_bot and bot_self_id and not bot_openid:
-            # 群全量消息（GROUP_MESSAGE_CREATE）的 content 仍带 @机器人 标记，
-            # 但 mentions 明确不含机器人；未知标记就是机器人自己，补成 at 段，
-            # 否则群命令触发条件「被 @bot」无法满足。
-            _append_bot_at(message, bot_self_id)
-        # 其余未知标记（非机器人）无法解析出用户，丢弃，不制造假用户。
+        # 其余未知标记（非机器人/openid 未解析）无法确定是谁，丢弃，不制造假用户。
         cursor = match.end()
     if cursor < len(text):
         _append_text(message, text[cursor:])

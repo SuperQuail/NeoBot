@@ -1,4 +1,4 @@
-"""官方事件映射：openid 直通的 C2C/群消息、通知、附件、引用、去重与 RFC3339 时间。"""
+"""官方事件映射：openid 直通的 C2C/群消息、权威 @ 标记、通知、附件、引用、去重与 RFC3339 时间。"""
 
 from __future__ import annotations
 
@@ -13,8 +13,11 @@ import pytest
 
 from neobot_contracts.ports.logging import NullLogger
 
+from neobot_adapter.model.message import GroupMessage, PrivateMessage
+from neobot_adapter.official import events as events_module
 from neobot_adapter.official.events import EventMapper
 from neobot_adapter.official.identity import MessageIdMap
+from neobot_adapter.utils.parse import safe_parse_model
 
 
 @pytest.fixture
@@ -26,6 +29,27 @@ def workdir():
         yield path
     finally:
         shutil.rmtree(path, ignore_errors=True)
+
+
+class _RecordingLogger(NullLogger):
+    """捕获结构化日志字段，供 @ 判定诊断断言使用。"""
+
+    def __init__(self) -> None:
+        self.debugs: list[tuple[str, dict]] = []
+        self.infos: list[tuple[str, dict]] = []
+        self.warnings: list[tuple[str, dict]] = []
+
+    def bind(self, **ctx: object) -> "_RecordingLogger":
+        return self
+
+    def debug(self, msg: str, **kw: object) -> None:
+        self.debugs.append((msg, kw))
+
+    def info(self, msg: str, **kw: object) -> None:
+        self.infos.append((msg, kw))
+
+    def warning(self, msg: str, **kw: object) -> None:
+        self.warnings.append((msg, kw))
 
 
 def _mapper(_workdir, *, self_id: int = 1020304) -> EventMapper:
@@ -100,7 +124,7 @@ def test_group_at_message_puts_at_segment_first(workdir) -> None:
     assert event["sender"]["role"] == "member"
     assert event["message"][0] == {"type": "at", "data": {"qq": 1020304}}
     assert event["message"][1] == {"type": "text", "data": {"text": " 在吗"}}
-    assert event["official_at"] is True
+    assert event["mentioned_self"] is True
 
 
 def test_group_mentions_become_at_segments(workdir) -> None:
@@ -156,8 +180,9 @@ def test_mention_inside_command_keeps_token_spaces(workdir) -> None:
 
 
 def test_full_group_message_with_bot_marker_gets_bot_at(workdir) -> None:
-    """群全量消息 content 里的 @bot 标记也要转成 at 段，否则命令管线无法触发。"""
+    """群全量消息 content 里的 @bot 标记要权威判为被 @，并保留 at 段给文本渲染。"""
     mapper = _mapper(workdir)
+    mapper.bot_openid = "BOTOPENID"
 
     event = mapper.from_dispatch(
         _dispatch(
@@ -170,6 +195,7 @@ def test_full_group_message_with_bot_marker_gets_bot_at(workdir) -> None:
     )
 
     assert event is not None
+    assert event["mentioned_self"] is True
     assert {"type": "at", "data": {"qq": 1020304}} in event["message"]
     text = "".join(
         str(segment.get("data", {}).get("text") or "") for segment in event["message"] if segment["type"] == "text"
@@ -177,27 +203,183 @@ def test_full_group_message_with_bot_marker_gets_bot_at(workdir) -> None:
     assert text.split() == ["/linkqq", "3514733681"]
 
 
-def test_group_plain_message_has_no_at_segment(workdir) -> None:
+def test_user_group_at_example_is_authoritative_mention(workdir) -> None:
+    """用户给的 GROUP_AT 示例：content 已去掉 @ 前缀、没有 mentions，事件类型即权威 @。"""
     mapper = _mapper(workdir)
+    payload = _dispatch(
+        "GROUP_AT_MESSAGE_CREATE",
+        {
+            "id": "ROBOT1.0_user-example",
+            "content": " /今日天气 ",
+            "timestamp": "2026-11-12T12:00:00+08:00",
+            "group_openid": "group-openid-1",
+            "author": {
+                "id": "member-openid-1",
+                "member_openid": "member-openid-1",
+                "union_openid": "union-openid-1",
+            },
+            "message_scene": {"source": "default", "ext": []},
+        },
+    )
+
+    event = mapper.from_dispatch(payload)
+
+    assert event is not None
+    assert event["mentioned_self"] is True
+    assert " /今日天气 " in event["raw_message"]
+
+
+def test_full_group_message_without_mention_is_false(workdir) -> None:
+    """群全量消息没有 @ 机器人时，权威结论是 False，不是「未知」。"""
+    mapper = _mapper(workdir)
+    mapper.bot_openid = "bot-openid"
 
     event = mapper.from_dispatch(_dispatch("GROUP_MESSAGE_CREATE", _group_data(content="随便聊聊")))
 
     assert event is not None
     assert event["message"] == [{"type": "text", "data": {"text": "随便聊聊"}}]
-    assert event["official_at"] is False
+    assert event["mentioned_self"] is False
 
 
-def test_group_at_event_marks_official_at_even_without_robot_uin(workdir) -> None:
-    """机器人 uin 未解析（self_id=0）时，@ 事件仍要带 official_at 标记。"""
-    mapper = _mapper(workdir, self_id=0)
+def test_full_group_message_content_marker_mentions_bot(workdir) -> None:
+    mapper = _mapper(workdir)
+    mapper.bot_openid = "BOTOPENID"
 
     event = mapper.from_dispatch(
-        _dispatch("GROUP_AT_MESSAGE_CREATE", _group_data(content="<@!BOTOPENID> 在吗"))
+        _dispatch("GROUP_MESSAGE_CREATE", _group_data(content="<@!BOTOPENID> /help"))
     )
 
     assert event is not None
-    assert event["official_at"] is True
+    assert event["mentioned_self"] is True
+    assert {"type": "at", "data": {"qq": 1020304}} in event["message"]
+
+
+def test_full_group_message_content_marker_for_other_user_is_false(workdir) -> None:
+    mapper = _mapper(workdir)
+    mapper.bot_openid = "BOTOPENID"
+
+    event = mapper.from_dispatch(
+        _dispatch("GROUP_MESSAGE_CREATE", _group_data(content="<@!OTHEROPENID> 你看"))
+    )
+
+    assert event is not None
+    assert event["mentioned_self"] is False
+
+
+def test_full_group_message_mentions_entry_for_bot_is_true(workdir) -> None:
+    """正文没有标记时，mentions 里 bot=true 且 openid 命中也算被 @。"""
+    mapper = _mapper(workdir)
+    mapper.bot_openid = "bot-openid"
+
+    event = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_MESSAGE_CREATE",
+            _group_data(
+                content="/help",
+                mentions=[
+                    {"id": "bot-openid", "username": "机器人", "bot": True},
+                    {"id": "member-openid-2", "username": "小明", "bot": False},
+                ],
+            ),
+        )
+    )
+
+    assert event is not None
+    assert event["mentioned_self"] is True
+
+
+def test_full_group_message_mentions_other_bot_is_false(workdir) -> None:
+    mapper = _mapper(workdir)
+    mapper.bot_openid = "bot-openid"
+
+    event = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_MESSAGE_CREATE",
+            _group_data(content="/help", mentions=[{"id": "other-bot-openid", "bot": True}]),
+        )
+    )
+
+    assert event is not None
+    assert event["mentioned_self"] is False
+
+
+def test_full_group_message_msg_elements_entry_for_bot_is_true(workdir) -> None:
+    """msg_elements 里的结构化 bot 条目同样可以权威判定。"""
+    mapper = _mapper(workdir)
+    mapper.bot_openid = "bot-openid"
+
+    event = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_MESSAGE_CREATE",
+            _group_data(content="/help", msg_elements=[{"id": "bot-openid", "bot": True}]),
+        )
+    )
+
+    assert event is not None
+    assert event["mentioned_self"] is True
+
+
+def test_full_group_message_without_bot_openid_is_false_and_warns_once(workdir, monkeypatch) -> None:
+    """READY 没给出机器人 openid 时不能猜：全量消息一律 False，且只告警一次。"""
+    monkeypatch.setattr(events_module, "_missing_bot_openid_warned", False)
+    logger = _RecordingLogger()
+    mapper = EventMapper(message_ids=MessageIdMap(), logger=logger, self_id=1020304)
+
+    first = mapper.from_dispatch(
+        _dispatch("GROUP_MESSAGE_CREATE", _group_data(content="<@!UNKNOWNBOT> 在吗"), event_id="evt-1")
+    )
+    second = mapper.from_dispatch(
+        _dispatch("GROUP_MESSAGE_CREATE", _group_data(content="又一条"), event_id="evt-2")
+    )
+
+    assert first is not None and first["mentioned_self"] is False
+    assert second is not None and second["mentioned_self"] is False
+    warnings = [msg for msg, _kw in logger.warnings if "openid" in msg]
+    assert len(warnings) == 1
+    assert "无法判定" in warnings[0]
+
+
+def test_group_at_event_is_authoritative_without_robot_uin(workdir) -> None:
+    """机器人 uin 未解析（self_id=0）时，GROUP_AT 事件仍权威判定为被 @。"""
+    mapper = _mapper(workdir, self_id=0)
+
+    event = mapper.from_dispatch(_dispatch("GROUP_AT_MESSAGE_CREATE", _group_data(content=" /今日天气 ")))
+
+    assert event is not None
+    assert event["mentioned_self"] is True
     assert event["message"][0] == {"type": "at", "data": {"qq": 0}}
+
+
+def test_group_at_mapping_logs_addressing_diagnostics(workdir) -> None:
+    """映射时输出固定字段诊断，便于定位「没反应」发生在哪一步。"""
+    logger = _RecordingLogger()
+    mapper = EventMapper(message_ids=MessageIdMap(), logger=logger, self_id=1020304)
+
+    event = mapper.from_dispatch(_dispatch("GROUP_AT_MESSAGE_CREATE", _group_data(content=" /今日天气 ")))
+
+    assert event is not None
+    fields = next(kw for _msg, kw in logger.infos if "mentioned_self" in kw)
+    assert fields["event_type"] == "GROUP_AT_MESSAGE_CREATE"
+    assert fields["message_id"] == event["message_id"]
+    assert fields["group_openid"] == "group-openid-1"
+    assert fields["sender_id"] == "member-openid-1"
+    assert fields["mentioned_self"] is True
+    assert fields["source"] == "event_type"
+    assert fields["self_id"] == 1020304
+    assert "bot_openid" in fields
+
+
+def test_group_message_model_carries_mentioned_self_only(workdir) -> None:
+    """官方权威标记只加在群消息模型上；旧的 official_at 字段已删除。"""
+    assert "mentioned_self" in GroupMessage.model_fields
+    assert "mentioned_self" not in PrivateMessage.model_fields
+    assert "official_at" not in GroupMessage.model_fields
+
+    mapper = _mapper(workdir)
+    mapper.bot_openid = "bot-openid"
+    event = mapper.from_dispatch(_dispatch("GROUP_MESSAGE_CREATE", _group_data(content="随便聊聊")))
+    assert event is not None
+    assert safe_parse_model(event, GroupMessage).mentioned_self is False
 
 
 def test_image_attachment_maps_to_image_segment(workdir) -> None:

@@ -291,8 +291,8 @@ class OfficialAdapter:
         return actions.supports_action(action)
 
     async def ensure_robot_identity(self) -> None:
-        """缓存机器人自身 uin/昵称（get_login_info 与群聊 at 段都要用）。"""
-        if self._robot_uin or self._api is None:
+        """缓存机器人自身 uin/openid/昵称（@ 判定与 get_login_info 都要用）。"""
+        if self._api is None or (self._robot_uin and self._mapper.bot_openid):
             return
         gateway = self._gateway
         if gateway is None or not gateway.connected:
@@ -303,6 +303,11 @@ class OfficialAdapter:
             self._logger.warning("获取官方机器人自身信息失败", error=str(exc))
             return
         data = api_data(payload)
+        # READY 缺 user.id 时用 /users/@me 的 id 兜底：群全量消息的 @ 判定要用它。
+        openid = str(data.get("id") or data.get("user_openid") or "").strip()
+        if openid and openid != self._mapper.bot_openid:
+            self._mapper.bot_openid = openid
+            self._logger.info("已获取官方机器人 openid", bot_openid=openid)
         nickname = str(data.get("username") or data.get("nickname") or "").strip()
         if nickname:
             self._robot_nickname = nickname
@@ -478,6 +483,7 @@ class OfficialAdapter:
         self._robot_uin = 0
         self._robot_nickname = ""
         self._mapper.self_id = 0
+        self._mapper.bot_openid = ""
         self._token_provider = TokenProvider(self._settings)
         self._api = OfficialApi(self._settings, self._token_provider, self._logger)
         self._sender = MessageSender(
@@ -557,7 +563,7 @@ class OfficialAdapter:
         event_type = str(payload.get("t") or "")
         if event_type in {"READY", "RESUMED"}:
             data = payload.get("d")
-            self._remember_bot_openid(data if isinstance(data, dict) else {})
+            self._remember_bot_openid(data if isinstance(data, dict) else {}, event_type)
             if self._ready_event.is_set():
                 # 断线重连：身份已缓存，补一帧 lifecycle.connect 让上层重新判定。
                 self._connected = True
@@ -595,14 +601,19 @@ class OfficialAdapter:
     def _self_id(self) -> int:
         return self._robot_uin or self._mapper.self_id
 
-    def _remember_bot_openid(self, data: dict[str, Any]) -> None:
+    def _remember_bot_openid(self, data: dict[str, Any], event_type: str) -> None:
+        """READY/RESUMED 的 d.user.id 是机器人 openid 的唯一可靠来源。"""
         user = data.get("user") if isinstance(data.get("user"), dict) else {}
         openid = str(user.get("id") or user.get("user_openid") or "").strip()
         if not openid:
+            self._logger.warning(
+                "官方 READY/RESUMED 未提供机器人 openid（d.user.id），群全量消息无法判定是否 @ 了机器人",
+                event_type=event_type,
+            )
             return
-        self._mapper.bot_openid = openid
-        if self._robot_uin:
-            return
+        if openid != self._mapper.bot_openid:
+            self._mapper.bot_openid = openid
+            self._logger.info("已获取官方机器人 openid", bot_openid=openid)
         # 机器人 at 段固定用真 QQ 号（uin）；还没拿到 uin 时不制造假号，
         # self_id 保持 0，由 _append_bot_at 跳过，等 /users/@me 返回后补齐。
 
