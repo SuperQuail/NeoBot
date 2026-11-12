@@ -12,7 +12,6 @@ import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote
 
@@ -639,7 +638,9 @@ def _prepare(message: str | list[dict[str, Any]]) -> _Prepared:
                 raise _SendFailure(f"媒体消息段 {segment_type} 缺少 file/url/local_path")
             file_name = str(data.get("name") or "").strip()
             if not file_name and local_path:
-                file_name = Path(local_path).name
+                # local_path 可能来自另一平台（CI/测试用 Windows 路径），Path.name
+                # 在 POSIX 上不拆反斜杠，统一按 / 和 \\ 取 basename。
+                file_name = local_path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
             media.append(
                 (
                     "record" if segment_type == "voice" else segment_type,
