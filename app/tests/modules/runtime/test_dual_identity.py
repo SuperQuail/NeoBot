@@ -11,6 +11,7 @@ from neobot_adapter.model.message import GroupMessage, MessageSegment, PrivateMe
 from neobot_app.bot_detect import BotDetector
 from neobot_app.commands.service import CommandService
 from neobot_app.config.schemas.bot import BotConfig
+from neobot_app.message.addressing import is_addressed_to_bot
 from neobot_app.message.queue import MessageQueue, is_bot_message
 from neobot_app.prompt.role_messages import build_role_messages
 from neobot_app.runtime.event_pipeline import EventPipeline
@@ -360,14 +361,10 @@ def test_willing_official_channel_does_not_imply_mention() -> None:
     )
 
 
-def test_willing_mentioned_bot_prefers_message_self_id() -> None:
+def test_addressing_prefers_message_self_id() -> None:
     """@ 判定优先用消息 self_id，配置里的旧账号不参与。"""
-    service = object.__new__(WillingService)
-    service._config = _config(account=999)
-    service._bot_detector = None
-
     message = _group(60, user_id=USER_ACCOUNT, self_id=OFFICIAL_ACCOUNT, at=OFFICIAL_ACCOUNT)
-    assert service._mentioned_bot(message) is True
+    assert is_addressed_to_bot(message, _config(account=999)) is True
 
     plain = PrivateMessage(
         message_id=61,
@@ -376,4 +373,4 @@ def test_willing_mentioned_bot_prefers_message_self_id() -> None:
         message=[MessageSegment(type="text", data={"text": "你好"})],
         raw_message="你好",
     )
-    assert service._mentioned_bot(plain) is False
+    assert is_addressed_to_bot(plain, _config(account=999)) is False

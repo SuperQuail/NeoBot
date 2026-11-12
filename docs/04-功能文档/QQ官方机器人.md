@@ -44,10 +44,10 @@ NeoBot 支持两种 QQ 接入通道，并可以**同时运行**：
 ## 身份判定与账号
 
 - 判定只在**连接建立后**进行：对每条已连接通道调用 `get_version_info`，`app_name` 为 `NeoBot-QQOfficial` 即官方通道；未连接不判定、不猜测。双待下每条通道各有一份判定结果（通道、账号、昵称）。
-- **双通道路由**：已通过 `/linkgroup` 建立群号映射、且 OneBot 与官方 bot 都在线的群，官方通道的群消息会去重交给 OneBot 处理；但显式 @ 官方机器人的消息（`GROUP_AT_MESSAGE_CREATE` 或正文带 `@机器人` 标记，适配器会补 at 段）不参与去重，仍按官方通道正常回复/触发命令。回复默认发 OneBot，OneBot 连接不可用时自动回落到官方通道（Conversation ID 会按映射换成官方的 group_openid）。
+- **双通道路由**：已通过 `/linkgroup` 建立群号映射、且 OneBot 与官方 bot 都在线的群，官方通道的群消息会去重交给 OneBot 处理；但明确 @ 官方机器人的消息不参与去重，仍按官方通道正常回复/触发命令。@ 判定由适配器按官方 API 契约给出权威结论 `mentioned_self`（见下一条），app 侧统一走 `is_addressed_to_bot`。回复默认发 OneBot，OneBot 连接不可用时自动回落到官方通道（Conversation ID 会按映射换成官方的 group_openid）。
 - **双待模式下两个机器人 QQ 号都通过工具/API 获取**（`get_login_info` 等），**不读 `[bot].account`**：两个号不同，不能用一个配置值代表。消息自带 `self_id`（即对应通道的机器人号），自我发言判断、提示词、命令 @ 判定都按消息级账号处理。
 - 单通道模式保留旧行为：`[bot].account = 0` 时连接后用 API 自动回填运行期配置；`[bot].official_mode` 仍可强制官方/非官方行为。
-- 官方通道的官方行为：只有群 @ 事件（`GROUP_AT_MESSAGE_CREATE`）和正文里带 `@机器人` 标记的群全量消息会识别为「被 @」，按必回处理；普通群全量消息（`GROUP_MESSAGE_CREATE`）没有 @ 时按普通群消息走意愿概率，不触发必回、也不触发群命令。提示词会注入官方机器人的能力边界；双待下只有官方通道的回复会注入该说明。
+- 官方通道的官方行为：@ 判定按官方 API 契约——`GROUP_AT_MESSAGE_CREATE` 事件本身即表示用户在群里 @ 了机器人（`content` 已去掉 @ 前缀，不看 uin/at 段/mentions），按必回并触发群命令；`GROUP_MESSAGE_CREATE`（群全量消息）只有 `content` 里带 `<@!bot_openid>` / `<@bot_openid>` / `<qqbot-at-user id="bot_openid">`，或 `mentions`/`msg_elements` 中 `bot=true` 且 id 等于机器人 openid 时才算被 @，否则权威结论是「未 @」，按普通群消息走意愿概率。机器人 openid 取自 READY 的 `d.user.id`；拿不到时全量消息一律按未 @ 处理并只记一次 WARNING。适配器把结论写入消息模型 `mentioned_self`（True/False；非官方为 None），app 侧统一由 `is_addressed_to_bot` 消费，命令/@必回/已映射群去重/睡眠/提示词不再按通道名、uin/self_id、at qq=0 猜。提示词会注入官方机器人的能力边界；双待下只有官方通道的回复会注入该说明。
 - **提示词口径**：官方通道的 system 提示词最前面追加「当前你是使用官方渠道搭建的QQ机器人,所以你看不到QQ号和群号,只看得到QQ ID和群ID,」；同一轮提示词（system 与上下文块）里的「QQ号」「群号」统一改称「QQ ID」「群 ID」。
 
 ## 热重载
@@ -95,6 +95,8 @@ NeoBot 支持两种 QQ 接入通道，并可以**同时运行**：
 
 ## 排查
 
+- **官方 @ 判定排查**：搜索日志 `官方消息 @ 判定`，字段 `event_type` / `message_id` / `group_openid` / `sender_id` / `mentioned_self` / `source`（`event_type`｜`content`｜`mentions`｜`none`）/ `bot_openid` / `self_id` / `content_at_ids` / `bot_mention_ids`。`GROUP_AT_MESSAGE_CREATE` 恒为 `mentioned_self=true`；群全量消息未命中时先看 `content_at_ids`/`bot_mention_ids` 是否出现、以及 `bot_openid` 是否为空（READY/RESUMED 未给 `user.id` 时会告警）。
+- **已连接但 @ 命令 / 必回不触发**：先确认进程确实已重启并运行修复后的代码（editable 安装时 `neobot --version` 可能仍显示旧安装元数据，不能只看版本号；发布包部署则需更新构建后重启）。再看上面日志的 `source`：若 `source=none` 且 `bot_openid` 为空，说明官方平台把这条 @ 当作群全量消息投递、且 READY/RESUMED 没给机器人 openid —— 此时全量消息无法判定 @，应让群使用 `GROUP_AT_MESSAGE_CREATE`（群 @ 消息事件）或补齐开放平台权限；若正文无任何 `@` 标记且 `mentions` 不含机器人，按契约无法判定，属平台事件能力限制。另：同一 `msg_id` 的 `GROUP_AT` 与 `GROUP_MESSAGE_CREATE` 双事件以先到者为准，若全量事件先到且无法判定 @，后续 @ 事件可能被去重丢弃（正常 READY 有 openid 时全量事件可自行判定，此边界少见）。
 - **日志出现「连续 3 次登录失败，需要重新扫码登录」**：官方通道已停止用旧凭据重连，面板与终端会自动出现新二维码——用手机 QQ 重新扫码即可；来自扫码的旧凭据已删除，来自配置/环境变量的 AppID/AppSecret 不会被改动，请检查配置或清空配置后重新扫码。
 - **只有一条通道在线**：面板「机器人通道」页分别显示两条通道；官方未绑定会显示二维码，OneBot 未连接会显示监听地址。另一条离线不影响这条。
 - **双待下账号显示「未获取（连接后自动读取）」**：该通道尚未连接或身份解析未完成；连接成功后会自动从 API 获取两个不同的机器人 QQ 号。

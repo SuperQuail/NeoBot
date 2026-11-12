@@ -14,6 +14,7 @@ from neobot_app.bot_accounts import bot_account_for_message, bot_accounts
 from neobot_app.user_identity import trusted_group_number_for, trusted_qq_for_user
 from neobot_app.config.schemas.bot import BotConfig
 from neobot_app.core.paths import get_data_dir
+from neobot_app.message.addressing import is_addressed_to_bot
 from neobot_app.message.queue import MessageQueue
 from neobot_app.willing.builtin import QuailWillingManager, clamp_probability
 from neobot_app.willing.models import (
@@ -360,7 +361,7 @@ class WillingService:
         allowed, block_reason = self._is_conversation_allowed(conversation_type, queue_key)
         base_probability = self._base_probability(conversation_type)
         conversation_coefficient = self._conversation_coefficient(message)
-        mentioned_bot = self._mentioned_bot(message)
+        mentioned_bot = is_addressed_to_bot(message, self._config)
         called_bot_name = self._called_bot_name(text)
         replied_to_message = self._has_reply_segment(message)
         matched_keywords = self._matched_keywords(text)
@@ -529,35 +530,12 @@ class WillingService:
     def is_at_mentioned(self, message: ChatMessage) -> bool:
         """检查机器人是否被 @提及，且配置了被@必回。
 
-        官方通道只有群 @ 事件（GROUP_AT_MESSAGE_CREATE）由适配器补上指向机器人
-        self_id 的 at 段；群全量消息（GROUP_MESSAGE_CREATE）没有 @ 时不得当成 @，
-        否则每条群消息都会触发必回。账号解析完成前用消息级 self_id 兜底。
+        判定本身交给统一入口：官方通道用适配器给出的 mentioned_self 权威结论，
+        非官方/未知回退 OneBot 的 at 段逻辑（见 neobot_app.message.addressing）。
         """
         if not getattr(self._config.chat, "at_mention_guaranteed_reply", True):
             return False
-        # 官方通道原生 @ 事件：即使机器人 uin 未解析（at 段 qq=0）也必须算被 @。
-        if getattr(message, "official_at", False):
-            return True
-        return self._mentioned_bot(message)
-
-    def _mentioned_bot(self, message: ChatMessage) -> bool:
-        target = str(bot_account_for_message(message, self._config))
-        if message.message:
-            for segment in message.message:
-                segment_type = getattr(segment, "type", None)
-                if hasattr(segment_type, "value"):
-                    segment_type = segment_type.value
-                if str(segment_type) != "at":
-                    continue
-                raw_data = getattr(segment, "data", None)
-                data = raw_data if isinstance(raw_data, dict) else (
-                    raw_data.model_dump(exclude_none=True) if hasattr(raw_data, "model_dump") else {}
-                )
-                if str(data.get("qq") or "") == target:
-                    return True
-
-        raw_message = str(message.raw_message or "")
-        return f"[CQ:at,qq={target}" in raw_message
+        return is_addressed_to_bot(message, self._config)
 
     def _called_bot_name(self, text: str) -> bool:
         names = [self._config.bot.nick_name, *(self._config.bot.alias_name or [])]

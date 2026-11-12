@@ -18,6 +18,7 @@ from neobot_app.commands.model import (
 )
 from neobot_app.commands.permissions import PermissionManager
 from neobot_app.commands.registry import CommandRegistry
+from neobot_app.message.addressing import is_addressed_to_bot
 
 SendCallback = Callable[[str, str, str, str | int | None], Awaitable[Any]]
 ConfigSaveCallback = Callable[[list[int]], Awaitable[ConfigSaveResult]]
@@ -167,14 +168,13 @@ class CommandService:
         - 私聊:文本为命令形态即可
         - 非命令形态 / 未注册命令:返回 consumed=False(移交正常管线)
         """
-        bot_account = self._bot_account(message)
         at_qqs = self._collect_at_qqs(message)
         text = self._message_text(message)
 
-        # 触发条件:群聊需被 @bot（只认显式 at 段；官方群全量消息没有 @ 时
-        # 不能当命令触发，只有 @ 事件/正文 @bot 标记会被适配器补成 at 段）
+        # 触发条件:群聊需被 @bot（官方通道取 mentioned_self 权威结论，
+        # 其余按显式 at 段；官方群全量消息没有 @ 时不能当命令触发）
         if kind == "group":
-            if not self._is_command_mention(message, bot_account, at_qqs):
+            if not is_addressed_to_bot(message, self._config):
                 return CommandHandleResult(consumed=False)
         elif kind not in ("private", "friend"):
             return CommandHandleResult(consumed=False)
@@ -270,13 +270,6 @@ class CommandService:
             if text and text != "0" and text != "all":
                 result.add(text)
         return result
-
-    @staticmethod
-    def _is_command_mention(message: Any, bot_account: int, at_qqs: set[str]) -> bool:
-        """群聊命令是否 @ 了 bot：显式 at 段，或官方通道原生 @ 事件标记。"""
-        if identity_text(bot_account) in at_qqs:
-            return True
-        return bool(getattr(message, "official_at", False))
 
     @staticmethod
     def _message_text(message: Any) -> str:

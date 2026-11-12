@@ -1109,12 +1109,20 @@ def test_linked_group_official_at_bot_message_kept_when_onebot_connected(
         # 没有 at 的普通消息：仍被去重
         assert pipeline._is_linked_group_duplicate(parsed(event["message"])) is True
 
-        # 原生 @ 事件标记（机器人 uin 未解析时 at 段 qq=0）：不丢
+        # 官方权威标记 mentioned_self=True（@ 事件，正文可无 at 段）：不丢
         assert (
             pipeline._is_linked_group_duplicate(
-                safe_parse_model({**event, "official_at": True}, GroupMessage)
+                safe_parse_model({**event, "mentioned_self": True}, GroupMessage)
             )
             is False
+        )
+
+        # 官方权威标记 False 的普通重复消息：仍按重复交给 OneBot
+        assert (
+            pipeline._is_linked_group_duplicate(
+                safe_parse_model({**event, "mentioned_self": False}, GroupMessage)
+            )
+            is True
         )
 
         # 显式 @ 官方 bot（@ 事件/正文 @bot 由适配器补 at 段）：不丢，按官方通道处理

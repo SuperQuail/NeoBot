@@ -7,8 +7,8 @@ from typing import Any
 from typing import Dict
 from neobot_adapter.model.message import GroupMessage
 from neobot_adapter.model.message import PrivateMessage
-from neobot_app.bot_accounts import bot_account_for_message
 from neobot_app.bot_accounts import is_bot_message
+from neobot_app.message.addressing import is_addressed_to_bot
 from neobot_app.time_context import epoch_seconds
 
 
@@ -170,39 +170,11 @@ class _PipelineLifecycleMixin:
                 error=str(exc),
             )
 
-    def _official_message_mentions_bot(self, message: Any) -> bool:
-        """官方消息是否显式 @ 了官方 bot：@ 事件/正文 @bot 由适配器补成 at 段。
-
-        与 willing 的 @ 判定同源：原生 @ 事件带 official_at 标记（uin 未解析时
-        at 段 qq=0）；其余按 at 段 qq 等于消息级 self_id（缺省回退通道账号）。
-        """
-        if getattr(message, "official_at", False):
-            return True
-        target = str(bot_account_for_message(message, getattr(self, "_config", None)))
-        if not target or target == "0":
-            return False
-        for segment in getattr(message, "message", None) or ():
-            segment_type = getattr(segment, "type", None)
-            if hasattr(segment_type, "value"):
-                segment_type = segment_type.value
-            if str(segment_type) != "at":
-                continue
-            raw_data = getattr(segment, "data", None)
-            data = (
-                raw_data
-                if isinstance(raw_data, dict)
-                else (raw_data.model_dump(exclude_none=True) if hasattr(raw_data, "model_dump") else {})
-            )
-            if str(data.get("qq") or "") == target:
-                return True
-        raw_message = str(getattr(message, "raw_message", "") or "")
-        return f"[CQ:at,qq={target}" in raw_message
-
     def _is_linked_group_duplicate(self, message: Any) -> bool:
         """OneBot 已连接的已映射群：官方通道的同一条群消息交给 OneBot 处理。
 
-        显式 @ 了官方 bot 的消息除外：OneBot 侧没有这个 @（@ 事件/正文 @bot
-        由官方适配器补成 at 段），丢给 OneBot 会整条丢失。官方通道断开、
+        显式 @ 了官方 bot 的消息除外：OneBot 侧没有这个 @，丢给 OneBot 会整条
+        丢失（判定走 neobot_app.message.addressing 统一入口）。官方通道断开、
         无映射、OneBot 不在线时都不去重。
         """
         # 解析后 message_type 是枚举（str() 得到 "MessageTypeEnum.group"），先取 value
@@ -224,7 +196,7 @@ class _PipelineLifecycleMixin:
         connected = getattr(adapter, "connected_channels", None)
         if connected is None:
             return False
-        return "onebot" in connected and not self._official_message_mentions_bot(message)
+        return "onebot" in connected and not is_addressed_to_bot(message, getattr(self, "_config", None))
 
     async def _is_duplicate_message(
         self, message: PrivateMessage | GroupMessage
