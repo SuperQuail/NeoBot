@@ -7,8 +7,9 @@ openid。定时任务（runtime.legacy_bindings）与 user_qq_map 已在运行�
 
 迁移源是 <DATA_DIR>/qqbot/identities.json（适配器持久化的 openid ↔ 合成号，
 只读）；文件缺失或损坏时不动数据库（no-op）。整个迁移在一个 SQLite 事务里
-完成，逐条先查后改：目标 openid 行已存在时记 WARNING 并跳过该条，不删除任何
-旧行（留给人工合并）。重复启动幂等。
+完成，逐条先查后改：目标 openid 行已存在时逐条记 DEBUG 并跳过该条，不删除任何
+旧行（留给人工合并）。重复启动幂等；结束时只有发生迁移或跳过才汇总一条 INFO，
+无迁移无跳过完全不记日志（避免每次启动刷 WARNING）。
 
 备份：生产调用点 bootstrap._build_storage 在 alembic 迁移前已写过
 <DATA_DIR>/db_backup 快照，本模块不重复备份。
@@ -39,24 +40,18 @@ _COUNTER_TABLE = "memory_counter"
 _COUNTER_KEY_KINDS = {"group": "group", "private": "user"}
 #: 跨聊天会话的 kind → 本地 ID 类型；bilibili 等其它 kind 不动。
 _SESSION_KINDS = {"group": "group", "private": "user"}
-#: 冲突 WARNING 的条数上限：不让存量脏数据把启动日志刷爆，超出部分只计数。
-_MAX_CONFLICT_LOGS = 20
 
 
 class _ConflictLog:
-    """记录「目标 openid 行已存在」的跳过项，并限流 WARNING。"""
+    """记录「目标 openid 行已存在」的跳过项：逐条 DEBUG，汇总由调用方记 INFO。"""
 
     def __init__(self, logger: Logger) -> None:
         self._logger = logger
         self.count = 0
-        self._logged = 0
 
     def record(self, table: str, legacy_id: str, openid: str, **extra: Any) -> None:
         self.count += 1
-        if self._logged >= _MAX_CONFLICT_LOGS:
-            return
-        self._logged += 1
-        self._logger.warning(
+        self._logger.debug(
             "旧合成号迁移遇到已存在的 openid 行，跳过该条（保留旧数据不删除）",
             table=table,
             legacy_id=legacy_id,
@@ -275,11 +270,12 @@ def migrate_legacy_identity_ids(
         log.warning("旧合成号数据库迁移失败，旧数据保持原样", error=str(exc))
         return {}
 
-    if conflicts.count:
-        log.warning(
-            "旧合成号迁移有跳过项（目标 openid 行已存在，保留两份数据待人工合并）",
-            skipped=conflicts.count,
-        )
-    if counts:
-        log.info("旧合成号数据库迁移完成", tables=counts, skipped=conflicts.count)
+    if counts or conflicts.count:
+        fields: dict[str, Any] = {
+            "migrated": sum(counts.values()),
+            "skipped": conflicts.count,
+        }
+        if counts:
+            fields["tables"] = counts
+        log.info("旧合成号数据库迁移完成", **fields)
     return counts

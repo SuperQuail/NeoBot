@@ -203,6 +203,8 @@ class ScheduledTaskManager:
             self._logger.warning("旧定时任务绑定迁移读取失败", error=str(exc))
             return
         migrated = 0
+        # 缺真实 QQ/群号映射的目标：逐条只记 DEBUG（见 legacy_bindings），结束时汇总一条 INFO。
+        unresolved: set[tuple[str, str]] = set()
         for task in tasks:
             bindings = []
             changed = False
@@ -214,6 +216,7 @@ class ScheduledTaskManager:
                     logger=self._logger,
                 )
                 if resolved is None:
+                    unresolved.add((str(binding.kind), str(binding.id)))
                     bindings.append(binding)
                     continue
                 new_id, _forced = resolved
@@ -236,6 +239,12 @@ class ScheduledTaskManager:
                 )
         if migrated:
             self._logger.info("旧定时任务绑定已迁移到官方 openid", tasks=migrated)
+        if unresolved:
+            self._logger.info(
+                "旧定时任务绑定存在缺映射目标，未迁移（保持原样）",
+                targets=len(unresolved),
+                hint="用 /linkqq、/linkgroup 建立映射，或把任务目标改成官方会话 ID（openid）",
+            )
 
     def set_notification_hub(self, hub: Any) -> None:
         self._notification_hub = hub

@@ -219,8 +219,14 @@ def test_migrates_all_identity_tables(tmp_path: Path) -> None:
     }
     # 普通 QQ 数据不受影响
     assert _scalar(db, "SELECT nick_name FROM user_data WHERE user_id=?", (NORMAL_QQ,)) == "普通用户"
-    # 迁移有 INFO 汇总
-    assert any(level == "info" and "迁移完成" in msg for level, msg, _kw in log.records)
+    # 成功迁移：有且仅有一条 INFO 汇总，无 WARNING/DEBUG 噪音
+    assert [record for record in log.records if record[0] != "info"] == []
+    infos = [(msg, kw) for level, msg, kw in log.records if level == "info" and "迁移完成" in msg]
+    assert len(infos) == 1
+    _msg, summary = infos[0]
+    assert summary["migrated"] == sum(counts.values())
+    assert summary["skipped"] == 0
+    assert summary["tables"] == counts
 
 
 def _rows(db: Path, sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
@@ -238,8 +244,10 @@ def test_second_run_is_idempotent(tmp_path: Path) -> None:
     assert migrate_legacy_identity_ids(db, data_dir) != {}
     before = _rows(db, "SELECT user_id FROM user_data ORDER BY user_id")
 
-    assert migrate_legacy_identity_ids(db, data_dir) == {}
+    log = _RecordingLogger()
+    assert migrate_legacy_identity_ids(db, data_dir, logger=log) == {}
     assert _rows(db, "SELECT user_id FROM user_data ORDER BY user_id") == before
+    assert log.records == [], "无迁移无冲突时不得再记日志（避免每次启动刷屏）"
 
 
 def test_missing_identities_file_is_noop(tmp_path: Path) -> None:
@@ -247,9 +255,11 @@ def test_missing_identities_file_is_noop(tmp_path: Path) -> None:
     _make_db(db)
     _seed(db)
 
-    assert migrate_legacy_identity_ids(db, tmp_path / "data") == {}
+    log = _RecordingLogger()
+    assert migrate_legacy_identity_ids(db, tmp_path / "data", logger=log) == {}
     assert _scalar(db, "SELECT COUNT(*) FROM user_data WHERE user_id=?", (OLD_USER,)) == 1
     assert _scalar(db, "SELECT COUNT(*) FROM messages WHERE conversation_id=?", (OLD_GROUP,)) == 1
+    assert log.records == []
 
 
 def test_missing_database_is_noop(tmp_path: Path) -> None:
@@ -257,8 +267,10 @@ def test_missing_database_is_noop(tmp_path: Path) -> None:
     _write_identities(data_dir)
     db = tmp_path / "nope.db"
 
-    assert migrate_legacy_identity_ids(db, data_dir) == {}
+    log = _RecordingLogger()
+    assert migrate_legacy_identity_ids(db, data_dir, logger=log) == {}
     assert not db.exists(), "迁移不能在库不存在时创建空库"
+    assert log.records == []
 
 
 def test_conflicts_are_skipped_not_deleted(tmp_path: Path) -> None:
@@ -278,8 +290,7 @@ def test_conflicts_are_skipped_not_deleted(tmp_path: Path) -> None:
 
     counts = migrate_legacy_identity_ids(db, data_dir, logger=log)
 
-    assert "user_data" not in counts
-    assert "cross_chat_sessions" not in counts
+    assert counts == {}
     assert _scalar(db, "SELECT favorability FROM user_data WHERE user_id=?", (OLD_USER,)) == 7
     assert _scalar(db, "SELECT favorability FROM user_data WHERE user_id=?", (OPENID_USER,)) == 3
     assert (
@@ -299,8 +310,16 @@ def test_conflicts_are_skipped_not_deleted(tmp_path: Path) -> None:
         == 1
     )
     assert _scalar(db, "SELECT COUNT(*) FROM cross_chat_sessions") == 2
-    warned_tables = {kw.get("table") for level, _msg, kw in log.records if level == "warning"}
-    assert {"user_data", "archive_memories", "cross_chat_sessions"} <= warned_tables
+    # 逐条冲突只记 DEBUG，不再刷 WARNING；结束时一条 INFO 汇总迁移/跳过条数
+    assert [record for record in log.records if record[0] == "warning"] == []
+    debug_tables = {kw.get("table") for level, _msg, kw in log.records if level == "debug"}
+    assert {"user_data", "archive_memories", "cross_chat_sessions"} <= debug_tables
+    infos = [(msg, kw) for level, msg, kw in log.records if level == "info"]
+    assert len(infos) == 1
+    _msg, summary = infos[0]
+    assert "迁移完成" in _msg
+    assert summary["migrated"] == 0
+    assert summary["skipped"] == 3
 
 
 def test_build_storage_migrates_between_schema_and_engine(monkeypatch: Any, tmp_path: Path) -> None:

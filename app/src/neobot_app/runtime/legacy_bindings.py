@@ -5,7 +5,8 @@
 - 已是本地 ID（openid，或旧版合成号）：旧合成号借 identities.json 反查成 openid，
   查不到就原样使用；
 - 真实 QQ/群号且有 /linkqq、/linkgroup 映射：自动换成 openid；
-- 真实 QQ/群号且没有映射：WARNING（每目标仅一次），返回 None 不投递。
+- 真实 QQ/群号且没有映射：DEBUG（每目标仅一次），返回 None 不投递；调用方
+  （定时任务迁移）汇总一条 INFO，启动期不刷 WARNING。
 不是 only-official 时完全不动。
 """
 
@@ -20,7 +21,8 @@ from neobot_app.bot_accounts import (
 )
 from neobot_app.user_identity import openid_for_group, openid_for_legacy_id, openid_for_qq
 
-_WARNED: set[tuple[str, str]] = set()
+#: 已提示过的目标（每目标只记一次 DEBUG，避免启动期重复刷日志）
+_LOGGED: set[tuple[str, str]] = set()
 
 
 def resolve_legacy_official_target(
@@ -62,9 +64,9 @@ def resolve_legacy_official_target(
         )
         return mapped, "official"
     key = (kind, target)
-    if key not in _WARNED:
-        _WARNED.add(key)
-        logger.warning(
+    if key not in _LOGGED:
+        _LOGGED.add(key)
+        logger.debug(
             "官方通道无法解析旧后台目标：缺少真实 QQ/群号到官方 openid 的映射",
             conversation_kind=kind,
             legacy_id=target,
