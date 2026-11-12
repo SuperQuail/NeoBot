@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -13,11 +14,13 @@ from neobot_app.user_identity import bind_user_identity, link_group_number, link
 class _Logger:
     def __init__(self) -> None:
         self.warnings: list[str] = []
+        self.warning_fields: list[dict] = []
         self.debugs: list[str] = []
         self.infos: list[tuple[str, dict]] = []
 
     def warning(self, message: str, **kwargs) -> None:
         self.warnings.append(message)
+        self.warning_fields.append(kwargs)
 
     def debug(self, message: str, **kwargs) -> None:
         self.debugs.append(message)
@@ -106,6 +109,63 @@ async def test_migrate_legacy_bindings_summarizes_missing_mappings() -> None:
     summaries = [(message, kw) for message, kw in logger.infos if "未迁移" in message]
     assert len(summaries) == 1
     assert summaries[0][1]["targets"] == 1
+
+
+# ── 迁移任务纳入 shutdown 管理 ──────────────────────────────────────
+
+
+async def test_set_orchestrator_tracks_and_shutdown_cancels_migration() -> None:
+    """set_orchestrator 启动的迁移任务有引用；shutdown 取消并等待它真正退出。"""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    manager = ScheduledTaskManager(uow_factory=lambda: _Uow(_Store([])), logger=_Logger())
+
+    async def blocking_migration() -> None:
+        started.set()
+        await release.wait()
+
+    manager.migrate_legacy_bindings = blocking_migration  # type: ignore[method-assign]
+
+    manager.set_orchestrator(
+        SimpleNamespace(_adapter=SimpleNamespace(active_channels=("official",)))
+    )
+    task = manager._legacy_migration_task
+    assert task is not None
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    await manager.shutdown()
+
+    # cancelled 只有在任务真正收到取消并退出后才为 True：证明 shutdown 等到了 gather。
+    assert task.cancelled()
+    assert manager._legacy_migration_task is None
+
+
+async def test_migration_task_exception_logged_and_not_raised_from_shutdown() -> None:
+    """迁移任务意外异常记 WARNING，不冒泡到 shutdown/事件循环。"""
+    logger = _Logger()
+    manager = ScheduledTaskManager(uow_factory=lambda: _Uow(_Store([])), logger=logger)
+
+    async def failing_migration() -> None:
+        raise RuntimeError("migration exploded")
+
+    manager.migrate_legacy_bindings = failing_migration  # type: ignore[method-assign]
+    manager.set_orchestrator(
+        SimpleNamespace(_adapter=SimpleNamespace(active_channels=("official",)))
+    )
+    task = manager._legacy_migration_task
+    assert task is not None
+
+    for _ in range(100):
+        if logger.warnings:
+            break
+        await asyncio.sleep(0)
+    assert task.done()
+    assert logger.warnings == ["旧定时任务绑定迁移任务异常"]
+    assert logger.warning_fields[-1]["error_type"] == "RuntimeError"
+    assert "migration exploded" in logger.warning_fields[-1]["error"]
+
+    # 已由 done callback 回收的异常不能再从 shutdown 冒出来
+    await manager.shutdown()
 
 
 async def _async_value(value):

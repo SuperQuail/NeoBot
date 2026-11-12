@@ -188,6 +188,21 @@ class ScheduledTaskManager:
             return
         self._legacy_migration_started = True
         self._legacy_migration_task = loop.create_task(self.migrate_legacy_bindings())
+        # 没人 await 的后台 Task 异常只会变成 "Task exception was never retrieved"：
+        # 迁移是最佳努力，异常必须在这里收口（shutdown 也会取消并等待它退出）。
+        self._legacy_migration_task.add_done_callback(self._on_legacy_migration_done)
+
+    def _on_legacy_migration_done(self, task: asyncio.Task[None]) -> None:
+        """迁移任务的终态回调：取消不算异常，意外异常记 WARNING 并完成异常回收。"""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            self._logger.warning(
+                "旧定时任务绑定迁移任务异常",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
 
     async def migrate_legacy_bindings(self) -> None:
         """only-official 下把旧定时任务的真实 QQ/群号/旧合成号迁移成官方 openid。"""
@@ -379,10 +394,18 @@ class ScheduledTaskManager:
 
     async def shutdown(self) -> None:
         self._stopping.set()
-        if self._runner is not None:
-            self._runner.cancel()
-            await asyncio.gather(self._runner, return_exceptions=True)
-            self._runner = None
+        pending = [
+            task
+            for task in (self._runner, self._legacy_migration_task)
+            if task is not None
+        ]
+        for task in pending:
+            task.cancel()
+        if pending:
+            # 迁移可能正在写库：关闭流程必须等它真正退出，不能留下跑到关闭之后的任务。
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._runner = None
+        self._legacy_migration_task = None
         self._notification_queues.clear()
         self._last_reminder_at.clear()
         self._reminder_attempts.clear()
