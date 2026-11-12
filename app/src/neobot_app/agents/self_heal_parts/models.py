@@ -76,7 +76,7 @@ class SelfHealAgentConfig:
         min_interval_seconds: int = 300,
         buffer_size: int = 200,
         daily_limit: int = 5,
-        timeout_seconds: float = 300.0,
+        timeout_seconds: float = 7200.0,
         max_tokens: int = 8192,
         reasoning_effort: str = "high",
         sandbox_debug_dir: str = "debug/self_heal",
@@ -112,7 +112,7 @@ class SelfHealAgentConfig:
             ),
             buffer_size=int(getattr(config, "buffer_size", 200) or 200),
             daily_limit=int(getattr(config, "daily_limit", 5) or 5),
-            timeout_seconds=float(getattr(config, "timeout_seconds", 300) or 300),
+            timeout_seconds=float(getattr(config, "timeout_seconds", 7200) or 7200),
             max_tokens=int(getattr(config, "max_tokens", 8192) or 8192),
             reasoning_effort=str(getattr(config, "reasoning_effort", "high") or "high"),
             sandbox_debug_dir=str(

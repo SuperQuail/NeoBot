@@ -502,3 +502,40 @@ def test_self_heal_prompts_are_loaded_from_template(tmp_path) -> None:
     assert "heal_test01" in prompt
     assert "3 个未处理异常累积" in prompt
     assert prompt.endswith("- 累积异常数: 2\n")
+
+
+# ── 长任务预算与上下文压缩 ──
+
+
+def test_self_heal_defaults_two_hours_and_unlimited_iterations() -> None:
+    """默认总预算 2 小时；自修复 Agent 不限制工具轮次，并接入 compact。"""
+    from neobot_app.agents.self_heal import build_self_heal_agent
+
+    cfg = SelfHealAgentConfig()
+    assert cfg.timeout_seconds == 7200.0
+    agent = build_self_heal_agent(_ReadOnlyBudgetProvider(), config=cfg)
+    assert agent is not None
+    assert agent._agent.max_iterations is None
+    assert agent._agent._message_compactor is not None
+
+
+async def test_self_heal_compacts_long_context(monkeypatch) -> None:
+    """超过阈值时调用 runtime.compact；压缩结果替换消息列表。"""
+    from neobot_app.agents.self_heal import build_self_heal_agent
+    from neobot_app.runtime import compact as compact_module
+
+    calls: list[int] = []
+
+    async def fake_compact(provider, messages, **kwargs):
+        calls.append(len(messages))
+        return {"messages": [{"role": "user", "content": "checkpoint"}]}
+
+    monkeypatch.setattr(compact_module, "compact_messages", fake_compact)
+    agent = build_self_heal_agent(_ReadOnlyBudgetProvider())
+    compactor = agent._agent._message_compactor
+    long_messages = [{"role": "user", "content": "x" * 130_000}]
+
+    compacted = await compactor(long_messages)
+
+    assert calls == [1]
+    assert compacted == [{"role": "user", "content": "checkpoint"}]

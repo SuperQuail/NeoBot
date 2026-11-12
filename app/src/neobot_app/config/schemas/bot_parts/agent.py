@@ -228,8 +228,13 @@ class AgentSelfHeal:
         metadata={"description": "异常环形缓冲区大小"},
     )
     timeout_seconds: float = field(
-        default=300.0,
-        metadata={"description": "自修复 Agent 单次诊断超时（秒）"},
+        default=7200.0,
+        metadata={
+            "description": (
+                "自修复 Agent 单次诊断超时（秒），默认 7200（2 小时）；"
+                "轮次不设上限，靠总超时与 compact 控制成本"
+            )
+        },
     )
     max_tokens: int = field(
         default=8192,

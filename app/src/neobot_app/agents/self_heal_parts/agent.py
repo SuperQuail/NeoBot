@@ -37,6 +37,11 @@ if TYPE_CHECKING:
 #: 代码里不再维护第二份文案（旧调用方/测试仍可 import）。
 _FALLBACK_SYSTEM_PROMPT = raw_text("self_heal", "system_prompt")
 
+#: 自修复上下文超过该字符数时触发 compact（复用 runtime/compact 的结构化 checkpoint）。
+_COMPACT_TRIGGER_CHARS = 120_000
+#: 单次 compact 调用的超时（秒）；相对 2 小时总预算很短，失败不影响主流程。
+_COMPACT_TIMEOUT_SECONDS = 120.0
+
 
 def _build_system_prompt(
     config: SelfHealAgentConfig,
@@ -76,6 +81,7 @@ class SelfHealAgent:
         prompt_store: Any = None,
     ) -> None:
         cfg = config or SelfHealAgentConfig()
+        log = logger or NullLogger()
         self.description = EXPOSED_TO_MAIN_AGENT_DESCRIPTION
         if prompt_store is not None:
             desc = raw_text("self_heal", "description", store=prompt_store)
@@ -83,7 +89,7 @@ class SelfHealAgent:
                 self.description = desc
         self._manager = manager
         executor = SelfHealToolExecutor(
-            logger=logger,
+            logger=log,
             sandbox_service=sandbox_service,
             source_roots=source_roots,
             log_file=log_file,
@@ -113,6 +119,35 @@ class SelfHealAgent:
                 conversation_id=CURRENT_CONVERSATION_ID.get(""),
             )
 
+        async def _compact_self_heal_context(messages: list[dict]) -> list[dict] | None:
+            """上下文过长时用紧凑检查点替换较早消息；失败返回 None（不影响任务）。"""
+            total_chars = sum(
+                len(str(message.get("content") or ""))
+                + len(str(message.get("tool_calls") or ""))
+                for message in messages
+            )
+            if total_chars < _COMPACT_TRIGGER_CHARS:
+                return None
+            from neobot_app.runtime.compact import compact_messages
+
+            result = await compact_messages(
+                provider, messages, retain=8, timeout=_COMPACT_TIMEOUT_SECONDS
+            )
+            if not result:
+                log.warning(
+                    "self_heal 上下文压缩失败，继续使用原上下文",
+                    chars=total_chars,
+                    messages=len(messages),
+                )
+                return None
+            log.info(
+                "self_heal 上下文已压缩",
+                chars_before=total_chars,
+                messages_before=len(messages),
+                messages_after=len(result["messages"]),
+            )
+            return result["messages"]
+
         self._agent = Agent(
             provider,
             toolset=self._toolset,
@@ -121,9 +156,10 @@ class SelfHealAgent:
                 cfg, peer_descriptions=peer_descriptions, prompt_store=prompt_store
             ),
             on_model_usage=_record_usage,
-            max_iterations=30,
+            max_iterations=None,
             command_timeout=int(cfg.timeout_seconds),
-            logger=logger or NullLogger(),
+            message_compactor=_compact_self_heal_context,
+            logger=log,
         )
 
     def _build_toolset(self, executor: SelfHealToolExecutor) -> Toolset:

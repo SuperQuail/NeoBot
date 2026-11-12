@@ -481,3 +481,32 @@ def _boom_def() -> dict:
 
 def _secret_def() -> dict:
     return {"type": "function", "function": {"name": "secret_tool", "parameters": {"type": "object"}}}
+
+
+async def test_invoke_supports_unbounded_iterations(tmp_path: Path):
+    """max_iterations=None 表示不限制工具轮次（自修复 Agent 使用）。"""
+    provider = FakeProvider([{"role": "assistant", "content": "done"}])
+    agent = Agent(provider, cwd=tmp_path, max_iterations=None)
+    try:
+        result = await agent.invoke({"messages": [{"role": "user", "content": "hi"}]})
+        assert provider.calls == 1
+        assert result["messages"][-1]["content"] == "done"
+    finally:
+        await agent.close()
+
+
+async def test_invoke_calls_message_compactor_before_model(tmp_path: Path):
+    """构造 Agent 时接到 message_compactor：每轮模型调用前先尝试压缩上下文。"""
+    provider = FakeProvider([{"role": "assistant", "content": "done"}])
+    seen: list[list[str]] = []
+
+    async def compact(messages):
+        seen.append([str(m.get("role") or "") for m in messages])
+        return messages
+
+    agent = Agent(provider, cwd=tmp_path, max_iterations=1, message_compactor=compact)
+    try:
+        await agent.invoke({"messages": [{"role": "user", "content": "hi"}]})
+    finally:
+        await agent.close()
+    assert seen and seen[0][0] == "system"
