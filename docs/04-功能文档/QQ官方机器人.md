@@ -33,7 +33,7 @@ NeoBot 支持两种 QQ 接入通道，并可以**同时运行**：
 > 过渡说明：早期版本把 openid 派生为 13 位合成整数。现在官方通道直接使用 openid 字符串；旧合成号只通过 `data/qqbot/identities.json` 做**只读反查**（迁移/旧数据兼容），不再分配新合成号。
 
 - **管理员命令**：
-  - `/linkqq <QQ号>`（管理员级别权限）：把**发送者本人**映射到真实 QQ 号（5~11 位纯数字）；也支持 `/linkqq @用户 <QQ号>` 映射被 @ 的人。这条命令写入的映射是 **trusted** 的，可用于管理员/次级管理员权限判定。官方群@事件里的 `mentions` 会按正文里 @ 标记的真实顺序解析成 at 段，所以官方通道也能用 @ 形式，且「命令在前、@ 在后」不会打乱解析；群全量消息 content 里的 @机器人 标记也会补成 bot at 段，保证群命令触发条件成立。
+  - `/linkqq <QQ号>`（管理员级别权限）：把**发送者本人**映射到真实 QQ 号（5~11 位纯数字）；也支持 `/linkqq @用户 <QQ号>` 映射被 @ 的人。这条命令写入的映射是 **trusted** 的，可用于管理员/次级管理员权限判定。官方群@事件里的 `mentions` 会按正文里 @ 标记的真实顺序解析成 at 段，所以官方通道也能用 @ 形式，且「命令在前、@ 在后」不会打乱解析；群全量消息 content 里的 @机器人 标记在 openid 可识别时补成 bot at 段；群场景 member_openid 兜底命中时不补 at 段，但 `mentioned_self` 权威结论为被 @，命令/必回照常触发。
   - `/linkgroup <群号>`（管理员级别权限，群聊中使用）：把**当前群**映射到真实 QQ 群号（5~12 位纯数字），之后提示词/群黑白名单按真实群号识别。
 - **Agent 工具**：`user_identity__link_user_qq(user_id, qq_number[, channel])`、`user_identity__link_group_number(group_id, group_number[, channel])`，以及对应的 get/unlink。Agent 写入的映射**只影响展示**，不参与权限判定（防止模型自己把用户映射成管理员）；管理员映射必须由人类管理员用命令建立。官方群@事件的 `mentions` 会解析为被 @ 用户；官方发送侧 @ 用户必须用 markdown 内嵌 `<qqbot-at-user id="openid" />`（适配器直接使用 openid，不再反查合成 ID；未知/格式不对的 openid 会替换成「@用户」纯文字并记 WARNING，不做文本降级）。
 - 生效范围：提示词/用户资料/历史/通知/档案里，已映射的用户显示 `QQ:<真实号>（ID:<完整 openid>）`，群显示 `群号:<真实群号>（ID:<完整 group_openid>）`；**未映射时显示完整 openid 字符串（`ID:<openid>`，不截断）**。好友/群黑白名单、回复黑名单只认管理员命令写入的 trusted 映射；agent 写入的映射只影响展示，不参与访问控制。管理员权限只认 trusted 用户映射。映射只影响展示与身份解析，不改资料存储主键。
@@ -47,7 +47,7 @@ NeoBot 支持两种 QQ 接入通道，并可以**同时运行**：
 - **双通道路由**：已通过 `/linkgroup` 建立群号映射、且 OneBot 与官方 bot 都在线的群，官方通道的群消息会去重交给 OneBot 处理；但明确 @ 官方机器人的消息不参与去重，仍按官方通道正常回复/触发命令。@ 判定由适配器按官方 API 契约给出权威结论 `mentioned_self`（见下一条），app 侧统一走 `is_addressed_to_bot`。回复默认发 OneBot，OneBot 连接不可用时自动回落到官方通道（Conversation ID 会按映射换成官方的 group_openid）。
 - **双待模式下两个机器人 QQ 号都通过工具/API 获取**（`get_login_info` 等），**不读 `[bot].account`**：两个号不同，不能用一个配置值代表。消息自带 `self_id`（即对应通道的机器人号），自我发言判断、提示词、命令 @ 判定都按消息级账号处理。
 - 单通道模式保留旧行为：`[bot].account = 0` 时连接后用 API 自动回填运行期配置；`[bot].official_mode` 仍可强制官方/非官方行为。
-- 官方通道的官方行为：@ 判定按官方 API 契约——`GROUP_AT_MESSAGE_CREATE` 事件本身即表示用户在群里 @ 了机器人（`content` 已去掉 @ 前缀，不看 uin/at 段/mentions），按必回并触发群命令；`GROUP_MESSAGE_CREATE`（群全量消息）只有 `content` 里带 `<@!bot_openid>` / `<@bot_openid>` / `<qqbot-at-user id="bot_openid">`，或 `mentions`/`msg_elements` 中 `bot=true` 且 id 等于机器人 openid 时才算被 @，否则权威结论是「未 @」，按普通群消息走意愿概率。机器人 openid 取自 READY 的 `d.user.id`；拿不到时全量消息一律按未 @ 处理并只记一次 WARNING。适配器把结论写入消息模型 `mentioned_self`（True/False；非官方为 None），app 侧统一由 `is_addressed_to_bot` 消费，命令/@必回/已映射群去重/睡眠/提示词不再按通道名、uin/self_id、at qq=0 猜。提示词会注入官方机器人的能力边界；双待下只有官方通道的回复会注入该说明。
+- 官方通道的官方行为：@ 判定按官方 API 契约——`GROUP_AT_MESSAGE_CREATE` 事件本身即表示用户在群里 @ 了机器人（`content` 已去掉 @ 前缀，不看 uin/at 段/mentions），按必回并触发群命令；`GROUP_MESSAGE_CREATE`（群全量消息）先按 `content` 里的 `<@!bot_openid>` / `<@bot_openid>` / `<qqbot-at-user id="bot_openid">`，或 `mentions`/`msg_elements` 中 `bot=true` 且 id 等于机器人 openid 判定。平台在群场景可能把 @机器人 记成群 `member_openid`（与 READY 的 `d.user.id` 不同，2026-11-12 线上实测），此时若 `mentions` 里 `bot=true` 的 id 出现在正文 @ 标记中，也会判为被 @（`source=bot_mention`）：机器人昵称（READY 的 `username` 或 `/users/@me` 的 `nickname`）已知时优先按昵称匹配，否则要求该标记在正文开头或为唯一候选，只记一次 WARNING。引用消息（`message_type=103`）的 `msg_elements` 是原消息，不作为 @ 来源。未命中且无兜底证据时权威结论是「未 @」，按普通群消息走意愿概率。机器人 openid 取自 READY 的 `d.user.id`；READY 缺 `user.id` 只记一次 WARNING（RESUMED 缺 user 不告警），全量消息仍可用昵称/mention 兜底。适配器把结论写入消息模型 `mentioned_self`（True/False；非官方为 None），映射时输出「官方消息 @ 判定」日志：`event_type` / `message_id` / `group_openid` / `sender_id` / `mentioned_self` / `source`（`event_type`｜`content`｜`mentions`｜`bot_mention`｜`none`）/ `bot_openid` / `self_id` / `content_at_ids` / `bot_mention_ids` / `bot_mention_names`。app 侧统一由 `is_addressed_to_bot` 消费，命令/@必回/已映射群去重/睡眠/提示词不再按通道名、uin/self_id、at qq=0 猜。提示词会注入官方机器人的能力边界；双待下只有官方通道的回复会注入该说明。
 - **提示词口径**：官方通道的 system 提示词最前面追加「当前你是使用官方渠道搭建的QQ机器人,所以你看不到QQ号和群号,只看得到QQ ID和群ID,」；同一轮提示词（system 与上下文块）里的「QQ号」「群号」统一改称「QQ ID」「群 ID」。
 
 ## 热重载
@@ -87,8 +87,8 @@ NeoBot 支持两种 QQ 接入通道，并可以**同时运行**：
 
 - **为什么迁移**：合成号只是 13 位派生的显示视图，无法表达完整 openid；现在官方通道的主键就是 openid 字符串，插件与存储直接读原值。
 - **数据位置**：`data/qqbot/identities.json`（openid ↔ 旧合成号，迁移期只读反查源）、`data/user_qq_map.json`（真实 QQ/群号 ↔ 本地 ID 的人工映射）、本体数据库 `data/neobot.db`（会话/消息/档案/定时任务/跨聊天记录里的本地 ID 都是文本，按 `identities.json` 改写旧值）。
-- **自动迁移**：升级后首次启动时，`user_data`/`group_data`/`messages`/`memories`/`archive_memories`/`archive_snapshots`/`cross_chat_sessions`/`model_usage_records` 里的旧合成号会按 `identities.json` 自动改写成 openid（单个 SQLite 事务、可重复执行；`_build_storage` 在 schema 迁移前已写 `data/db_backup/` 快照；失败只记 WARNING 不阻塞启动，下次启动重试），日志打印各表改写条数。
-- **冲突处理**：若目标 openid 行已存在（典型：迁移后又从旧备份恢复），保留新旧两份数据、日志打 WARNING 并跳过该条，不删除旧数据，需要人工核对合并；头像文件（`data/avatars/<旧合成号>.png`）不随迁移改名，下次出面会重新拉取并产生孤儿文件。
+- **自动迁移**：升级后首次启动时，`user_data`/`group_data`/`messages`/`memories`/`archive_memories`/`archive_snapshots`/`cross_chat_sessions`/`model_usage_records` 里的旧合成号会按 `identities.json` 自动改写成 openid（单个 SQLite 事务、可重复执行；`_build_storage` 在 schema 迁移前已写 `data/db_backup/` 快照；失败只记 WARNING 不阻塞启动，下次启动重试）；有迁移或跳过时汇总一条 INFO（迁移条数、跳过条数，有迁移时附各表条数），无迁移无跳过不记日志。
+- **冲突处理**：若目标 openid 行已存在（典型：迁移后又从旧备份恢复），保留新旧两份数据、逐条只记 DEBUG 并跳过该条，不删除旧数据，需要人工核对合并；结束时的 INFO 汇总会带跳过条数（只要冲突还在，每次启动会出现这一条 INFO，不再逐条 WARNING 刷屏）；头像文件（`data/avatars/<旧合成号>.png`）不随迁移改名，下次出面会重新拉取并产生孤儿文件。
 - **插件私有库**：`streaming_parser` 的 `group_id` 已从 BigInteger 迁移为 TEXT（插件库 Migration v2，旧数字群号自动 CAST）；`minigame` 的用户 ID 列加宽到 128 并接受 openid（Migration v3）；其它插件按自己的迁移版本随插件升级执行。
 - **面板**：机器人/活跃用户页面显示**完整** openid（`ID:<openid>`）；openid 不是 QQ 号，页面不再为它请求 qlogo 头像，也不把它拼进 `nk=` 参数。
 - **备份**：迁移前请同时备份 `data/neobot.db`、`data/qqbot/`、`data/user_qq_map.json` 和各插件数据目录（插件库在主数据库快照之外）。恢复旧备份后，旧合成号仍可经 `identities.json` 反查使用一个发布周期；迁移完成后不要立即删除 `identities.json`。
@@ -96,7 +96,7 @@ NeoBot 支持两种 QQ 接入通道，并可以**同时运行**：
 ## 排查
 
 - **官方 @ 判定排查**：搜索日志 `官方消息 @ 判定`，字段 `event_type` / `message_id` / `group_openid` / `sender_id` / `mentioned_self` / `source`（`event_type`｜`content`｜`mentions`｜`none`）/ `bot_openid` / `self_id` / `content_at_ids` / `bot_mention_ids`。`GROUP_AT_MESSAGE_CREATE` 恒为 `mentioned_self=true`；群全量消息未命中时先看 `content_at_ids`/`bot_mention_ids` 是否出现、以及 `bot_openid` 是否为空（READY/RESUMED 未给 `user.id` 时会告警）。
-- **已连接但 @ 命令 / 必回不触发**：先确认进程确实已重启并运行修复后的代码（editable 安装时 `neobot --version` 可能仍显示旧安装元数据，不能只看版本号；发布包部署则需更新构建后重启）。再看上面日志的 `source`：若 `source=none` 且 `bot_openid` 为空，说明官方平台把这条 @ 当作群全量消息投递、且 READY/RESUMED 没给机器人 openid —— 此时全量消息无法判定 @，应让群使用 `GROUP_AT_MESSAGE_CREATE`（群 @ 消息事件）或补齐开放平台权限；若正文无任何 `@` 标记且 `mentions` 不含机器人，按契约无法判定，属平台事件能力限制。另：同一 `msg_id` 的 `GROUP_AT` 与 `GROUP_MESSAGE_CREATE` 双事件以先到者为准，若全量事件先到且无法判定 @，后续 @ 事件可能被去重丢弃（正常 READY 有 openid 时全量事件可自行判定，此边界少见）。
+- **已连接但 @ 命令 / 必回不触发**：先确认进程确实已重启并运行修复后的代码（editable 安装时 `neobot --version` 可能仍显示旧安装元数据，不能只看版本号；发布包部署则需更新构建后重启）。再看上面日志的 `source`：若 `source=none` 且 `bot_openid` 为空，说明官方平台把这条 @ 当作群全量消息投递、且 READY/RESUMED 没给机器人 openid —— 此时全量消息无法判定 @，应让群使用 `GROUP_AT_MESSAGE_CREATE`（群 @ 消息事件）或补齐开放平台权限；若正文无任何 `@` 标记且 `mentions` 不含机器人，按契约无法判定，属平台事件能力限制。另：同一 `msg_id` 的 `GROUP_AT` 与 `GROUP_MESSAGE_CREATE` 双事件按「id → 是否被 @」记录去重，允许一次「未 @ → 被 @」升级：全量事件先到（未 @）时，后到的 @ 事件不会被误丢，命令与 @ 必回仍会触发；代价是同一句话可能进入上下文两次（已知取舍）。队列「最新消息为@你的内容」提示同样使用 `mentioned_self` 权威结论（uin 未解析、无可用 at 段时也能标出）。
 - **日志出现「连续 3 次登录失败，需要重新扫码登录」**：官方通道已停止用旧凭据重连，面板与终端会自动出现新二维码——用手机 QQ 重新扫码即可；来自扫码的旧凭据已删除，来自配置/环境变量的 AppID/AppSecret 不会被改动，请检查配置或清空配置后重新扫码。
 - **只有一条通道在线**：面板「机器人通道」页分别显示两条通道；官方未绑定会显示二维码，OneBot 未连接会显示监听地址。另一条离线不影响这条。
 - **双待下账号显示「未获取（连接后自动读取）」**：该通道尚未连接或身份解析未完成；连接成功后会自动从 API 获取两个不同的机器人 QQ 号。
