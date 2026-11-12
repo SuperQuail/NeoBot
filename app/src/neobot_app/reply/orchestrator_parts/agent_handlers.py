@@ -242,6 +242,8 @@ class AgentHandlersMixin:
             reply_to_message_id=reply_id,
             at_everyone=at_everyone,
             commands=commands or [],
+            # 后台/定时任务触发的官方卡片没有被动窗口：透传主动消息标志。
+            proactive=bool(event.proactive),
         )
         if not send_response_ok(delivered):
             self._logger.info(

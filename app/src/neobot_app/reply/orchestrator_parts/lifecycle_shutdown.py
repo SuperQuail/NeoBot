@@ -24,6 +24,7 @@ class LifecycleShutdownMixin:
         manager_name: str = "background_drawing",
         reasons: list[str] | None = None,
         channel: str | None = None,
+        proactive: bool = True,
     ) -> Any | None:
         """程序化启动回复管线，用于后台绘图等系统通知。
 
@@ -32,6 +33,9 @@ class LifecycleShutdownMixin:
         channel 是合成事件的来源通道（onebot / official）：后台/定时/跨聊天任务
         不经过事件分发、拿不到派发上下文，必须在这里钉住目标会话的通道，后续
         提示词、官方能力限制与 API 查询才按同一条通道走。
+
+        proactive 默认 True：后台/定时/跨聊天任务没有被动回复窗口，官方通道按
+        主动消息发送；仅当调用方确认存在可用被动 msg_id 时才传 False。
         """
         if self._closed:
             return None
@@ -127,6 +131,7 @@ class LifecycleShutdownMixin:
                 decision=decision,
                 skip_cooldown=True,
                 background_content=content,
+                proactive=proactive,
             )
 
     def _background_reply_channel(self, kind: str, conversation_id: str, channel: str | None) -> str | None:

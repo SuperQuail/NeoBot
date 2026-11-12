@@ -152,6 +152,29 @@ def test_background_reply_openid_target_infers_official() -> None:
     assert _synthetic_channel(stub) == "official"
 
 
+# ── 主动消息标志 ────────────────────────────────────────────────────
+
+
+def test_background_reply_is_proactive_for_official_sessions() -> None:
+    """后台/定时/跨聊天轮次没有被动窗口：合成事件必须标 proactive=True。"""
+    stub = _Stub(_FakeAdapter())
+
+    _start(stub)
+
+    assert stub.started is not None
+    assert stub.started["proactive"] is True
+
+
+def test_background_reply_proactive_can_be_overridden() -> None:
+    """调用方确认存在被动目标时可显式关闭主动标志。"""
+    stub = _Stub(_FakeAdapter())
+
+    _start(stub, proactive=False)
+
+    assert stub.started is not None
+    assert stub.started["proactive"] is False
+
+
 # ── 上下文与官方限制 ───────────────────────────────────────────────
 
 
