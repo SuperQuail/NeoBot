@@ -7,8 +7,8 @@ covers:
   - app/src/neobot_app/runtime/sandbox_service.py
   - app/src/neobot_app/runtime/sandbox_maintenance.py
   - packages/chat/src/neobot_chat/skills/
-verified_against: 32627dab
-verified_hash: 3f06242173c1
+verified_against: b0c12261
+verified_hash: 55f62cbae49f
 ---
 
 # 06 工具运行时与技能：注册 · native/PTC · 管理员凭据 · 沙箱裁决 · 维护 Agent
