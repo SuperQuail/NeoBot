@@ -145,15 +145,29 @@ class TestRegistrationContract:
     def test_all_commands_are_registered(self, registered):
         _, names = registered
         assert names == [
-            '监听',
-            '取消监听',
-            '监听列表',
+            '直播监听',
+            '直播状态',
+            '取消直播监听',
+            '直播监听列表',
             '开播推送',
             '下播推送',
             '开播状态',
             '卡片风格',
             'config',
         ]
+
+    def test_renamed_commands_declare_legacy_aliases(self, registered):
+        """旧命令名保留为别名，但别名不重复出现在 /help 的命令清单里。"""
+        ctx, names = registered
+        legacy = {
+            '直播监听': ('监听',),
+            '取消直播监听': ('取消监听',),
+            '直播监听列表': ('监听列表',),
+        }
+        for name, aliases in legacy.items():
+            assert ctx.app_commands.commands[name]['kwargs']['aliases'] == aliases
+            for alias in aliases:
+                assert alias not in names
 
     def test_every_command_has_description(self, registered):
         ctx, names = registered
@@ -164,19 +178,20 @@ class TestRegistrationContract:
 
     def test_commands_with_arguments_have_usage_and_params(self, registered):
         ctx, _ = registered
-        for name in ('监听', '取消监听', '开播推送', '下播推送'):
+        for name in ('直播监听', '直播状态', '取消直播监听', '开播推送', '下播推送'):
             kwargs = ctx.app_commands.commands[name]['kwargs']
             assert kwargs.get('usage'), name + ' 缺少 usage'
             assert kwargs.get('params'), name + ' 缺少 params（/help 详情里看不到参数说明）'
 
     def test_readonly_commands_are_open_to_everyone(self, registered):
         ctx, _ = registered
-        assert ctx.app_commands.commands['监听列表']['kwargs']['permission'] == 0
+        assert ctx.app_commands.commands['直播监听列表']['kwargs']['permission'] == 0
+        assert ctx.app_commands.commands['直播状态']['kwargs']['permission'] == 0
         assert ctx.app_commands.commands['开播状态']['kwargs']['permission'] == 0
 
     def test_mutating_commands_require_admin(self, registered):
         ctx, _ = registered
-        for name in ('监听', '取消监听', '开播推送', '下播推送', '卡片风格', 'config'):
+        for name in ('直播监听', '取消直播监听', '开播推送', '下播推送', '卡片风格', 'config'):
             assert ctx.app_commands.commands[name]['kwargs']['permission'] >= 1, name + ' 应当要求管理员'
 
     def test_registration_logs_nothing_when_registrar_available(self, registered):
@@ -190,22 +205,48 @@ class TestHandlerCards:
     async def test_missing_args_sends_usage_card(self):
         ctx = FakeCtx()
         register_commands(ctx, state=None)
-        handler = ctx.app_commands.commands['监听']['handler']
+        handler = ctx.app_commands.commands['直播监听']['handler']
         command_ctx = FakeCommandCtx(args=[])
         await handler(command_ctx)
         assert command_ctx.service.images == []
         assert command_ctx.plain, '应当降级发送纯文本'
         text = command_ctx.plain[0]
         assert '监听直播间' in text
-        assert '/监听 <房间号' in text
+        assert '/直播监听 <房间号' in text
 
     async def test_private_chat_is_rejected(self):
         ctx = FakeCtx()
         register_commands(ctx, state=None)
-        handler = ctx.app_commands.commands['监听列表']['handler']
+        handler = ctx.app_commands.commands['直播监听列表']['handler']
         command_ctx = FakeCommandCtx(kind='private')
         await handler(command_ctx)
         assert '需要在群聊里发送' in command_ctx.plain[0]
+
+    async def test_status_missing_args_sends_usage_card(self):
+        ctx = FakeCtx()
+        register_commands(ctx, state=None)
+        handler = ctx.app_commands.commands['直播状态']['handler']
+        command_ctx = FakeCommandCtx(args=[])
+        await handler(command_ctx)
+        assert command_ctx.service.images == []
+        assert command_ctx.plain, '应当降级发送纯文本'
+        assert '/直播状态 <房间号' in command_ctx.plain[0]
+
+    async def test_status_private_chat_is_rejected(self):
+        ctx = FakeCtx()
+        register_commands(ctx, state=None)
+        handler = ctx.app_commands.commands['直播状态']['handler']
+        command_ctx = FakeCommandCtx(kind='private', args=['10'])
+        await handler(command_ctx)
+        assert '需要在群聊里发送' in command_ctx.plain[0]
+
+    async def test_status_reports_unready_plugin(self):
+        ctx = FakeCtx()
+        register_commands(ctx, state=None)
+        handler = ctx.app_commands.commands['直播状态']['handler']
+        command_ctx = FakeCommandCtx(args=['10'])
+        await handler(command_ctx)
+        assert '插件还没就绪' in command_ctx.plain[0]
 
     async def test_toggle_requires_switch_value(self):
         ctx = FakeCtx()
@@ -264,7 +305,7 @@ class TestCardPayloads:
 
 
 class TestPushDefaults:
-    """默认值就是把开播与下播推送都打开（/监听 之后无需再手动开）。"""
+    """默认值就是把开播与下播推送都打开（/直播监听 之后无需再手动开）。"""
 
     def test_config_enables_both_pushes_by_default(self):
         from streaming_parser.config import StreamConfig

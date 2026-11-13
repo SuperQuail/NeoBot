@@ -160,15 +160,23 @@ class CardRenderer:
             faces.append(FontFace(family="FusionPixel", source=path, format=fmt))
         return tuple(faces)
 
-    def _render_options(self, *, wait_fonts: bool) -> Any:
+    def _render_options(
+        self, *, wait_fonts: bool, viewport: tuple[int, int]
+    ) -> Any:
         from neobot_modloader import RenderOptions, ScreenshotOptions
 
+        # 显式指定仿真视口：元素比浏览器窗口高时，CDP 的 captureBeyondViewport
+        # 在部分窗口尺寸下会把视口内容重复渲染（卡片图变成平铺碎块）。把视口固定到
+        # 卡片尺寸以上，裁切就始终落在视口内，不再依赖这条不可靠的 beyond 路径。
+        width, height = viewport
         return RenderOptions(
             screenshot=ScreenshotOptions(
                 mode="element",
                 selector=self.selector,
                 format="png",
                 scale=self.scale,
+                width=max(1, int(width)),
+                height=max(1, int(height)),
             ),
             fonts=self._font_faces(),
             timeout=self.timeout,
@@ -178,13 +186,15 @@ class CardRenderer:
             wait_for_images=True,
         )
 
-    async def _render_html(self, html_text: str) -> bytes | None:
+    async def _render_html(
+        self, html_text: str, *, viewport: tuple[int, int] = (720, 1200)
+    ) -> bytes | None:
         for wait_fonts in (True, False):
             port = self._screenshots()
             if port is None:
                 return None
             try:
-                options = self._render_options(wait_fonts=wait_fonts)
+                options = self._render_options(wait_fonts=wait_fonts, viewport=viewport)
                 result = await port.render(html=html_text, options=options)
             except Exception:
                 # 渲染失败不能让调用方崩：失败一律返回 None，由调用方降级成纯文本
@@ -209,7 +219,11 @@ class CardRenderer:
     async def render_card(self, values: dict[str, Any], *, style: str) -> bytes | None:
         """渲染开播/下播卡片；style 必须是具体风格名。"""
         html_text = self.card_html(values, style=style)
-        return await self._render_html(html_text) if html_text is not None else None
+        return (
+            await self._render_html(html_text, viewport=(720, 1200))
+            if html_text is not None
+            else None
+        )
 
     async def render_overview(
         self,
@@ -238,4 +252,5 @@ class CardRenderer:
             "font_style": "",
         }
         html_text = _fill(template, values, raw_keys=("grid", "font_style"))
-        return await self._render_html(html_text)
+        # 总览图会随主播数量变高，视口给足；否则又回退到 beyond 视口裁切。
+        return await self._render_html(html_text, viewport=(720, 4096))

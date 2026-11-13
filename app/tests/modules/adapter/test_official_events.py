@@ -372,8 +372,8 @@ def test_full_group_message_group_scene_bot_mention_is_true(workdir) -> None:
     assert fields["content_at_ids"] == [_REAL_GROUP_SCENE_BOT_ID]
     assert fields["bot_mention_ids"] == [_REAL_GROUP_SCENE_BOT_ID]
     assert fields["bot_mention_names"] == ["NeoBot"]
-    fallback_warnings = [msg for msg, _kw in logger.warnings if "群场景" in msg]
-    assert len(fallback_warnings) == 1
+    # 兜底判定不再单独打 warning（_log_addressing 的诊断日志已覆盖此信息）。
+    assert not [msg for msg, _kw in logger.warnings if "群场景" in msg]
 
 
 def test_full_group_message_bot_mention_matched_by_username(workdir) -> None:

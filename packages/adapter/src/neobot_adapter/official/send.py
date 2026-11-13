@@ -36,6 +36,11 @@ _MESSAGE_ENDPOINTS = {
 }
 _MEDIA_SEGMENTS = frozenset({"image", "record", "voice", "video", "file"})
 _OFFICIAL_MARKDOWN_SEGMENT = "official_markdown"
+#: 图文卡片段（msg_type=8，type=tuwen）：title/description/url/pic_url 的单条图文消息。
+_OFFICIAL_TUWEN_SEGMENT = "official_tuwen"
+_TUWEN_TITLE_LIMIT = 50
+_TUWEN_DESCRIPTION_LIMIT = 200
+_TUWEN_URL_LIMIT = 1024
 #: Markdown 段里允许出现的内嵌 @：id 可以是 openid（直通），也可以是迁移期的
 #: 13 位合成号（发送前按只读映射表换成 member_openid）。
 _AT_USER_TAG = re.compile(r'<qqbot-at-user\s+id="([^"]+)"\s*/?>')
@@ -317,6 +322,8 @@ class _Prepared:
     at_everyone: bool = False
     commands: list[dict[str, Any]] = field(default_factory=list)
     media: list[tuple[str, str, str]] = field(default_factory=list)
+    #: 图文卡片（msg_type=8）：与其他内容段互斥，单独成一条消息。
+    tuwen: dict[str, Any] | None = None
     reply: str | None = None
 
 
@@ -364,6 +371,10 @@ class MessageSender:
             reference = self._reference_idx(prepared.reply)
             if prepared.markdown is not None:
                 return await self._send_markdown(
+                    kind, openid, conversation.id, prepared, reference, timeout, proactive
+                )
+            if prepared.tuwen is not None:
+                return await self._send_tuwen(
                     kind, openid, conversation.id, prepared, reference, timeout, proactive
                 )
             if not prepared.text and not prepared.media:
@@ -441,6 +452,32 @@ class MessageSender:
             )
             sent_id = self._track_sent(body, kind, openid) or sent_id
         return _ok(sent_id)
+
+    # ── 图文卡片（msg_type=8，type=tuwen） ──────────────────────────
+
+    async def _send_tuwen(
+        self,
+        kind: str,
+        openid: str,
+        conversation_id: Any,
+        prepared: _Prepared,
+        reference: str | None,
+        timeout: float,
+        proactive: bool,
+    ) -> response.SendMsgResponse:
+        """发一条图文卡片：title/description/url/pic_url 都在同一条消息里。"""
+        payload = self._message_payload(kind, conversation_id, proactive)
+        payload["msg_type"] = 8
+        payload["card"] = {"type": "tuwen", "content": dict(prepared.tuwen or {})}
+        if reference:
+            payload["message_reference"] = {"message_id": reference}
+        body = await self._api.request(
+            "POST",
+            _MESSAGE_ENDPOINTS[kind].format(openid=openid),
+            body=payload,
+            timeout=timeout,
+        )
+        return _ok(self._track_sent(body, kind, openid))
 
     # ── 显式 Markdown ───────────────────────────────────────────────
 
@@ -598,6 +635,7 @@ def _prepare(message: str | list[dict[str, Any]]) -> _Prepared:
         raise _SendFailure("消息必须是字符串或 OneBot 消息段数组")
     text_parts: list[str] = []
     markdown_parts: list[str] = []
+    tuwen: dict[str, Any] | None = None
     markdown_at_everyone = False
     markdown_commands: list[dict[str, Any]] = []
     media: list[tuple[str, str, str]] = []
@@ -610,7 +648,14 @@ def _prepare(message: str | list[dict[str, Any]]) -> _Prepared:
             raise _SendFailure(f"官方协议不支持该消息段类型：{type(segment).__name__}")
         segment_type = str(segment.get("type") or "")
         data = segment.get("data") if isinstance(segment.get("data"), dict) else {}
-        if segment_type not in {"text", "at", "reply", _OFFICIAL_MARKDOWN_SEGMENT, *_MEDIA_SEGMENTS}:
+        if segment_type not in {
+            "text",
+            "at",
+            "reply",
+            _OFFICIAL_MARKDOWN_SEGMENT,
+            _OFFICIAL_TUWEN_SEGMENT,
+            *_MEDIA_SEGMENTS,
+        }:
             raise _SendFailure(f"官方协议不支持该消息段类型：{segment_type or 'unknown'}")
         if segment_type == "text":
             text_parts.append(str(data.get("text") or ""))
@@ -619,6 +664,10 @@ def _prepare(message: str | list[dict[str, Any]]) -> _Prepared:
             continue
         elif segment_type == "reply":
             reply = _reply_id(data, reply)
+        elif segment_type == _OFFICIAL_TUWEN_SEGMENT:
+            if tuwen is not None:
+                raise _SendFailure("official_tuwen 消息段只能出现一次")
+            tuwen = _parse_tuwen(data)
         elif segment_type == _OFFICIAL_MARKDOWN_SEGMENT:
             markdown_parts.append(str(data.get("content") or ""))
             markdown_at_everyone = markdown_at_everyone or bool(data.get("at_everyone"))
@@ -649,15 +698,39 @@ def _prepare(message: str | list[dict[str, Any]]) -> _Prepared:
                 )
             )
     if markdown_parts:
-        if text_parts or media:
-            raise _SendFailure("official_markdown 消息段不能与文本/at/富媒体段混用")
+        if text_parts or media or tuwen is not None:
+            raise _SendFailure("official_markdown 消息段不能与文本/at/富媒体/图文卡片段混用")
         return _Prepared(
             markdown="\n".join(markdown_parts),
             at_everyone=markdown_at_everyone,
             commands=markdown_commands,
             reply=reply,
         )
+    if tuwen is not None:
+        if text_parts or media or markdown_parts:
+            raise _SendFailure("official_tuwen 消息段不能与文本/at/富媒体段混用")
+        return _Prepared(tuwen=tuwen, reply=reply)
     return _Prepared(text="".join(text_parts), media=media, reply=reply)
+
+
+def _parse_tuwen(data: dict[str, Any]) -> dict[str, str]:
+    """校验图文卡片字段；官方限制：标题 1-50、描述 1-200、url/pic_url 必须是 https。"""
+    title = str(data.get("title") or "").strip()
+    description = str(data.get("description") or "").strip()
+    url = str(data.get("url") or "").strip()
+    pic_url = str(data.get("pic_url") or "").strip()
+    if not title or len(title) > _TUWEN_TITLE_LIMIT:
+        raise _SendFailure(f"official_tuwen 的 title 必须为 1-{_TUWEN_TITLE_LIMIT} 字")
+    if not description or len(description) > _TUWEN_DESCRIPTION_LIMIT:
+        raise _SendFailure(
+            f"official_tuwen 的 description 必须为 1-{_TUWEN_DESCRIPTION_LIMIT} 字"
+        )
+    for name, value in (("url", url), ("pic_url", pic_url)):
+        if not value.startswith("https://") or len(value) > _TUWEN_URL_LIMIT:
+            raise _SendFailure(
+                f"official_tuwen 的 {name} 必须是 https 且不超过 {_TUWEN_URL_LIMIT} 字符"
+            )
+    return {"title": title, "description": description, "url": url, "pic_url": pic_url}
 
 
 def _reply_id(data: dict[str, Any], current: str | None) -> str | None:

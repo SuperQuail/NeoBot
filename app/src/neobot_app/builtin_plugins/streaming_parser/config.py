@@ -23,7 +23,7 @@ class StreamConfig(BaseModel):
     # 默认卡片风格：random 表示每次随机挑一个，也可写死某个风格名。
     default_card_style: str = Field(default="random", title="默认通知卡片风格")
     # 新订阅的房间是否默认推送开播 / 下播。
-    # 默认两个都开：/监听 一个直播间就自动建好上播与下播两条推送，
+    # 默认两个都开：/直播监听 一个直播间就自动建好上播与下播两条推送，
     # 不想要的可以用 /开播推送、/下播推送 单独关，或在这里改默认值。
     default_push_live: bool = Field(default=True, title="默认发送开播通知")
     default_push_live_end: bool = Field(default=True, title="默认发送下播通知")

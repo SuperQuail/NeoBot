@@ -48,7 +48,7 @@ def _register_one(
         description="开关某个直播间的" + label + "推送",
         usage="<房间号|短号|链接> <开|关>",
         permission=PERM_SUB_ADMIN,
-        params=(("目标", "与 /监听 相同的目标写法"), ("开关", "开 或 关")),
+        params=(("目标", "与 /直播监听 相同的目标写法"), ("开关", "开 或 关")),
     )
     async def _toggle(command_ctx: Any) -> None:
         group_id = conv_group_id(command_ctx)
@@ -76,7 +76,7 @@ def _register_one(
             return
         row = await state.find_subscription(group_id, target_kind, number)
         if row is None:
-            await fail(command_ctx, ctx, "没有监听这个直播间", "先用 /监听 添加它。")
+            await fail(command_ctx, ctx, "没有监听这个直播间", "先用 /直播监听 添加它。")
             return
         await SubscriptionService(state).toggle(
             group_id,

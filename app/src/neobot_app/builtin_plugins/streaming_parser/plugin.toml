@@ -37,7 +37,7 @@ poll_concurrency = 4
 default_card_style = "random"
 # 新订阅的直播间默认是否推送开播。
 default_push_live = true
-# 新订阅的直播间默认是否推送下播。默认开：/监听 一个直播间就同时建好开播与下播推送。
+# 新订阅的直播间默认是否推送下播。默认开：/直播监听 一个直播间就同时建好开播与下播推送。
 default_push_live_end = true
 # 默认是否在推送开播卡片后再触发一次 AI 回复。
 default_ai_reply_live = true

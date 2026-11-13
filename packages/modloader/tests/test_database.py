@@ -276,6 +276,40 @@ class DatabaseTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PluginMigrationConflictError):
             await conflicting.bind(self.databases_dir)
 
+    async def test_legacy_checksum_is_reconciled(self) -> None:
+        database = self._database()
+        await database.bind(self.databases_dir)
+        legacy = _migration_checksum(Migration(1, "users", _migrate_v1_users))
+
+        reconciled = PluginDatabase(
+            "demo",
+            "main",
+            filename="test.db",
+            migrations=(
+                Migration(
+                    1,
+                    "users",
+                    _migrate_v1_alt,
+                    legacy_checksums=(legacy,),
+                ),
+                Migration(2, "age", _migrate_v2_age),
+            ),
+        )
+        self._dbs.append(reconciled)
+        await reconciled.bind(self.databases_dir)
+
+        async with reconciled.session() as session:
+            result = await session.execute(
+                text("SELECT checksum FROM _neobot_plugin_migrations WHERE version=1")
+            )
+            checksum = str(result.scalar_one())
+        self.assertEqual(
+            checksum,
+            _migration_checksum(Migration(1, "users", _migrate_v1_alt)),
+        )
+        rows = await self._applied_versions(reconciled)
+        self.assertEqual([version for version, _applied_at in rows], [1, 2])
+
     async def test_removed_or_reordered_migration_rejected(self) -> None:
         database = self._database(
             migrations=(

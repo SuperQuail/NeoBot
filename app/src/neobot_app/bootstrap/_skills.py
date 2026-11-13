@@ -114,10 +114,10 @@ def build_plugin_runtime(
             self._fs = fs
 
         async def send_image(
-            self, adapter: Any, conversation: Any, *, path: Path
+            self, adapter: Any, conversation: Any, *, path: Path, proactive: bool = False
         ) -> Any:
             return await _media_sender_module.send_image(
-                self._fs, adapter, conversation, path
+                self._fs, adapter, conversation, path, proactive=proactive
             )
 
         async def send_audio(

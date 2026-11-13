@@ -57,6 +57,20 @@ async def subscriptions(host):
         return [db.sub_view(row) for row in await db.list_group_subscriptions(session, 20001)]
 
 
+async def test_legacy_command_names_resolve_to_renamed(manual_host):
+    """旧命令名保留为别名：/help 只列新名，旧名仍能命中同一条命令。"""
+    for legacy, expected in (
+        ("/监听 610001", "直播监听"),
+        ("/取消监听 610001", "取消直播监听"),
+        ("/监听列表", "直播监听列表"),
+    ):
+        parsed = manual_host.registry.match(legacy)
+        assert parsed is not None and parsed[0] is not None, legacy
+        assert parsed[0].name == expected
+    names = set(manual_host.registry.names())
+    assert "监听" not in names and "取消监听" not in names and "监听列表" not in names
+
+
 async def test_manual_covers_real_fields_and_registered_command_paths(manual_host):
     guides = manual()
     fields = set()
@@ -80,30 +94,52 @@ async def test_manual_covers_real_fields_and_registered_command_paths(manual_hos
     assert command_names == set(manual_host.registry.names())
 
 
+def command_step(prefix):
+    """按命令前缀取教程步骤：教程顺序可调整，测试不依赖固定下标。"""
+    for step in manual()["group-commands"]["steps"]:
+        command = step.get("command")
+        if command and command["text"].startswith(prefix):
+            return step
+    raise AssertionError("教程里没有命令：" + prefix)
+
+
 async def test_start_manual_commands_execute_in_real_host_and_list_current_group(manual_host):
-    steps = manual()["group-commands"]["steps"][:3]
-    assert (await send_command(manual_host, steps[0]["command"]["text"])).consumed
+    start = command_step("/直播监听 ")
+    list_step = command_step("/直播监听列表")
+    status_step = command_step("/开播状态")
+    assert (await send_command(manual_host, start["command"]["text"])).consumed
     row = (await subscriptions(manual_host))[0]
     assert (row.group_id, row.room_id, row.push_live, row.push_live_end) == ("20001", 610001, True, True)
     assert "已开始监听" in manual_host.replies[-1][2]
     assert "主播: 演示主播" in manual_host.replies[-1][2]
 
-    assert (await send_command(manual_host, steps[1]["command"]["text"], user_id=99)).consumed
+    assert (await send_command(manual_host, list_step["command"]["text"], user_id=99)).consumed
     assert "本群监听的直播间" in manual_host.replies[-1][2]
     assert "610001" in manual_host.replies[-1][2]
-    assert (await send_command(manual_host, steps[2]["command"]["text"], user_id=99)).consumed
+    assert (await send_command(manual_host, status_step["command"]["text"], user_id=99)).consumed
     assert "本群关注的主播" in manual_host.replies[-1][2]
     assert manual_host.state.client.queried == [610001]
     assert manual_host.state.ctx.adapter.sent == []
 
 
+#: 教程里的设置/开关命令；逐条执行并断言真的生效（顺序不影响断言）。
+_SETTINGS_COMMANDS = (
+    "/开播推送 610001 关",
+    "/下播推送 610001 开",
+    "/config 开播AI 关",
+    "/config 下播AI 关",
+    "/卡片风格 minimal",
+    "/config 开播推送默认 关",
+    "/config 下播推送默认 开",
+)
+
+
 async def test_notification_manual_commands_change_group_settings_and_cancel_only_its_subscription(manual_host):
-    start = manual()["group-commands"]["steps"][0]["command"]["text"]
+    start = command_step("/直播监听 ")["command"]["text"]
     await send_command(manual_host, start)
-    steps = manual()["group-commands"]["steps"][3:]
-    for step in steps[:-1]:
+    for text in _SETTINGS_COMMANDS:
         previous = len(manual_host.replies)
-        assert (await send_command(manual_host, step["command"]["text"])).consumed
+        assert (await send_command(manual_host, text)).consumed
         assert len(manual_host.replies) == previous + 1
         assert "失败" not in manual_host.replies[-1][2]
 
@@ -117,11 +153,31 @@ async def test_notification_manual_commands_change_group_settings_and_cancel_onl
 
     # 相同直播间在其他群的订阅不应被当前群的取消命令删除。
     await SubscriptionService(manual_host.state).create(20002, "610001")
-    assert (await send_command(manual_host, steps[-1]["command"]["text"])).consumed
+    cancel = command_step("/取消直播监听 ")["command"]["text"]
+    assert (await send_command(manual_host, cancel)).consumed
     assert "已取消监听" in manual_host.replies[-1][2]
     assert await subscriptions(manual_host) == []
     async with manual_host.state.database.session() as session:
         assert await db.get_subscription(session, 20002, 610001) is not None
+    assert manual_host.state.ctx.adapter.sent == []
+
+
+async def test_status_preview_manual_command_previews_without_writing(manual_host):
+    start = command_step("/直播监听 ")["command"]["text"]
+    assert (await send_command(manual_host, start)).consumed
+    preview = command_step("/直播状态 ")
+    before = await subscriptions(manual_host)
+    previous = len(manual_host.replies)
+
+    assert (await send_command(manual_host, preview["command"]["text"], user_id=99)).consumed
+
+    # 预览只读：不写订阅、不返回命令文本，卡片由 Notifier 直接发送。
+    assert await subscriptions(manual_host) == before
+    assert len(manual_host.replies) == previous
+    group_id, kwargs = manual_host.state.notifier.previews[-1]
+    assert group_id == "20001"
+    assert kwargs["room_id"] == 610001
+    assert kwargs["snapshot"].live_status == 0
     assert manual_host.state.ctx.adapter.sent == []
 
 

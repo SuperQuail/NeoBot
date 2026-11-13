@@ -40,11 +40,17 @@ _WINDOWS_RESERVED_NAMES = {"con", "prn", "aux", "nul"} | {
 
 @dataclass(frozen=True)
 class Migration:
-    """数据库迁移：按 version 升序在独立事务中执行。"""
+    """数据库迁移：按 version 升序在独立事务中执行。
+
+    legacy_checksums 用于「迁移已发布后被修正」的一次性兼容：把历史版本实际
+    应用过的校验和列在这里，启动时若命中就只把记录改写成当前校验和并继续，
+    不再报冲突。只能放确实只是同一语义修补过的历史校验和，不能拿它掩盖篡改。
+    """
 
     version: int
     name: str
     upgrade: Callable[[AsyncConnection], Awaitable[None]]
+    legacy_checksums: tuple[str, ...] = ()
 
 
 class PluginDatabaseError(RuntimeError):
@@ -345,10 +351,20 @@ class PluginDatabase:
                     )
                 if version in applied and applied[version] != local[version]:
                     migration = self._migration_by_version(version)
-                    raise PluginMigrationConflictError(
-                        f"插件 {self._plugin_name!r} 的数据库 {self._name!r} 的迁移 "
-                        f"v{version} {migration.name!r} 校验和与已应用记录不一致"
-                    )
+                    if applied[version] not in migration.legacy_checksums:
+                        raise PluginMigrationConflictError(
+                            f"插件 {self._plugin_name!r} 的数据库 {self._name!r} 的迁移 "
+                            f"v{version} {migration.name!r} 校验和与已应用记录不一致"
+                        )
+                    # 已发布迁移被修正：把历史校验和改写成当前校验和，继续执行后续迁移。
+                    async with self.engine.begin() as connection:
+                        await connection.execute(
+                            text(
+                                f"UPDATE {_MIGRATION_TABLE} SET checksum=:checksum "
+                                "WHERE version=:version"
+                            ),
+                            {"checksum": local[version], "version": version},
+                        )
             missing = sorted(applied.keys() - local.keys())
             if missing:
                 raise PluginMigrationError(

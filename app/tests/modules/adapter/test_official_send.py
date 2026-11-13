@@ -805,3 +805,70 @@ async def test_media_segment_without_source_fails(workdir) -> None:
     assert result.status == "failed"
     assert "缺少 file/url/local_path" in result.message
     assert api.calls == []
+
+
+# ── 图文卡片（msg_type=8） ──────────────────────────────────────────
+
+
+def _tuwen(**overrides) -> dict:
+    content = {
+        "title": "主播 开播了",
+        "description": "直播标题 · 分区 · 12345人气",
+        "url": "https://live.bilibili.com/10",
+        "pic_url": "https://i0.hdslb.com/cover.jpg",
+    }
+    content.update(overrides)
+    return {"type": "official_tuwen", "data": content}
+
+
+async def test_tuwen_card_is_single_msg_type_8(workdir) -> None:
+    sender, api, identity, passive, _message_ids = _sender(workdir)
+    conversation = _group(identity)
+    _remember(passive, conversation)
+
+    result = await sender.send(conversation, [_tuwen()])
+
+    assert result.status == "ok"
+    call = api.calls[0]
+    assert call["path"] == f"/v2/groups/{conversation.id}/messages"
+    body = call["body"]
+    assert body["msg_type"] == 8
+    assert body["card"] == {
+        "type": "tuwen",
+        "content": {
+            "title": "主播 开播了",
+            "description": "直播标题 · 分区 · 12345人气",
+            "url": "https://live.bilibili.com/10",
+            "pic_url": "https://i0.hdslb.com/cover.jpg",
+        },
+    }
+    assert "content" not in body and "media" not in body and "markdown" not in body
+
+
+async def test_tuwen_validation_failures_send_nothing(workdir) -> None:
+    sender, api, identity, _passive, _message_ids = _sender(workdir)
+    conversation = _group(identity)
+
+    for bad in (
+        _tuwen(title=""),
+        _tuwen(title="x" * 51),
+        _tuwen(description=""),
+        _tuwen(description="x" * 201),
+        _tuwen(url="http://example.com/x"),
+        _tuwen(pic_url="qqbot-media://image/v1/x"),
+        _tuwen(pic_url="https://x/" + "a" * 1024),
+    ):
+        result = await sender.send(conversation, [bad])
+        assert result.status == "failed"
+    assert api.calls == []
+
+
+async def test_tuwen_cannot_mix_with_text(workdir) -> None:
+    sender, api, identity, _passive, _message_ids = _sender(workdir)
+
+    result = await sender.send(
+        _group(identity), [_tuwen(), {"type": "text", "data": {"text": "x"}}]
+    )
+
+    assert result.status == "failed"
+    assert api.calls == []

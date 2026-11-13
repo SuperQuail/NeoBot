@@ -304,7 +304,16 @@ def build_migrations() -> tuple[Migration, ...]:
     return (
         Migration(version=1, name="initial-schema", upgrade=create_initial_schema),
         Migration(version=2, name="profile-user-name", upgrade=add_profile_user_name),
-        Migration(version=3, name="widen-user-ids", upgrade=widen_user_ids),
+        # v3 发布后修正过列清单搬运（原 SELECT * 会错位），旧校验和只做一次性兼容；
+        # 本机/已升级库命中后自动改写记录，不重放迁移。
+        Migration(
+            version=3,
+            name="widen-user-ids",
+            upgrade=widen_user_ids,
+            legacy_checksums=(
+                "5af7f0a52a7b97ebe0aaef6d87e27d070b4985b2ab6a8602f32c9d7f9e8e134e",
+            ),
+        ),
         Migration(version=4, name="legacy-ids-to-openid", upgrade=rewrite_legacy_user_ids),
     )
 
