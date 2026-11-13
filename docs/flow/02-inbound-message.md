@@ -5,8 +5,8 @@ covers:
   - app/src/neobot_app/message/queue.py
   - app/src/neobot_app/runtime/gateway.py
   - app/src/neobot_app/runtime/inbound_pipeline.py
-verified_against: d525a5b
-verified_hash: e4c6652659b7
+verified_against: 32627dab
+verified_hash: 8646e1996eac
 ---
 
 # 02 适配器入站：反向 WS -> 事件网关 -> 队列 -> 事件管道
