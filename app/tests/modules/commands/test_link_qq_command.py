@@ -332,3 +332,106 @@ async def test_super_admin_can_unlink_openid_by_real_qq_argument():
     assert result.consumed is True
     assert trusted_qq_for_user(OPENID_TARGET) is None
     assert "已移除" in sent[-1][2]
+
+
+@pytest.mark.asyncio
+async def test_linkqq_merges_archives_into_openid(tmp_path):
+    from neobot_app.identity_merge import bind_identity_merge
+    from neobot_app.user_identity import bind_user_identity
+
+    class _Merger:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        async def merge_user(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"merged": True}
+
+    bind_user_identity(tmp_path)
+    merger = _Merger()
+    bind_identity_merge(merger)
+    sent: list[tuple] = []
+    try:
+        service = _service(sent)
+        await service.handle_message(
+            _message("/linkqq 123456789", user_id=SUB, at_qqs=[BOT, SYNTHETIC]),
+            kind="group",
+            queue_key="100",
+        )
+        assert merger.calls == [{"openid": str(SYNTHETIC), "qq": REAL_QQ, "channel": None}]
+        assert "历史档案已并入 openid" in sent[-1][2]
+    finally:
+        bind_identity_merge(None)
+        bind_user_identity(None)
+
+
+@pytest.mark.asyncio
+async def test_linkgroup_merges_archives_into_openid(tmp_path):
+    from neobot_app.identity_merge import bind_identity_merge
+    from neobot_app.user_identity import bind_user_identity
+
+    class _Merger:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        async def merge_group(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"merged": True}
+
+    bind_user_identity(tmp_path)
+    merger = _Merger()
+    bind_identity_merge(merger)
+    sent: list[tuple] = []
+    try:
+        service = _service(sent)
+        await service.handle_message(
+            _message("/linkgroup 987654321", user_id=SUB, at_qqs=[BOT]),
+            kind="group",
+            queue_key="8000000000002",
+        )
+        assert merger.calls == [
+            {"openid": "8000000000002", "number": 987654321, "channel": None}
+        ]
+        assert "历史档案已并入 openid" in sent[-1][2]
+    finally:
+        bind_identity_merge(None)
+        bind_user_identity(None)
+
+
+@pytest.mark.asyncio
+async def test_linkqq_runs_identity_migration_after_link(tmp_path):
+    """link 成功后立即跑一次全量身份迁移（未绑定 coordinator 时跳过）。"""
+    from neobot_app.database.identity_data_migration import bind_identity_migration
+    from neobot_app.identity_merge import bind_identity_merge
+    from neobot_app.user_identity import bind_user_identity
+
+    class _Merger:
+        async def merge_user(self, **kwargs):
+            return {"merged": False}
+
+    class _Coordinator:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def run(self):
+            self.calls += 1
+            return {}
+
+    bind_user_identity(tmp_path)
+    bind_identity_merge(_Merger())
+    coordinator = _Coordinator()
+    bind_identity_migration(coordinator)
+    sent: list[tuple] = []
+    try:
+        service = _service(sent)
+        await service.handle_message(
+            _message("/linkqq 123456789", user_id=SUB, at_qqs=[BOT, SYNTHETIC]),
+            kind="group",
+            queue_key="100",
+        )
+        assert coordinator.calls == 1
+    finally:
+        bind_identity_migration(None)
+        bind_identity_merge(None)
+        bind_user_identity(None)
+

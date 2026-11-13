@@ -34,17 +34,21 @@ NeoBot 支持两种 QQ 接入通道，并可以**同时运行**：
 
 - **管理员命令**：
   - `/linkqq <QQ号>`（管理员级别权限）：把**发送者本人**映射到真实 QQ 号（5~11 位纯数字）；也支持 `/linkqq @用户 <QQ号>` 映射被 @ 的人。这条命令写入的映射是 **trusted** 的，可用于管理员/次级管理员权限判定。官方群@事件里的 `mentions` 会按正文里 @ 标记的真实顺序解析成 at 段，所以官方通道也能用 @ 形式，且「命令在前、@ 在后」不会打乱解析；群全量消息 content 里的 @机器人 标记在 openid 可识别时补成 bot at 段；群场景 member_openid 兜底命中时不补 at 段，但 `mentioned_self` 权威结论为被 @，命令/必回照常触发。
-  - `/linkgroup <群号>`（管理员级别权限，群聊中使用）：把**当前群**映射到真实 QQ 群号（5~12 位纯数字），之后提示词/群黑白名单按真实群号识别。
+  - `/linkgroup <群号>`（管理员级别权限，群聊中使用）：把**当前群**映射到真实 QQ 群号（5~12 位纯数字），之后提示词/群黑白名单按真实群号识别；成功后会以 openid 为主键合并群档案（群号版本在前、openid 版本在后）。
 - **Agent 工具**：`user_identity__link_user_qq(user_id, qq_number[, channel])`、`user_identity__link_group_number(group_id, group_number[, channel])`，以及对应的 get/unlink。Agent 写入的映射**只影响展示**，不参与权限判定（防止模型自己把用户映射成管理员）；管理员映射必须由人类管理员用命令建立。官方群@事件的 `mentions` 会解析为被 @ 用户；官方发送侧 @ 用户必须用 markdown 内嵌 `<qqbot-at-user id="openid" />`（适配器直接使用 openid，不再反查合成 ID；未知/格式不对的 openid 会替换成「@用户」纯文字并记 WARNING，不做文本降级）。
-- 生效范围：提示词/用户资料/历史/通知/档案里，已映射的用户显示 `QQ:<真实号>（ID:<完整 openid>）`，群显示 `群号:<真实群号>（ID:<完整 group_openid>）`；**未映射时显示完整 openid 字符串（`ID:<openid>`，不截断）**。好友/群黑白名单、回复黑名单只认管理员命令写入的 trusted 映射；agent 写入的映射只影响展示，不参与访问控制。管理员权限只认 trusted 用户映射。映射只影响展示与身份解析，不改资料存储主键。
+- 生效范围：提示词/用户资料/历史/通知/档案里，已映射的用户显示 `QQ:<真实号>（ID:<完整 openid>）`，群显示 `群号:<真实群号>（ID:<完整 group_openid>）`；**未映射时显示完整 openid 字符串（`ID:<openid>`，不截断）**。好友/群黑白名单、回复黑名单只认管理员命令写入的 trusted 映射；agent 写入的映射只影响展示，不参与访问控制。管理员权限只认 trusted 用户映射。
+- **身份合并（以 openid 为主键）**：`/linkqq`、`/linkgroup` 成功后会把 QQ 号/群号一侧的历史档案并入 openid 主键：`user_profile`/`user_summary`（或 `group_profile`/`group_summary`）两侧都有内容时按「QQ号版本在前、空行、openid 版本在后」拼接，资料行 `user_data`/`group_data` 的 `profile` 文本同样处理（昵称/备注等字段优先 openid 非空值，好感度取较大值），合并后删除源行；之后的资料/档案读写一律归一到 openid。消息与会话仍按各自通道原始 ID 存储（同一群在两条通道是两条会话，不合并聊天记录）。
 - **超级管理员**：`chat.admin_accounts` **默认留空，必须由部署者在配置/面板显式设置**，配置里可填**真实 QQ 号（数字）或官方 openid 字符串**（与 `sub_admin_accounts` 一致）；填 openid 时该通道的号主直接命中权限，无需再 `/linkqq`；填真实 QQ 号时，官方通道的号主需要先由管理员用 `/linkqq` 建立 trusted 映射，权限判定才能命中。`/linkqq` 写入超管 QQ 的映射只允许超管本人操作；`/unlinkqq`、`/unlinkgroup` 仅超级管理员可用。
 - **解绑**：机器人通道页提供「解绑官方机器人」，删除本机扫码凭据并断开；配置里显式填写的 AppID/AppSecret 优先于扫码落盘的凭据，热重载不会因为配置留空而丢掉环境变量里的凭据。
 - 存储：`data/user_qq_map.json`（原子写；新版 local ID 为文本——OneBot 数字串或官方 openid；旧格式的合成号 key 在迁移脚本里改写）。映射是人工维护的，系统**不会**根据昵称/头像等猜测，也不会自动建立跨通道会话关联。
+- **历史数据迁移（自动、无损、幂等）**：启动时（`official` 单通道模式）和每次 `/linkqq`、`/linkgroup` 成功后，会把映射覆盖到的历史数据迁到 openid 主键：核心库的 `user_data/group_data`、`user_profile/user_summary/group_profile/group_summary`、自动总结计数器、档案快照、`messages/memories/model_usage_records` 的会话/发送者 ID、`cross_chat_sessions`、定时任务绑定；agent 工具持久状态（todos/plan/goal）；内置插件库（streaming_parser 的订阅/群设置、minigame 的积分/签到/运势/漂流瓶/流水、starship 成绩）。两边都有内容时按「旧 QQ号/群号版本在前、openid 版本在后」合并（档案/计数器的 version 与 updated_at 同步推进，快照 version 跟随目标档案），删除/覆盖前会把旧行写入各库的 `identity_migration_backup` 备份表；迁移前还会把核心库/agent 状态库/插件库用 sqlite online backup 存到 `data/db_backup/identity_*`（每源保留 5 份，不占启动快照名额），link 后在线迁移同样先补快照。只使用管理员命令写入的 **trusted** 映射，agent 工具写的展示映射不参与合并，避免误合并账号。
+- 插件库只在 `official` 单通道下迁移群/会话类绑定（dual/onebot 跳过，避免破坏 OneBot 侧订阅）；`speaking_schedule` 的 `config.toml overrides[].id` 与 `mutes.json` 的 group/private scope 走文件级迁移（原文件备份为 `*.identity-backup-*`，原子替换）。
+- `official` 模式下迁移会统计并 WARNING 提示没有 openid 映射的活跃定时任务绑定、跨聊天会话；这些数据保持原样，补 `/linkqq`、`/linkgroup` 后下一次启动/link 自动迁移。未建立映射的真实号数据原样保留（不会被删除或猜测改写），补上 `/linkqq`、`/linkgroup` 后下一次启动/link 会自动迁移。
 
 ## 身份判定与账号
 
 - 判定只在**连接建立后**进行：对每条已连接通道调用 `get_version_info`，`app_name` 为 `NeoBot-QQOfficial` 即官方通道；未连接不判定、不猜测。双待下每条通道各有一份判定结果（通道、账号、昵称）。
-- **双通道路由**：已通过 `/linkgroup` 建立群号映射、且 OneBot 与官方 bot 都在线的群，官方通道的群消息会去重交给 OneBot 处理；但明确 @ 官方机器人的消息不参与去重，仍按官方通道正常回复/触发命令。@ 判定由适配器按官方 API 契约给出权威结论 `mentioned_self`（见下一条），app 侧统一走 `is_addressed_to_bot`。回复默认发 OneBot，OneBot 连接不可用时自动回落到官方通道（Conversation ID 会按映射换成官方的 group_openid）。
+- **双通道路由**：已通过 `/linkgroup` 建立群号映射、且 OneBot 与官方 bot 都在线的群，官方通道的群消息会去重交给 OneBot 处理；但明确 @ 官方机器人的消息不参与去重，仍按官方通道正常回复/触发命令。@ 判定由适配器按官方 API 契约给出权威结论 `mentioned_self`（见下一条），app 侧统一走 `is_addressed_to_bot`。**出站**：被 @ 触发的那一轮固定用来源通道回复（被 @ 的是哪个 bot 就由哪个 bot 回，不再跨通道改投）；普通/随机回复默认优先 OneBot，OneBot 连接不可用时回落到官方通道（Conversation ID 会按映射换成官方的 group_openid）。
 - **双待模式下两个机器人 QQ 号都通过工具/API 获取**（`get_login_info` 等），**不读 `[bot].account`**：两个号不同，不能用一个配置值代表。消息自带 `self_id`（即对应通道的机器人号），自我发言判断、提示词、命令 @ 判定都按消息级账号处理。
 - 单通道模式保留旧行为：`[bot].account = 0` 时连接后用 API 自动回填运行期配置；`[bot].official_mode` 仍可强制官方/非官方行为。
 - 官方通道的官方行为：@ 判定按官方 API 契约——`GROUP_AT_MESSAGE_CREATE` 事件本身即表示用户在群里 @ 了机器人（`content` 已去掉 @ 前缀，不看 uin/at 段/mentions），按必回并触发群命令；`GROUP_MESSAGE_CREATE`（群全量消息）先按 `content` 里的 `<@!bot_openid>` / `<@bot_openid>` / `<qqbot-at-user id="bot_openid">`，或 `mentions`/`msg_elements` 中 `bot=true` 且 id 等于机器人 openid 判定。平台在群场景可能把 @机器人 记成群 `member_openid`（与 READY 的 `d.user.id` 不同，2026-11-12 线上实测），此时若 `mentions` 里 `bot=true` 的 id 出现在正文 @ 标记中，也会判为被 @（`source=bot_mention`）：机器人昵称（READY 的 `username` 或 `/users/@me` 的 `nickname`）已知时优先按昵称匹配；若 mentions 里 bot=true 条目的 username 非空且都不是本机器人昵称，则直接判未 @（不再做位置兜底，避免多机器人群里 @ 另一个机器人被误判），条目没给 username 时才退到「该标记在正文开头或为唯一候选」的位置兜底，只记一次 WARNING。引用消息（`message_type=103`）的 `msg_elements` 是原消息，不作为 @ 来源。未命中且无兜底证据时权威结论是「未 @」，按普通群消息走意愿概率。机器人 openid 取自 READY 的 `d.user.id`；READY 缺 `user.id` 只记一次 WARNING（RESUMED 缺 user 不告警），全量消息仍可用昵称/mention 兜底。适配器把结论写入消息模型 `mentioned_self`（True/False；非官方为 None），映射时输出「官方消息 @ 判定」日志：`event_type` / `message_id` / `group_openid` / `sender_id` / `mentioned_self` / `source`（`event_type`｜`content`｜`mentions`｜`bot_mention`｜`none`）/ `bot_openid` / `self_id` / `content_at_ids` / `bot_mention_ids` / `bot_mention_names`；`mentioned_self` 为真或 mentions 出现 bot=true 时用 INFO，普通群友 @（只有 `content_at_ids`）用 DEBUG，避免活跃群刷屏。app 侧统一由 `is_addressed_to_bot` 消费，命令/@必回/已映射群去重/睡眠/提示词不再按通道名、uin/self_id、at qq=0 猜。提示词会注入官方机器人的能力边界；双待下只有官方通道的回复会注入该说明。
@@ -81,7 +85,7 @@ NeoBot 支持两种 QQ 接入通道，并可以**同时运行**：
   - 官方「唯一身份机制」明确写「不同的 bot(AppID) 获取到的用户 openid、群 openid、频道 openid 均不相同」，同一个群在不同 AppID 下连 openid 都不同；
   - OpenAPI 里没有 group_openid → QQ 群号 / user_openid → QQ 号 的转换接口。
 
-  因此只按人工 `/linkgroup` 映射关联合法群：已映射且两通道都在线时，官方群消息去重交给 OneBot（显式 @ 官方机器人的消息除外，仍按官方通道处理），回复默认优先 OneBot，OneBot 不可用回落官方；显式 `channel` 不被静默改投。
+  因此只按人工 `/linkgroup` 映射关联合法群：已映射且两通道都在线时，官方群消息去重交给 OneBot（显式 @ 官方机器人的消息除外，仍按官方通道处理）；**被 @ 的回复固定在来源通道**，普通/随机回复默认优先 OneBot，OneBot 不可用回落官方；显式 `channel` 不被静默改投。`/linkqq`、`/linkgroup` 成功后还会把历史档案以 openid 为主键合并（QQ号/群号版本在前）。
 - **非目标**：QQ 频道/频道私信、Webhook 模式、流式消息、消息 `keyboard` 字段（模板/自定义键盘）、ARK、互动回调；Markdown 卡片只支持内嵌 `<qqbot-at-user>` 与由 `at_everyone`/`commands` 结构化参数生成的 `qqbot-at-everyone`/`qqbot-cmd-enter`/`qqbot-cmd-input` 标签，不支持手写这些标签。
 
 ## 从合成号迁移到 openid（旧数据）

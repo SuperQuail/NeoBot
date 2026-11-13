@@ -22,6 +22,8 @@ from neobot_app.commands.model import (
 )
 from neobot_app.bot_accounts import identity_text, looks_like_real_qq
 from neobot_app.user_identity import (
+    canonical_group_id,
+    canonical_user_id,
     link_group_number,
     link_user_qq,
     openid_for_qq,
@@ -40,6 +42,8 @@ from neobot_app.runtime.sleep_service import (
     format_sleep_duration,
     parse_sleep_duration,
 )
+from neobot_app.database.identity_data_migration import get_identity_migration
+from neobot_app.identity_merge import get_identity_merge
 
 if TYPE_CHECKING:
     from neobot_app.commands.service import CommandService
@@ -853,7 +857,32 @@ async def _handle_link_qq(ctx: CommandContext) -> str:
     ok, message_text = link_user_qq(
         target, qq_number, channel=channel, trusted=True
     )
-    return message_text if ok else f"映射失败：{message_text}"
+    if not ok:
+        return f"映射失败：{message_text}"
+    # 先由迁移入口在快照/备份保护下完成档案与历史数据合并；失败也不会先删源行。
+    migrator = get_identity_migration()
+    if migrator is not None:
+        try:
+            migrated = await migrator.run()
+            if migrated:
+                message_text += "（历史数据已迁移到 openid）"
+        except Exception:
+            message_text += "（历史数据迁移失败，重启后会重试）"
+        return message_text
+    # 测试/未装配 coordinator 时退回即时档案合并。
+    merger = get_identity_merge()
+    if merger is not None:
+        try:
+            merged = await merger.merge_user(
+                openid=canonical_user_id(target, channel) or target,
+                qq=qq_number,
+                channel=channel,
+            )
+            if merged.get("merged"):
+                message_text += "（历史档案已并入 openid）"
+        except Exception:
+            message_text += "（历史档案合并失败，可重试 /linkqq）"
+    return message_text
 
 
 async def _handle_link_group(ctx: CommandContext) -> str:
@@ -867,7 +896,32 @@ async def _handle_link_group(ctx: CommandContext) -> str:
     ok, message_text = link_group_number(
         ctx.conv_id, int(args[0]), channel=channel, trusted=True
     )
-    return message_text if ok else f"映射失败：{message_text}"
+    if not ok:
+        return f"映射失败：{message_text}"
+    # 先由迁移入口在快照/备份保护下完成档案与历史数据合并；失败也不会先删源行。
+    migrator = get_identity_migration()
+    if migrator is not None:
+        try:
+            migrated = await migrator.run()
+            if migrated:
+                message_text += "（历史数据已迁移到 openid）"
+        except Exception:
+            message_text += "（历史数据迁移失败，重启后会重试）"
+        return message_text
+    # 测试/未装配 coordinator 时退回即时档案合并。
+    merger = get_identity_merge()
+    if merger is not None:
+        try:
+            merged = await merger.merge_group(
+                openid=canonical_group_id(ctx.conv_id, channel) or ctx.conv_id,
+                number=int(args[0]),
+                channel=channel,
+            )
+            if merged.get("merged"):
+                message_text += "（历史档案已并入 openid）"
+        except Exception:
+            message_text += "（历史档案合并失败，可重试 /linkgroup）"
+    return message_text
 
 
 async def _handle_unlink_qq(ctx: CommandContext) -> str:

@@ -5,8 +5,8 @@ covers:
   - app/src/neobot_app/reply/flow_registry.py
   - app/src/neobot_app/observability/context_recorder.py
   - app/src/neobot_app/observability/prompt_diff.py
-verified_against: d525a5b
-verified_hash: 5d63a428b611
+verified_against: b0c12261
+verified_hash: 938508edeb37
 ---
 
 # 24 提示词系统与聊天流快照

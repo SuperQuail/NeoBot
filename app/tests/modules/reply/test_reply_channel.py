@@ -423,3 +423,51 @@ def test_linked_group_prefers_onebot_and_falls_back_official(tmp_path) -> None:
         assert (channel, target.id) == ("official", "8000000000010")
     finally:
         bind_user_identity(None)
+
+
+async def test_addressed_reply_stays_on_source_channel(tmp_path, monkeypatch):
+    """被 @ 时由被 @ 的 bot 回复：即使群已映射且 OneBot 在线，也不跨通道改投。"""
+    from neobot_app.user_identity import bind_user_identity, link_group_number
+
+    bind_user_identity(tmp_path)
+    try:
+        assert link_group_number(8000000000010, 123456789, channel="official", trusted=True)[0]
+        sender, adapter = _sender()
+        adapter.connected_channels = ("onebot", "official")
+        event = _ready_event(channel="official")
+        event.conversation_ref = ConversationRef(kind="group", id="8000000000010")
+        event.message = SimpleNamespace(message_type="group", neobot_channel="official")
+        monkeypatch.setattr(
+            "neobot_app.reply.sender.is_addressed_to_bot",
+            lambda message, config=None: True,
+        )
+
+        assert await sender.send_reply(event, "被@的回复") is True
+
+        assert adapter.calls[0].get("channel") == "official"
+    finally:
+        bind_user_identity(None)
+
+
+async def test_random_reply_prefers_onebot_on_linked_group(tmp_path, monkeypatch):
+    from neobot_app.user_identity import bind_user_identity, link_group_number
+
+    bind_user_identity(tmp_path)
+    try:
+        assert link_group_number(8000000000010, 123456789, channel="official", trusted=True)[0]
+        sender, adapter = _sender()
+        adapter.connected_channels = ("onebot", "official")
+        event = _ready_event(channel="official")
+        event.conversation_ref = ConversationRef(kind="group", id="8000000000010")
+        event.message = SimpleNamespace(message_type="group", neobot_channel="official")
+        monkeypatch.setattr(
+            "neobot_app.reply.sender.is_addressed_to_bot",
+            lambda message, config=None: False,
+        )
+
+        assert await sender.send_reply(event, "普通回复") is True
+
+        assert adapter.calls[0].get("channel") == "onebot"
+    finally:
+        bind_user_identity(None)
+

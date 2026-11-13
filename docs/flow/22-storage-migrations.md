@@ -2,8 +2,8 @@
 flow: 22-storage-migrations
 covers:
   - packages/storage/src/neobot_storage/
-verified_against: d525a5b
-verified_hash: bd2c8f204689
+verified_against: b0c12261
+verified_hash: 5fd16de7978a
 ---
 
 # 22 存储与迁移

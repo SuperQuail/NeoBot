@@ -8,8 +8,8 @@ covers:
   - packages/chat/src/neobot_chat/models.py
   - packages/chat/src/neobot_chat/providers/
   - packages/chat/src/neobot_chat/schema/exceptions.py
-verified_against: d525a5b
-verified_hash: c14d27c6d80a
+verified_against: b0c12261
+verified_hash: 5e4c325b217a
 ---
 
 # 05 模型路由与降级：角色/编号路由 · 原生视觉回退 · 计费与统计

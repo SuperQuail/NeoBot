@@ -6,7 +6,7 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.sqlite import insert
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 
 from neobot_storage.models import UserData, GroupData
 
@@ -71,6 +71,14 @@ class SqlAlchemyProfileRepository:
         stmt = select(GroupData).where(GroupData.group_id == group_id).limit(1)
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def delete_user(self, user_id: str) -> None:
+        """删除一条用户资料行（仅身份合并用：数据先并入 openid 行再删源行）。"""
+        await self._session.execute(delete(UserData).where(UserData.user_id == user_id))
+
+    async def delete_group(self, group_id: str) -> None:
+        """删除一条群资料行（仅身份合并用）。"""
+        await self._session.execute(delete(GroupData).where(GroupData.group_id == group_id))
 
     # ── 头像存储（spec(5) §4.9 / R33–R37）──────────────────────────
     # 头像与用户资料同表：「有 user_data 行 = 认识该用户」，调用方只查这一处。

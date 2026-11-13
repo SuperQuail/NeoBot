@@ -24,6 +24,13 @@ from neobot_app.image import ImageParseService
 from neobot_app.observability.debug import DEFAULT_RETENTION_DAYS, DebugRecorder
 from neobot_app.prompt.builder import PromptBuilder
 from neobot_app.user_profiles import UserProfileService
+from neobot_app.database.identity_data_migration import (
+    IdentityMigrationCoordinator,
+    bind_identity_migration,
+    official_only_mode,
+)
+from neobot_app.identity_merge import IdentityMergeService, bind_identity_merge
+from neobot_app.user_identity import canonical_archive_key
 from neobot_app.willing import WillingService
 from neobot_app.core.file_server import FileServer
 from neobot_app.runtime.archive_memory_summary import ArchiveMemoryAutoSummaryService
@@ -162,6 +169,7 @@ def build_memory_services(
     archive_memory_service = build_archive_memory_service(
         uow_factory=uow_factory,
         logger=logger_factory.get_logger("app.archive_memory"),
+        key_mapper=canonical_archive_key,
     )
     profile_service = UserProfileService(
         adapter=adapter,
@@ -169,6 +177,21 @@ def build_memory_services(
         config=config,
         logger=logger_factory.get_logger("app.user_profiles"),
         archive_memory_service=archive_memory_service,
+    )
+    bind_identity_merge(
+        IdentityMergeService(
+            uow_factory=uow_factory,
+            logger=logger_factory.get_logger("app.identity_merge"),
+        )
+    )
+    # /linkqq、/linkgroup 成功后的即时全量迁移入口（启动期已迁移过一次）。
+    bind_identity_migration(
+        IdentityMigrationCoordinator(
+            db_path=data_dir / "neobot.db",
+            data_dir=data_dir,
+            official_only=official_only_mode(config),
+            logger=logger_factory.get_logger("app.db_migration"),
+        )
     )
     bot_detector = BotDetector(adapter)
     willing_service = WillingService(
