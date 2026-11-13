@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "version": "2.1.0-a8",
-  "created_at": "2026-11-10T14:22:30.761510347Z",
+  "version": "2.1.0-a9",
+  "created_at": "2026-11-13T06:23:15.037791387Z",
   "mode": "pr",
   "channel": "alpha",
-  "fingerprint": "sha256:0bd9b6d99ad5afee9b5b5fa527cce9b052ed8c0c22d222be5bfd4be179907d26",
+  "fingerprint": "sha256:69f7db06c32994b7a6ba5bb1e7e10d9de10bc54f08a01a6160424e5e7c537479",
   "repo": {
     "host": "github.com",
     "owner": "SuperQuail",
@@ -18,95 +18,95 @@
       "uv run pytest --strict-markers -m \"not browser and not network and not slow and not llm\""
     ],
     "skipped": false,
-    "at": "2026-11-10T14:22:30.761510965Z"
+    "at": "2026-11-13T06:23:15.037791827Z"
   },
   "packages": [
     {
       "name": "python@neobot",
       "path": ".",
       "resolver": "python",
-      "current": "2.1.0-a7",
-      "next": "2.1.0-a8",
+      "current": "2.1.0-a8",
+      "next": "2.1.0-a9",
       "bump": "minor",
-      "tag": "v2.1.0a8",
+      "tag": "v2.1.0a9",
       "publish": false
     },
     {
       "name": "python@neobot-app",
       "path": "app",
       "resolver": "python",
-      "current": "2.1.0-a7",
-      "next": "2.1.0-a8",
+      "current": "2.1.0-a8",
+      "next": "2.1.0-a9",
       "bump": "minor",
-      "tag": "v2.1.0a8",
+      "tag": "v2.1.0a9",
       "publish": true
     },
     {
       "name": "python@neobot-contracts",
       "path": "packages/contracts",
       "resolver": "python",
-      "current": "2.1.0-a7",
-      "next": "2.1.0-a8",
+      "current": "2.1.0-a8",
+      "next": "2.1.0-a9",
       "bump": "minor",
-      "tag": "v2.1.0a8",
+      "tag": "v2.1.0a9",
       "publish": true
     },
     {
       "name": "python@neobot-adapter",
       "path": "packages/adapter",
       "resolver": "python",
-      "current": "2.1.0-a7",
-      "next": "2.1.0-a8",
+      "current": "2.1.0-a8",
+      "next": "2.1.0-a9",
       "bump": "minor",
-      "tag": "v2.1.0a8",
+      "tag": "v2.1.0a9",
       "publish": true
     },
     {
       "name": "python@neobot-chat",
       "path": "packages/chat",
       "resolver": "python",
-      "current": "2.1.0-a7",
-      "next": "2.1.0-a8",
+      "current": "2.1.0-a8",
+      "next": "2.1.0-a9",
       "bump": "minor",
-      "tag": "v2.1.0a8",
+      "tag": "v2.1.0a9",
       "publish": true
     },
     {
       "name": "python@neobot-memory",
       "path": "packages/memory",
       "resolver": "python",
-      "current": "2.1.0-a7",
-      "next": "2.1.0-a8",
+      "current": "2.1.0-a8",
+      "next": "2.1.0-a9",
       "bump": "minor",
-      "tag": "v2.1.0a8",
+      "tag": "v2.1.0a9",
       "publish": true
     },
     {
       "name": "python@neobot-modloader",
       "path": "packages/modloader",
       "resolver": "python",
-      "current": "2.1.0-a7",
-      "next": "2.1.0-a8",
+      "current": "2.1.0-a8",
+      "next": "2.1.0-a9",
       "bump": "minor",
-      "tag": "v2.1.0a8",
+      "tag": "v2.1.0a9",
       "publish": true
     },
     {
       "name": "python@neobot-storage",
       "path": "packages/storage",
       "resolver": "python",
-      "current": "2.1.0-a7",
-      "next": "2.1.0-a8",
+      "current": "2.1.0-a8",
+      "next": "2.1.0-a9",
       "bump": "minor",
-      "tag": "v2.1.0a8",
+      "tag": "v2.1.0a9",
       "publish": true
     }
   ],
   "releases": [
     {
-      "version": "2.1.0-a8",
-      "tag": "v2.1.0a8",
-      "previous_tag": "v2.1.0a7",
+      "version": "2.1.0-a9",
+      "tag": "v2.1.0a9",
+      "previous_tag": "v2.1.0a8",
       "packages": [
         "python@neobot",
         "python@neobot-adapter",
@@ -121,6 +121,37 @@
     }
   ],
   "changes": [
+    {
+      "file": ".changes/add-official-group.md",
+      "type": "feat",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-adapter",
+        "python@neobot-app"
+      ],
+      "body": "接入官方群禁言/解除禁言、批量移除成员、入群审批、机器人群内状态；映射群成员增减/入群申请/好友增删事件为 OneBot notice/request；Markdown 卡片 @全体发送前校验机器人管理员身份；媒体扩展名预检；新增 /unlinkqq、/unlinkgroup 超管命令。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/add-official-markdown.md",
+      "type": "feat",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "新增官方专用 send_official_markdown（官方 Markdown 卡片），支持内嵌 @用户/@全体与 qqbot-cmd-enter/input 指令标签；与 Markdown 图片（send_long_reply）明确区分；补充提示词 skill，普通文本不再耦合 Markdown。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
     {
       "file": ".changes/at-segment-separates.md",
       "type": "fix",
@@ -164,6 +195,21 @@
       "commit_url": "https://github.com/SuperQuail/NeoBot/commit/78cee36964459418ab2b5b60bd8dc3b9baf1b22a",
       "pull_number": 303,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/303",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/cot-valuable-reply.md",
+      "type": "feat",
+      "scope": "prompt",
+      "bump": "minor",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Add a \"valuable reply\" cot sub-block telling the model to cancel instead of sending an empty reply, an echo comment or a meaningless agreement.",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
       "author": "Tang-Tian-dev"
     },
     {
@@ -223,6 +269,36 @@
       "author": "Tang-Tian-dev"
     },
     {
+      "file": ".changes/dedupe-linked-groups.md",
+      "type": "feat",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "已 link 且两通道都在线的群：官方群事件去重交给 OneBot；发送时按群号映射切换 Conversation ID，优先 OneBot，OneBot 不可用回落官方。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/dedupe-queue-replace.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "官方通道同一 msg_id 的 FULL→AT 升级重投时，消息队列按 message_id 原地替换旧条目（队列仍只有 1 条），并在升级路径跳过资料/头像/图片解析/档案总结等已执行过的重复副作用；同 msg_id 已触发过回复的不再第二次回复；未 @ 的命令文本不先当闲聊回复，AT 到达后命令只执行一次。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
       "file": ".changes/drop-legacy-release.md",
       "type": "chore",
       "scope": "ci",
@@ -250,6 +326,69 @@
       "commit_url": "https://github.com/SuperQuail/NeoBot/commit/78cee36964459418ab2b5b60bd8dc3b9baf1b22a",
       "pull_number": 303,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/303",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/explicit-proactive-messages.md",
+      "type": "feat",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-adapter",
+        "python@neobot-app"
+      ],
+      "body": "后台通知/定时任务显式走 official 主动消息（不再依赖被动回退）；请求助手 CoreProxy 跟随事件来源通道；补齐群/单聊消息开关、订阅授权事件；保留发送失败只写日志/返回工具错误的语义。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/expose-official-action.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-adapter",
+        "python@neobot-app"
+      ],
+      "body": "新增官方 SUPPORTED_ACTIONS 能力表与 supports_action 查询（供插件/宿主判断官方真实能力）；命令图片发送检查 SendMsgResponse.status，失败只写日志不误报成功。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/fix-minigame-checksum.md",
+      "type": "fix",
+      "scope": "minigame",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app",
+        "python@neobot-modloader"
+      ],
+      "body": "修复 minigame 插件库 v3 迁移校验和冲突导致插件启动报 PluginMigrationConflictError、整个小游戏插件加载失败的问题：Migration 新增 legacy_checksums，命中历史校验和时自动把应用记录改写为当前校验和并继续执行后续迁移（不重放）。旧 v3（SELECT * 按位置搬运）只出现在 #305 的开发快照里、未随任何发布版本发布，跑过它的开发库会记录旧校验和且 mg_profile 数据被整体错位；新增 v5 迁移检测错位行（wins 为文本）并按原映射反推修复 user_name/score/best_score/plays/wins/updated_at，正常库 no-op。",
+      "commit": "224903beb8ebba7d0fd904c59a9dba88c292933e",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/224903beb8ebba7d0fd904c59a9dba88c292933e",
+      "pull_number": 309,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/309",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/fix-minigame-migration.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "修复小游戏插件库 v2→v3 重建表用 SELECT * 按位置拷贝导致 mg_profile 的 user_name/score/best_score 等列错位的问题，v3 改为显式列清单拷贝。minigame 新增 Migration v4、streaming_parser 新增 Migration v3：借 data/qqbot/identities.json 把插件库里的旧 13 位合成号用户/群 ID 改写成官方 openid（积分/签到/运势/榜单/漂流瓶/流水、直播订阅/群设置），无映射或目标 openid 行已存在时保留旧数据、不删除。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
       "author": "Tang-Tian-dev"
     },
     {
@@ -282,6 +421,36 @@
       "author": "Tang-Tian-dev"
     },
     {
+      "file": ".changes/get-ids-command.md",
+      "type": "feat",
+      "scope": "commands",
+      "bump": "minor",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "新增只读命令 /get openid [@用户] 与 /get groupid：官方通道直接返回完整 openid（本人/被 @ 用户/本群），便于部署者复制官方 ID 配置管理员/映射/任务；OneBot 通道没有 openid，只提示不可用，不把 QQ号/群号发进聊天（遵循命令回复不出现 QQ 号的约定）。",
+      "commit": "8743cd34a011c4482ed7395bfe21dfe9c6747e7f",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/8743cd34a011c4482ed7395bfe21dfe9c6747e7f",
+      "pull_number": 308,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/308",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/group-id-passthrough.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "群管理/好友管理工具对纯数字 ID 继续按 int 透传给 OneBot（openid 仍按字符串），修复统一转字符串后参数类型变化的问题。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
       "file": ".changes/group-trusted.md",
       "type": "feat",
       "scope": "bot",
@@ -297,6 +466,21 @@
       "author": "Tang-Tian-dev"
     },
     {
+      "file": ".changes/honor-explicit-channel.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "双通道群发送的 OneBot 偏好只作用于未显式指定 channel 的默认路径；显式 channel 不再被静默改投，仍按调用方要求发送。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
       "file": ".changes/id-qq.md",
       "type": "fix",
       "scope": "bot",
@@ -309,6 +493,36 @@
       "commit_url": "https://github.com/SuperQuail/NeoBot/commit/78cee36964459418ab2b5b60bd8dc3b9baf1b22a",
       "pull_number": 303,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/303",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/legacy-identity-migration.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "启动时按 `data/qqbot/identities.json`（只读）把本体数据库里的旧 13 位合成号本地 ID 改写成官方 openid：用户资料/好感度、群资料、消息、记忆、档案与压缩快照、自动总结计数器、跨聊天会话、用量统计。迁移在 alembic 之后、服务读数据之前执行，单个 SQLite 事务、可重复执行（幂等）、无 identities 文件时 no-op；沿用 db_backup 的迁移前快照。目标 openid 行已存在时保留新旧两份数据、跳过该条（逐条 DEBUG，结束时一条 INFO 汇总迁移/跳过条数），不删除旧数据。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/legacy-migration-shutdown.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "旧定时任务绑定迁移任务纳入 ScheduledTaskManager.shutdown 管理：关闭时取消并等待迁移任务退出，done callback 对非取消异常记 WARNING，避免迁移跑进关闭流程或任务级异常无人回收（Task exception was never retrieved）。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
       "author": "Tang-Tian-dev"
     },
     {
@@ -338,6 +552,24 @@
       "commit_url": "https://github.com/SuperQuail/NeoBot/commit/faf960850464f046e3a92e86d07d2dca6c276c63",
       "pull_number": 296,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/296",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/live-listen-notification.md",
+      "type": "feat",
+      "scope": "streaming_parser",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-adapter",
+        "python@neobot-app",
+        "python@neobot-contracts",
+        "python@neobot-modloader"
+      ],
+      "body": "直播监听插件命令统一改为「直播监听」前缀：/监听 → /直播监听、/取消监听 → /取消直播监听、/监听列表 → /直播监听列表、/监听向导 → /直播监听向导，旧命令名保留为别名。开播/下播通知改为两条消息：先发插件渲染的卡片图片，官方通道再发一条原生图文卡片（msg_type=8，封面用 B 站直播间原始封面，标题/描述带主播与直播信息，卡片可点进直播间；发送失败补纯链接），OneBot 通道第二条为只含直播间链接的文本。放弃 Markdown 卡片与 qqbot-media 内嵌图：实测客户端会把素材图平铺渲染，真实登录态校验上传字节一致，属客户端渲染问题。新增 /直播状态 \u003c房间号\u003e：按同样两条消息格式预览，不写订阅、不触发通知。插件 SDK 发送接口新增 proactive 主动消息透传；卡片截图显式固定仿真视口；B站 /直播互动列表 改为 HTML 卡片；删除官方通道无意义的 member_openid warning。",
+      "commit": "224903beb8ebba7d0fd904c59a9dba88c292933e",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/224903beb8ebba7d0fd904c59a9dba88c292933e",
+      "pull_number": 309,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/309",
       "author": "Tang-Tian-dev"
     },
     {
@@ -503,6 +735,222 @@
       "author": "Tang-Tian-dev"
     },
     {
+      "file": ".changes/migrate-legacy-official.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "only-official 下旧定时任务/后台通知的真实 QQ 号/群号自动查映射：有映射迁移为官方合成 ID 并写回定时任务，缺映射逐条只记 DEBUG 并跳过，结束时汇总一条 INFO（N 个目标未迁移，保持原样）；新增 legacy_bindings 解析与迁移测试。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/official-adapter-review.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-adapter",
+        "python@neobot-app"
+      ],
+      "body": "将开放平台默认开发者 9000000000001 改为 chat.admin_accounts 配置默认值并迁移 0.11.1；/linkqq 映射超管 QQ 仅允许超管；热重载保留 env 官方凭据；网关断开清 connected；文本发送捕获鉴权错误；mentions 用 bot openid 识别 @bot；官方凭据配置优先并新增解绑接口/按钮。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/official-addressing-unify.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-adapter",
+        "python@neobot-app"
+      ],
+      "body": "官方通道「被 @」改为按官方 API 契约一次判定：适配器把权威结论写进消息模型 mentioned_self（True/False，非官方为 None）；GROUP_AT_MESSAGE_CREATE 事件本身即被 @，群全量消息只有 content 标记或 mentions/msg_elements 明确指向机器人 openid 才算。机器人 openid 取自 READY 的 d.user.id，缺失时全量消息按未 @ 处理并只告警一次；映射时输出固定字段的 @ 判定诊断日志。app 侧新增 is_addressed_to_bot 统一入口，命令触发、@ 必回、已映射群去重、睡眠唤醒与提示词 @ 判定共用；删除 official_at、官方通道无条件判 @、at 段 qq=0 等补丁式判定。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/official-at-upgrade.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "官方通道同一 msg_id 的 GROUP_MESSAGE_CREATE（全量、未 @）先到、GROUP_AT_MESSAGE_CREATE（@ 事件）后到时，去重记录改为「message_id → 是否 @」并允许一次「未 @ → 被 @」升级，后到的 @ 事件不再被误丢，命令与 @ 必回正常触发；队列「最新消息为@你的内容」提示改用适配器 mentioned_self 权威结论，uin 未解析/无可用 at 段时也能标出。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/official-bot-mention.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-adapter"
+      ],
+      "body": "修复群全量消息 @ 官方机器人被判成「未 @」：群场景里 @bot 的 id 是 member_openid，与 READY 的 d.user.id 不同，导致 /help 等命令不触发、被@必回不生效。适配器在 openid 未命中时按「mentions 里 bot=true 的 id 出现在正文 @ 标记」兜底判为被 @（source=bot_mention）：昵称已知优先按昵称，若 mentions 里 bot=true 条目的 username 非空且都不是本机器人昵称则直接判未 @、不再做位置兜底（避免多机器人群里 @ 另一个机器人被误触发），用户名缺失时才要求标记在正文开头或为唯一候选。引用消息（message_type=103）的 msg_elements 不再作为 @ 来源。诊断日志补 bot_mention_names；INFO 仅保留权威被 @ 或 mentions 出现 bot=true 的情况，普通群友 @（只有 content_at_ids）降为 DEBUG；告警限流改为 EventMapper 实例级，RESUMED 缺 user 不再告警。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/official-dedupe-fix.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "已映射群且 OneBot 在线时，只把未 @ 官方机器人的普通群消息去重交给 OneBot；显式 @ 官方机器人的官方群消息（@ 事件/正文 @bot 由适配器补 at 段）仍按官方通道正常处理，避免命令与提问整条丢失。同时修正解析后 message_type 为枚举导致的早期判断，去重不再整段失效。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/official-group-manage.md",
+      "type": "feat",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "新增 official_group_manage（仅官方通道）：查询机器人群内状态、禁言/解除禁言、踢人、入群审批；只调用官方真实接口，失败返回工具错误，不降级。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/official-login-classify.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-adapter",
+        "python@neobot-app"
+      ],
+      "body": "官方登录失败分类修正：只有明确鉴权失败（HTTP 401/403、token 接口的 appid/secret 业务错误码）才计入连续登录失败；5xx/429/网络异常归入网络错误不计数，网关 close code 4004（token 失效）只刷新 token、不再计入，避免瞬时抖动在数秒内累计 3 次误删扫码凭据。连续 3 次真鉴权失败转重新扫码与 READY/RESUMED 清零行为不变。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/official-markdown-complete.md",
+      "type": "feat",
+      "scope": "bot",
+      "bump": "minor",
+      "packages": [
+        "python@neobot-adapter",
+        "python@neobot-app"
+      ],
+      "body": "补全官方 Markdown 卡片工具 send_official_markdown：新增 at_everyone（仅群聊、按群+本地自然日节流、适配器校验管理员）与 commands 指令按钮（text/show ≤100、urlencode、群聊禁 enter）；content 只放行内嵌 @用户，其余官方标签全角化并在回执返回 neutralized 计数，@全体/按钮只能来自结构化参数；单聊内嵌 @ 文本化；普通文本路径也清理官方标签；链接只允许 http(s) 并拒绝回环/内网地址；保持发送失败不降级、明确返回错误。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/official-markdown-guard.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "收紧官方 Markdown 卡片的两处不一致：提示词改为 @全体用 at_everyone=true（正文手写标签会被转义，避免模型误以为已 @全体）；链接校验覆盖空白/尖括号/引用式写法并对危险 scheme 兜底拒绝。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/official-media-cache.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-adapter",
+        "python@neobot-app"
+      ],
+      "body": "官方富媒体 file_info 缓存改为按内容哈希区分本地/内联来源（URL 保持按 URL 缓存），修复 app 用固定文件名覆写卡片图（/help、/reload 等）后在 ttl 内复用上一张图 file_info、发送旧卡片的问题。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/official-media-local.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-adapter",
+        "python@neobot-app"
+      ],
+      "body": "官方通道图片/语音/文件改为优先读取 app 提供的本地路径走官方分片上传（媒体段新增 local_path，file 字段保留兼容 OneBot）；/help 卡片渲染或发图失败时回退等价纯文本并保留日志，不再静默跳过聊天输出。修复官方通道发图报「上传官方富媒体失败：上传URL错误」（QQ 拉不到 127.0.0.1 文件服务器 URL）。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/official-mention-fix.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "修复官方适配器下群全量消息（GROUP_MESSAGE_CREATE）未 @ 机器人却被当成 @ 的问题：只有 @ 事件与显式 at 段才触发必回和群命令，普通群消息恢复按意愿概率处理。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/official-proactive-wiring.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "补齐后台/定时/跨聊天回复的官方主动消息接线：start_reply/start_background_reply 支持并透传 proactive（后台合成事件默认 True），send_official_markdown 后台 handler 透传该标志；修复官方会话无可用被动回复目标时后台通知/定时任务直接发送失败（.changes/explicit-proactive-messages.md 声称的「显式走主动消息」此前未真正接线）。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
       "file": ".changes/official-qr.md",
       "type": "feat",
       "scope": "dashboard",
@@ -515,6 +963,22 @@
       "commit_url": "https://github.com/SuperQuail/NeoBot/commit/78cee36964459418ab2b5b60bd8dc3b9baf1b22a",
       "pull_number": 303,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/303",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/official-relogin.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-adapter",
+        "python@neobot-app"
+      ],
+      "body": "官方通道连续 3 次登录/鉴权失败后停止用旧凭据自动重连：记录明确错误，删除扫码落盘凭据（配置/环境变量来源只提示不删配置），并自动重新拉起扫码绑定——面板「机器人通道」页显示新二维码并提示重新扫码，控制台打印 ASCII 二维码与绑定链接；绑定成功后用新凭据重连，成功连接（READY/RESUMED）后失败计数清零。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
       "author": "Tang-Tian-dev"
     },
     {
@@ -550,6 +1014,54 @@
       "author": "Tang-Tian-dev"
     },
     {
+      "file": ".changes/openid-admin-permission.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "修复管理员列表里的官方 openid 被权限判定丢弃的问题：admin_accounts/sub_admin_accounts 统一按字符串本地 ID 比较，QQ 号与 openid 都可命中超级/次级管理员权限。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/openid.md",
+      "type": "feat",
+      "scope": "bot",
+      "bump": "minor",
+      "packages": [
+        "python@neobot-adapter",
+        "python@neobot-app",
+        "python@neobot-modloader"
+      ],
+      "body": "官方事件/发送/动作直出 openid；app/message/reply/prompt/identity/ACL/工具/插件/面板按字符串身份消费；管理员/黑名单/名单/直播目标等配置支持 openid 并提示从前端聊天流获取；IdentityMap 降级为迁移只读，user_qq_map 升 v3 并用 identities.json 迁移；dashboard 前端重建。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/overhaul-official-adapter.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-adapter",
+        "python@neobot-app"
+      ],
+      "body": "识别 err_code；发送失败只记录 info 并返回工具错误，不进入聊天流；移除 markdown/被动/媒体/通道自动降级回退；普通文本固定纯文本；引用 ref_idx、delete_msg、member_role、群信息/成员、语音 wav、被动额度/msg_seq 修复；ACL 只认 trusted；提示词/技能/插件/后台按官方能力过滤；双通道路由按来源通道。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
       "file": ".changes/parse-model-fallbacks.md",
       "type": "perf",
       "scope": "adapter",
@@ -562,6 +1074,38 @@
       "commit_url": "https://github.com/SuperQuail/NeoBot/commit/4b36beba80f22fa8de0a4a8a072885e2a06f7de2",
       "pull_number": 297,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/297",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/persist-full-tool.md",
+      "type": "feat",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app",
+        "python@neobot-contracts",
+        "python@neobot-storage"
+      ],
+      "body": "消息表新增 tool_call_json 与迁移 0032；发送工具持久化完整 tool_call，非发送工具持久化完整参数/结果但聊天历史只 compact 显示工具名与成败；启动恢复支持 full/compact 两种工具条目；补 reply/message/database/storage 测试。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/plugin-command-openid.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-modloader"
+      ],
+      "body": "插件声明式命令在官方群不再因 int(openid) 崩溃：CommandContext.conv_id 直接作为事件 group_id 兜底，不再 int() 化；官方群 openid 命令可正常执行，OneBot 数值群号事件行为不变。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
       "author": "Tang-Tian-dev"
     },
     {
@@ -641,6 +1185,52 @@
       "author": "Tang-Tian-dev"
     },
     {
+      "file": ".changes/queue-willing-log.md",
+      "type": "feat",
+      "scope": "logging",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "消息入队后的唯一 INFO 明细日志（event=message.enqueued）带上意愿判定结果（probability / should_reply / reasons）与会话、消息预览；被@、屏蔽、睡眠、私聊延迟、意愿服务缺失各分支都有明确原因。入站「收到消息」摘要降为 DEBUG，避免同一消息两条 INFO。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/relic-init.md",
+      "type": "docs",
+      "scope": "relic",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "Add the Relic plugin design docs (monthly planning, auto scheduled tasks, perfection mode, chat log and diary material, relation graph, group search) and align the default-disabled plugin skeleton.",
+      "commit": "3017b43b59a724021aba35f998be83b590d6e3f4",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/3017b43b59a724021aba35f998be83b590d6e3f4",
+      "pull_number": 306,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/306",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/remove-chat-fallbacks.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-adapter",
+        "python@neobot-app"
+      ],
+      "body": "命令卡片/帮助卡片失败不再降级发聊天文本；官方发送拒绝未知消息段、空媒体源与未就绪登录信息；凭据 skill 明确官方通道无踢人/退群接口。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
       "file": ".changes/reply-contract-corrections.md",
       "type": "fix",
       "bump": "patch",
@@ -666,6 +1256,21 @@
       "commit_url": "https://github.com/SuperQuail/NeoBot/commit/fab04470253bc1044e92ad7473f7790470d11b1c",
       "pull_number": 275,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/275",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/reply-dedupe-guard.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "FULL→AT 升级在回复进行中的挂起路径不再二次回复：回复后队列/图片等待队列处理时按 message_id 跳过已触发过回复的消息；未注册的 / 命令文本不再被误判为已注册命令而抑制闲聊回复。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
       "author": "Tang-Tian-dev"
     },
     {
@@ -725,6 +1330,38 @@
       "author": "Tang-Tian-dev"
     },
     {
+      "file": ".changes/require-explicit-admins.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-adapter",
+        "python@neobot-app"
+      ],
+      "body": "移除 9000000000001 自动默认超管，配置 0.11.3 迁移清掉自动写入值；openid 为唯一身份源头，新增 encode/decode 反向表接口，说明 13 位合成号无法纯哈希可逆。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/self-heal-limits.md",
+      "type": "fix",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app",
+        "python@neobot-chat"
+      ],
+      "body": "自修复 Agent 诊断预算从 5 分钟提升到 2 小时，工具轮次不再设上限（由总超时兜底）；上下文超过约 12 万字符时自动调用 runtime/compact 压缩较早消息，避免多轮工具调用与上下文膨胀导致诊断超时。Agent 运行时新增可选 message_compactor 钩子与 max_iterations=None 支持，其他 Agent 行为不变。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
       "file": ".changes/strip-duplicate-text.md",
       "type": "fix",
       "scope": "bot",
@@ -753,14 +1390,37 @@
       "pull_number": 303,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/303",
       "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/unify-identity-ids.md",
+      "type": "refactor",
+      "scope": "bot",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "统一 QQ号/官方合成号判断 API（is_synthetic_id/looks_like_real_group_number/infer_channel/group_label/profile_identity），调用方不再写位数分支；self-sent 队列条目携带 tool_call，role_messages 可重建真实工具调用与回执；修复发图/长回复/语音/官方 Markdown 历史缺失与失败误写；自身发言不再渲染负 msg_id。",
+      "commit": "1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
+      "pull_number": 305,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
     }
   ],
   "previous_changes": [
+    ".changes/at-segment-separates.md",
+    ".changes/change.md",
+    ".changes/channels-nav-under.md",
     ".changes/cross-chat-fixes.md",
     ".changes/cross-chat-session.md",
     ".changes/dashboard-prompt-folding.md",
     ".changes/drop-legacy-release.md",
+    ".changes/embedded.md",
+    ".changes/full-group-bot.md",
     ".changes/gentle-language-xml.md",
+    ".changes/group-trusted.md",
+    ".changes/id-qq.md",
+    ".changes/linkqq.md",
     ".changes/live-danmaku-uid.md",
     ".changes/live-reply-hotpath.md",
     ".changes/live-reply-metrics.md",
@@ -769,15 +1429,27 @@
     ".changes/live-tool-loop.md",
     ".changes/live-tools.md",
     ".changes/log-info-debug.md",
+    ".changes/markdown.md",
+    ".changes/mention-spaces-and.md",
+    ".changes/mentions-linkqq.md",
+    ".changes/mentions.md",
+    ".changes/official-qr.md",
+    ".changes/official.md",
+    ".changes/onebot.md",
     ".changes/parse-model-fallbacks.md",
     ".changes/prompt-assets-cot.md",
     ".changes/prompt-registry-refactor.md",
+    ".changes/qq-id-id.md",
+    ".changes/qq-official.md",
+    ".changes/qq.md",
     ".changes/reply-contract-corrections.md",
     ".changes/reply-cross-activation.md",
     ".changes/reply-marker-lifecycle.md",
     ".changes/reply-receipt-raw.md",
     ".changes/reply-tool-contract.md",
-    ".changes/reply-tool-ids.md"
+    ".changes/reply-tool-ids.md",
+    ".changes/strip-duplicate-text.md",
+    ".changes/trusted-agent.md"
   ],
   "qegg": {
     "version": "0.13.0"
