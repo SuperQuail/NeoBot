@@ -115,11 +115,21 @@ class RuntimePluginContext(Protocol):
     @property
     def screenshots(self) -> ScreenshotPort | None: ...
 
-    async def send_private(self, user_id: int, message: str | list[dict[str, Any]]) -> Any: ...
+    async def send_private(
+        self, user_id: int, message: str | list[dict[str, Any]], *, proactive: bool = False
+    ) -> Any: ...
 
-    async def send_group(self, group_id: int, message: str | list[dict[str, Any]]) -> Any: ...
+    async def send_group(
+        self, group_id: int, message: str | list[dict[str, Any]], *, proactive: bool = False
+    ) -> Any: ...
 
-    async def send(self, conversation: ConversationRef, message: str | list[dict[str, Any]]) -> Any: ...
+    async def send(
+        self,
+        conversation: ConversationRef,
+        message: str | list[dict[str, Any]],
+        *,
+        proactive: bool = False,
+    ) -> Any: ...
 
     async def send_image(
         self,
@@ -128,6 +138,7 @@ class RuntimePluginContext(Protocol):
         path: Path | None = None,
         data: bytes | None = None,
         filename: str | None = None,
+        proactive: bool = False,
     ) -> Any: ...
 
     async def send_audio(

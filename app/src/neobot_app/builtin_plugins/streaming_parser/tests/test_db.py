@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -210,22 +211,43 @@ class TestPollOnce:
 
 
 
+class FakeAdapter:
+    """固定返回会话通道的适配器替身，用来区分 official / onebot 推送路径。"""
+
+    def __init__(self, channels=('onebot',)):
+        self.channels = tuple(channels)
+
+    def channels_for_conversation(self, conversation):
+        return self.channels
+
+
 class FakeCtx:
     """够用的 ctx 替身：只实现 Notifier 真正会用的那几个方法。"""
 
-    def __init__(self, services=None):
+    def __init__(self, services=None, adapter=None, send_status='ok'):
         self.sent_images = []
         self.sent_texts = []
+        self.sent_messages = []
+        self.events = []
+        self.adapter = adapter
+        self.send_status = send_status
         self.plugin_host = _Host(_Services(services or {}))
 
     def conversation_from_event(self, event):
         return 'conv:' + str(event.get('group_id'))
 
-    async def send_image(self, conversation, *, data, filename):
-        self.sent_images.append((conversation, data, filename))
+    async def send_image(self, conversation, *, data, filename, proactive=False):
+        self.events.append("image")
+        self.sent_images.append((conversation, data, filename, proactive))
 
-    async def send_group(self, group_id, message):
-        self.sent_texts.append((group_id, message))
+    async def send_group(self, group_id, message, *, proactive=False):
+        self.events.append("text")
+        self.sent_texts.append((group_id, message, proactive))
+
+    async def send(self, conversation, message, *, proactive=False):
+        self.events.append("message")
+        self.sent_messages.append((conversation, message, proactive))
+        return SimpleNamespace(status=self.send_status)
 
 
 class _Host:
@@ -283,6 +305,8 @@ async def make_transition(room_id=10, kind=EVENT_LIVE, live_status=1):
     return Transition(kind=kind, room_id=room_id, snapshot=snapshot, previous_status=0)
 
 
+
+
 def build_notifier(database, ctx, *, renderer=None, config=None, assets=None):
     from streaming_parser.config import StreamConfig
     from streaming_parser.notify import Notifier
@@ -297,64 +321,102 @@ def build_notifier(database, ctx, *, renderer=None, config=None, assets=None):
 
 
 class TestNotifierIntegration:
-    async def test_live_push_sends_card_and_triggers_ai(self, database):
+    """推送 = 先发我们的卡片图片，再发官方图文卡片（OneBot：图片 + 纯链接文本）。"""
+
+    async def test_live_push_sends_image_then_tuwen_on_official(self, database):
         async with database.transaction() as session:
             await pdb.upsert_subscription(
                 session, group_id=100, room_id=10, uid=7, name='星野遥', push_live=True
             )
         hub = FakeHub()
-        ctx = FakeCtx({'notification_hub': hub})
-        renderer = FakeRenderer(data=b'CARD')
+        ctx = FakeCtx({'notification_hub': hub}, adapter=FakeAdapter(('official',)))
+        renderer = FakeRenderer()
         notifier = build_notifier(database, ctx, renderer=renderer)
 
         await notifier.handle_transition(await make_transition())
 
+        assert ctx.events == ['image', 'message']
         assert len(ctx.sent_images) == 1
-        conversation, data, filename = ctx.sent_images[0]
-        assert conversation == 'conv:100'
-        assert data == b'CARD'
-        assert filename.endswith('.png')
+        assert ctx.sent_images[0][1] == b'PNG'
         assert ctx.sent_texts == []
-        values, style = renderer.calls[0]
-        assert values['name'] == '星野遥'
-        assert values['status_text'] == '开播了'
-        assert values['room_id'] == '房间 10'
-        assert style in ('sakura', 'neon', 'minimal')
-        assert len(hub.calls) == 1
+        payload = ctx.sent_messages[0][1]
+        assert payload[0]['type'] == 'official_tuwen'
+        content = payload[0]['data']
+        assert content['title'] == '星野遥 开播了'
+        assert content['description'] == '今晚杂谈 · 虚拟主播 · 1.2万人气'
+        assert content['url'] == 'https://live.bilibili.com/10'
+        assert content['pic_url'] == 'https://example.invalid/cover.jpg'
         assert hub.calls[0]['conversation_id'] == '100'
-        assert '星野遥' in hub.calls[0]['content']
 
-    async def test_push_disabled_sends_nothing(self, database):
+    async def test_onebot_sends_image_then_url_text(self, database):
         async with database.transaction() as session:
-            await pdb.upsert_subscription(
-                session, group_id=100, room_id=10, push_live=False
-            )
-        hub = FakeHub()
-        ctx = FakeCtx({'notification_hub': hub})
+            await pdb.upsert_subscription(session, group_id=100, room_id=10, name='甲')
+        ctx = FakeCtx(adapter=FakeAdapter(('onebot',)))
         notifier = build_notifier(database, ctx)
 
         await notifier.handle_transition(await make_transition())
 
-        assert ctx.sent_images == []
-        assert ctx.sent_texts == []
-        assert hub.calls == []
+        assert ctx.events == ['image', 'text']
+        assert ctx.sent_messages == []
+        assert ctx.sent_texts == [('100', 'https://live.bilibili.com/10', True)]
 
-    async def test_render_failure_falls_back_to_text(self, database):
+    async def test_live_end_uses_live_end_label(self, database):
+        async with database.transaction() as session:
+            await pdb.upsert_subscription(
+                session, group_id=100, room_id=10, name='甲', push_live_end=True
+            )
+        ctx = FakeCtx(adapter=FakeAdapter(('official',)))
+        notifier = build_notifier(database, ctx)
+
+        await notifier.handle_transition(await make_transition(kind=EVENT_LIVE_END, live_status=0))
+
+        assert ctx.events == ['image', 'message']
+        content = ctx.sent_messages[0][1][0]['data']
+        assert content['title'] == '甲 下播了'
+
+    async def test_render_failure_still_sends_tuwen_on_official(self, database):
         async with database.transaction() as session:
             await pdb.upsert_subscription(session, group_id=100, room_id=10, name='甲')
-        hub = FakeHub()
-        ctx = FakeCtx({'notification_hub': hub})
+        ctx = FakeCtx(adapter=FakeAdapter(('official',)))
         notifier = build_notifier(database, ctx, renderer=FakeRenderer(data=None))
 
         await notifier.handle_transition(await make_transition())
 
+        assert ctx.events == ['message']
         assert ctx.sent_images == []
-        assert len(ctx.sent_texts) == 1
-        group_id, text = ctx.sent_texts[0]
-        assert group_id == "100"
-        assert '【开播】甲' in text
-        assert 'live.bilibili.com/10' in text
-        assert len(hub.calls) == 1
+        assert ctx.sent_messages[0][1][0]['type'] == 'official_tuwen'
+
+    async def test_render_failure_sends_only_url_on_onebot(self, database):
+        async with database.transaction() as session:
+            await pdb.upsert_subscription(session, group_id=100, room_id=10, name='甲')
+        ctx = FakeCtx(adapter=FakeAdapter(('onebot',)))
+        notifier = build_notifier(database, ctx, renderer=FakeRenderer(data=None))
+
+        await notifier.handle_transition(await make_transition())
+
+        assert ctx.events == ['text']
+        assert ctx.sent_texts == [('100', 'https://live.bilibili.com/10', True)]
+
+    async def test_tuwen_failure_falls_back_to_url_text(self, database):
+        async with database.transaction() as session:
+            await pdb.upsert_subscription(session, group_id=100, room_id=10, name='甲')
+        ctx = FakeCtx(adapter=FakeAdapter(('official',)), send_status='failed')
+        notifier = build_notifier(database, ctx)
+
+        await notifier.handle_transition(await make_transition())
+
+        assert ctx.events == ['image', 'message', 'text']
+        assert ctx.sent_texts == [('100', 'https://live.bilibili.com/10', True)]
+
+    async def test_push_disabled_sends_nothing(self, database):
+        async with database.transaction() as session:
+            await pdb.upsert_subscription(session, group_id=100, room_id=10, push_live=False)
+        ctx = FakeCtx()
+        notifier = build_notifier(database, ctx)
+
+        await notifier.handle_transition(await make_transition())
+
+        assert ctx.events == []
 
     async def test_ai_reply_can_be_disabled_per_group(self, database):
         async with database.transaction() as session:
@@ -362,33 +424,11 @@ class TestNotifierIntegration:
             setting = await pdb.ensure_group_setting(session, 100, {})
             setting.ai_reply_live = False
         hub = FakeHub()
-        ctx = FakeCtx({'notification_hub': hub})
+        ctx = FakeCtx({'notification_hub': hub}, adapter=FakeAdapter(('official',)))
         notifier = build_notifier(database, ctx)
 
         await notifier.handle_transition(await make_transition())
 
-        assert len(ctx.sent_images) == 1
-        assert hub.calls == []
-
-    async def test_live_end_uses_its_own_switch(self, database):
-        async with database.transaction() as session:
-            await pdb.upsert_subscription(
-                session, group_id=100, room_id=10, name='甲',
-                push_live=True, push_live_end=True,
-            )
-            setting = await pdb.ensure_group_setting(session, 100, {})
-            setting.ai_reply_live = True
-            setting.ai_reply_live_end = False
-        hub = FakeHub()
-        ctx = FakeCtx({'notification_hub': hub})
-        renderer = FakeRenderer()
-        notifier = build_notifier(database, ctx, renderer=renderer)
-
-        await notifier.handle_transition(await make_transition(kind=EVENT_LIVE_END, live_status=0))
-
-        assert len(ctx.sent_images) == 1
-        assert renderer.calls[0][0]['status_text'] == '下播了'
-        assert renderer.calls[0][0]['live_time_text'] == ''
         assert hub.calls == []
 
     async def test_hub_missing_falls_back_to_orchestrator(self, database):
@@ -404,7 +444,7 @@ class TestNotifierIntegration:
                 return object()
 
         orchestrator = FakeOrchestrator()
-        ctx = FakeCtx({'reply_orchestrator': orchestrator})
+        ctx = FakeCtx({'reply_orchestrator': orchestrator}, adapter=FakeAdapter(('official',)))
         notifier = build_notifier(database, ctx)
 
         await notifier.handle_transition(await make_transition())
@@ -417,7 +457,7 @@ class TestNotifierIntegration:
             await pdb.upsert_subscription(session, group_id=100, room_id=10)
             setting = await pdb.ensure_group_setting(session, 100, {})
             setting.card_style = 'neon'
-        ctx = FakeCtx()
+        ctx = FakeCtx(adapter=FakeAdapter(('official',)))
         renderer = FakeRenderer()
         notifier = build_notifier(database, ctx, renderer=renderer)
 
@@ -467,6 +507,124 @@ class TestRefresh:
     async def test_refresh_empty_list_is_noop(self, database):
         poller = LivePoller(client=FakeClient({}), database=database, poll_interval=15)
         assert await poller.refresh([]) == {}
+
+class TestStatusPreview:
+    """/直播状态：先发卡片图片，再发官方图文卡片（OneBot：图片 + 链接文本），且只读。"""
+
+    @staticmethod
+    async def _snapshot(live_status=1):
+        from streaming_parser.poller import RoomSnapshot
+
+        return RoomSnapshot(
+            room_id=10,
+            live_status=live_status,
+            title='今晚杂谈',
+            cover_url='https://example.invalid/cover.jpg',
+            area_name='虚拟主播',
+            online=12345,
+        )
+
+    async def test_preview_sends_image_then_tuwen(self, database):
+        ctx = FakeCtx(adapter=FakeAdapter(('official',)))
+        renderer = FakeRenderer()
+        notifier = build_notifier(database, ctx, renderer=renderer)
+
+        await notifier.send_status_preview(
+            '100', room_id=10, name='星野遥', avatar_url='', snapshot=await self._snapshot()
+        )
+
+        values, _style = renderer.calls[0]
+        assert values['status_text'] == '开播了'
+        assert ctx.events == ['image', 'message']
+        content = ctx.sent_messages[0][1][0]['data']
+        assert content['title'] == '星野遥 开播了'
+        assert content['url'] == 'https://live.bilibili.com/10'
+        async with database.session() as session:
+            assert await pdb.get_room_state(session, 10) is None
+
+    async def test_offline_preview_uses_not_live_label(self, database):
+        ctx = FakeCtx(adapter=FakeAdapter(('official',)))
+        notifier = build_notifier(database, ctx)
+
+        await notifier.send_status_preview(
+            '100', room_id=10, name='甲', avatar_url='', snapshot=await self._snapshot(live_status=0)
+        )
+
+        content = ctx.sent_messages[0][1][0]['data']
+        assert content['title'] == '甲 未开播'
+
+    async def test_preview_render_failure_still_sends_tuwen(self, database):
+        ctx = FakeCtx(adapter=FakeAdapter(('official',)))
+        notifier = build_notifier(database, ctx, renderer=FakeRenderer(data=None))
+
+        await notifier.send_status_preview(
+            '100', room_id=10, name='甲', avatar_url='', snapshot=await self._snapshot()
+        )
+
+        assert ctx.events == ['message']
+        assert ctx.sent_messages[0][1][0]['type'] == 'official_tuwen'
+
+    async def test_preview_tuwen_failure_falls_back_to_url(self, database):
+        ctx = FakeCtx(adapter=FakeAdapter(('official',)), send_status='failed')
+        notifier = build_notifier(database, ctx)
+
+        await notifier.send_status_preview(
+            '100', room_id=10, name='甲', avatar_url='', snapshot=await self._snapshot()
+        )
+
+        assert ctx.sent_texts == [('100', 'https://live.bilibili.com/10', True)]
+
+    async def test_onebot_preview_sends_image_and_link_text(self, database):
+        ctx = FakeCtx(adapter=FakeAdapter(('onebot',)))
+        notifier = build_notifier(database, ctx)
+
+        await notifier.send_status_preview(
+            '100', room_id=10, name='甲', avatar_url='', snapshot=await self._snapshot()
+        )
+
+        assert ctx.events == ['image', 'text']
+        assert ctx.sent_texts == [('100', 'https://live.bilibili.com/10', True)]
+
+
+class TestStatusCommand:
+    """/直播状态 命令：解析目标 → 实时查询 → 复用推送格式，不写库。"""
+
+    @staticmethod
+    def _make_state(database, send_ctx, snapshot):
+        from streaming_parser.config import StreamConfig
+
+        class FakeState:
+            def __init__(self):
+                self.database = database
+                self.config = StreamConfig()
+                self.client = object()
+                self.poller = FakePoller({10: snapshot})
+                self.notifier = build_notifier(database, send_ctx)
+
+            async def resolve_target(self, kind, value):
+                return {
+                    'room_id': 10,
+                    'uid': 7,
+                    'short_id': 0,
+                    'name': '星野遥',
+                    'avatar_url': '',
+                }
+
+        return FakeState()
+
+    async def test_status_command_previews_image_and_tuwen(self, database):
+        from streaming_parser.commands import register_commands
+
+        send_ctx = FakeCtx(adapter=FakeAdapter(('official',)))
+        state = self._make_state(database, send_ctx, await TestStatusPreview._snapshot())
+        command_host = TestSubscribeEnablesBothPushes._make_ctx()
+        register_commands(command_host, state)
+        command_ctx = TestSubscribeEnablesBothPushes._make_command_ctx(['10'])
+
+        await command_host.app_commands.commands['直播状态'](command_ctx)
+
+        assert send_ctx.events == ['image', 'message']
+        assert send_ctx.sent_messages[0][1][0]['type'] == 'official_tuwen'
 
 
 class TestCollectStates:
@@ -619,7 +777,7 @@ class TestSubscribeEnablesBothPushes:
         register_commands(ctx, self._make_state(database, StreamConfig()))
         command_ctx = self._make_command_ctx(['392669996'])
 
-        await ctx.app_commands.commands['监听'](command_ctx)
+        await ctx.app_commands.commands['直播监听'](command_ctx)
 
         async with database.session() as session:
             rows = [pdb.sub_view(row) for row in await pdb.list_group_subscriptions(session, 123)]
@@ -636,7 +794,7 @@ class TestSubscribeEnablesBothPushes:
 
         ctx = self._make_ctx()
         register_commands(ctx, self._make_state(database, StreamConfig()))
-        handler = ctx.app_commands.commands['监听']
+        handler = ctx.app_commands.commands['直播监听']
         await handler(self._make_command_ctx(['392669996']))
         async with database.transaction() as session:
             await pdb.set_subscription_flags(session, 123, 1914112138, push_live_end=False)
@@ -653,7 +811,7 @@ class TestSubscribeEnablesBothPushes:
 
 
 class TestSubscribeUsesGroupDefaults:
-    """/config 写入的群级默认必须真的影响 /监听——之前只读全局配置，是死配置。"""
+    """/config 写入的群级默认必须真的影响 /直播监听——之前只读全局配置，是死配置。"""
 
     async def test_group_default_overrides_global_config(self, database):
         from streaming_parser.commands import register_commands
@@ -668,7 +826,7 @@ class TestSubscribeUsesGroupDefaults:
         register_commands(ctx, state)
         command_ctx = TestSubscribeEnablesBothPushes._make_command_ctx(['392669996'])
 
-        await ctx.app_commands.commands['监听'](command_ctx)
+        await ctx.app_commands.commands['直播监听'](command_ctx)
 
         async with database.session() as session:
             rows = [pdb.sub_view(row) for row in await pdb.list_group_subscriptions(session, 123)]
@@ -687,7 +845,7 @@ class TestSubscribeUsesGroupDefaults:
         register_commands(ctx, state)
         command_ctx = TestSubscribeEnablesBothPushes._make_command_ctx(['392669996'])
 
-        await ctx.app_commands.commands['监听'](command_ctx)
+        await ctx.app_commands.commands['直播监听'](command_ctx)
 
         async with database.session() as session:
             rows = [pdb.sub_view(row) for row in await pdb.list_group_subscriptions(session, 123)]
@@ -695,7 +853,7 @@ class TestSubscribeUsesGroupDefaults:
         assert rows[0].push_live_end is True
 
     async def test_config_writes_the_same_defaults_used_by_listen(self, database):
-        """/config 建行时的默认值要和 /监听 的回退值一致，否则显示与实际不符。"""
+        """/config 建行时的默认值要和 /直播监听 的回退值一致，否则显示与实际不符。"""
         from streaming_parser.config import StreamConfig
         from streaming_parser.settings_commands import group_defaults
 

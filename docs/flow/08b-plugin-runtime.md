@@ -31,7 +31,7 @@ covers:
   - scripts/plugin_demo.py
   - scripts/plugin_demo/
 verified_against: d525a5b
-verified_hash: 2bd398980cff
+verified_hash: c4021e0e6cf6
 ---
 
 # 08b 插件运行时：门面动作矩阵 · 热重载回滚 · 安装器 · 钩子总线
@@ -57,7 +57,7 @@ verified_hash: 2bd398980cff
 
 教程步骤可以增加 `command={text, context, reply?}`，声明与静态契约共用结构校验并深拷贝导出。它只描述实际聊天入口，不注册或代发命令；目标引用仍必须对应现有字段、动作、资源或页面锚点，命令可达性由作者业务用例验证。内置生成器提供配置和 `/ping` 的示例。
 
-命令显式声明 `permission` 时，`plugins/commands.py` 将 DSL 参数解析接入宿主命令表，复用权限、帮助、别名及重名回退；省略权限时保留钩子匹配路径。`IncomingEvent` 与组合规则统一读取原事件和消息链，`create_task` 托管的后台交互在插件停止时先取消再释放业务资源。`message_session` 和 `wait_for_message` 按机器人、会话与用户隔离后续消息，超时、取消或停止均注销监听。
+命令显式声明 `permission` 时，`plugins/commands.py` 将 DSL 参数解析接入宿主命令表，复用权限、帮助、别名及重名回退；省略权限时保留钩子匹配路径。`IncomingEvent` 与组合规则统一读取原事件和消息链，`create_task` 托管的后台交互在插件停止时先取消再释放业务资源。插件发送接口支持 `proactive=True`：定时任务、开播通知这类没有被动回复窗口的后台推送在官方通道按主动消息下发，OneBot/local 后端忽略该语义。`message_session` 和 `wait_for_message` 按机器人、会话与用户隔离后续消息，超时、取消或停止均注销监听。
 
 `init` 从 SDK 安装包中的 starter 素材生成入口、实际命令注册测试、README、AGENTS 和 GUIDE；完整表单教程与命令验证样例在同一个工程内。修改声明后显式导出契约，再执行相同的静态、业务、确定性打包与最终 ZIP 安装流程；生成器不覆盖已有目录，也不自动修改真实宿主配置。
 

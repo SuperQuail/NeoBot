@@ -202,13 +202,19 @@ def _register_chat_guide(plugin: Plugin) -> None:
                 "chapter": "在目标群添加监听",
                 "target": "action.subscriptions.create",
                 "text": "除了直播订阅设置，也可在目标群里用命令添加。610001 是示例房间号，实际请换成自己的；房间号、短号、直播间链接和 UP 主空间链接都支持。回复会列出主播、房间号与推送开关；重复监听保留已有开关。",
-                "command": {"text": "/监听 610001", "context": MANAGE_CONTEXT},
+                "command": {"text": "/直播监听 610001", "context": MANAGE_CONTEXT},
             },
             {
                 "chapter": "核对本群订阅",
                 "target": "resource.subscriptions",
-                "text": "用监听列表核对主播、房间号、开播推送和下播推送。列表只显示当前群，其他群需要到对应群里查询。命令若因重名改了名称，可在 /help 或插件信息中核对。",
-                "command": {"text": "/监听列表", "context": READ_CONTEXT},
+                "text": "用直播监听列表核对主播、房间号、开播推送和下播推送。列表只显示当前群，其他群需要到对应群里查询。命令若因重名改了名称，可在 /help 或插件信息中核对。",
+                "command": {"text": "/直播监听列表", "context": READ_CONTEXT},
+            },
+            {
+                "chapter": "预览通知卡片",
+                "target": "view.subscriptions.preview",
+                "text": "用直播状态查询任意直播间的当前状态，并原样发出与推送相同的两条消息：卡片图片 + 图文卡片（OneBot 通道第二条是直播间链接文本）。只预览，不新增订阅，也不触发通知。",
+                "command": {"text": "/直播状态 610001", "context": READ_CONTEXT},
             },
             {
                 "chapter": "查看开播状态",
@@ -273,8 +279,8 @@ def _register_chat_guide(plugin: Plugin) -> None:
             {
                 "chapter": "取消本群监听",
                 "target": "action.subscriptions.remove",
-                "text": "取消当前群的这条订阅，其他群的监听保留。取消后可再用监听列表核对。",
-                "command": {"text": "/取消监听 610001", "context": MANAGE_CONTEXT},
+                "text": "取消当前群的这条订阅，其他群的监听保留。取消后可再用直播监听列表核对。",
+                "command": {"text": "/取消直播监听 610001", "context": MANAGE_CONTEXT},
             },
         ],
     )

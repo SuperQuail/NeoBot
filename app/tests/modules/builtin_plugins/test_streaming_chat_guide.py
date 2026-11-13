@@ -13,6 +13,31 @@ from neobot_modloader.hooks import PluginHookBus
 from streaming_panel_helpers import make_state
 
 
+async def test_wizard_keeps_legacy_alias(tmp_path):
+    """向导命令改名为 /直播监听向导 后，/监听向导 仍是同一个命令的别名。"""
+    registry = CommandRegistry()
+    ctx = RuntimePluginContext(
+        plugin_name="streaming_parser",
+        plugin_dir=tmp_path,
+        data_dir=tmp_path,
+        config={},
+        logger=None,
+        adapter=SimpleNamespace(),
+        hook_bus=PluginHookBus(),
+        app_commands=registry,
+    )
+    plugin = Plugin("streaming_parser")
+    register_chat_guide(plugin, SimpleNamespace())
+    await plugin.on_load(ctx)
+    try:
+        command = registry.get("直播监听向导")
+        assert command is not None
+        assert registry.get("监听向导") is command
+        assert "监听向导" not in set(registry.names())
+    finally:
+        await plugin.on_stop()
+
+
 @pytest.mark.parametrize("finish", ["确认", "取消", "权限撤销", "停用"])
 async def test_subscription_wizard_real_database_and_message_isolation(tmp_path, finish):
     state = await make_state(tmp_path)
@@ -47,7 +72,7 @@ async def test_subscription_wizard_real_database_and_message_isolation(tmp_path,
 
     service = CommandService(config=config, registry=registry, send_callback=send, register_builtins=False)
     message = SimpleNamespace(
-        user_id=42, message=[{"type": "at", "data": {"qq": "10001"}}, {"type": "text", "data": {"text": "/监听向导"}}]
+        user_id=42, message=[{"type": "at", "data": {"qq": "10001"}}, {"type": "text", "data": {"text": "/直播监听向导"}}]
     )
 
     async def receive(text, user=42):

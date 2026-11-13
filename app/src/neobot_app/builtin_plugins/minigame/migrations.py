@@ -299,13 +299,55 @@ async def rewrite_legacy_user_ids(connection) -> None:
     )
 
 
+#: 旧 v3（用 SELECT * 按位置搬运 mg_profile）的校验和。
+#: 该版本只在 #305 的开发快照中出现过，未随任何发布版本发布；跑过它的开发库
+#: 记录的是这个校验和，命中后由 v5 修复错位数据。
+LEGACY_V3_CHECKSUMS = ("5af7f0a52a7b97ebe0aaef6d87e27d070b4985b2ab6a8602f32c9d7f9e8e134e",)
+
+
+async def repair_v3_profile_copy_order(connection) -> None:
+    """v5：修复旧 v3 用 SELECT * 搬运 mg_profile 造成的列错位。
+
+    旧 v3 只在 #305 的开发快照里存在过（未发布）。旧表列顺序是
+    user_id/score/best_score/plays/wins/updated_at/user_name，新表是
+    user_id/user_name/score/best_score/plays/wins/updated_at，按位置拷贝后
+    user_name<-score、score<-best_score、best_score<-plays、plays<-wins、
+    wins<-updated_at、updated_at<-user_name。这里按原映射反推；错位行的 wins
+    一定是文本（DATETIME），正常行是整数，只改错位行，正常库 no-op。
+    """
+    await connection.execute(
+        text(
+            """
+            UPDATE mg_profile SET
+                user_name = CAST(updated_at AS TEXT),
+                updated_at = CAST(wins AS TEXT),
+                score = CAST(user_name AS INTEGER),
+                best_score = score,
+                plays = best_score,
+                wins = plays
+            WHERE typeof(wins) = 'text'
+            """
+        )
+    )
+
+
 def build_migrations() -> tuple[Migration, ...]:
     """本插件数据库的迁移列表（新增结构时追加 version）。"""
     return (
         Migration(version=1, name="initial-schema", upgrade=create_initial_schema),
         Migration(version=2, name="profile-user-name", upgrade=add_profile_user_name),
-        Migration(version=3, name="widen-user-ids", upgrade=widen_user_ids),
+        Migration(
+            version=3,
+            name="widen-user-ids",
+            upgrade=widen_user_ids,
+            legacy_checksums=LEGACY_V3_CHECKSUMS,
+        ),
         Migration(version=4, name="legacy-ids-to-openid", upgrade=rewrite_legacy_user_ids),
+        Migration(
+            version=5,
+            name="repair-v3-profile-copy-order",
+            upgrade=repair_v3_profile_copy_order,
+        ),
     )
 
 
@@ -314,6 +356,7 @@ __all__ = [
     "add_profile_user_name",
     "build_migrations",
     "create_initial_schema",
+    "repair_v3_profile_copy_order",
     "rewrite_legacy_user_ids",
     "widen_user_ids",
 ]

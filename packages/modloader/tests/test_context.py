@@ -56,6 +56,8 @@ class DrainableFakeRegistry(FakeRegistry):
 class FakeAdapter:
     def __init__(self) -> None:
         self.calls: list[tuple[str, Any, Any]] = []
+        #: 每次 send 收到的额外关键字参数，用来断言 proactive 是否真的透传
+        self.send_kwargs: list[dict[str, Any]] = []
 
     async def send_private_msg(self, user_id: int, message: Any) -> str:
         self.calls.append(("private", user_id, message))
@@ -65,9 +67,25 @@ class FakeAdapter:
         self.calls.append(("group", group_id, message))
         return "group-ok"
 
-    async def send(self, conversation: ConversationRef, message: Any) -> str:
+    async def send(self, conversation: ConversationRef, message: Any, **kwargs: Any) -> str:
         self.calls.append(("send", conversation, message))
+        self.send_kwargs.append(dict(kwargs))
         return "send-ok"
+
+
+class FakeMediaSender:
+    """记录 send_image 调用参数的假 media_sender。"""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def send_image(
+        self, adapter: Any, conversation: ConversationRef, *, path: Path, **kwargs: Any
+    ) -> str:
+        self.calls.append(
+            {"adapter": adapter, "conversation": conversation, "path": path, "kwargs": kwargs}
+        )
+        return "image-ok"
 
 
 class RuntimePluginContextTest(unittest.IsolatedAsyncioTestCase):
@@ -77,6 +95,7 @@ class RuntimePluginContextTest(unittest.IsolatedAsyncioTestCase):
         adapter: FakeAdapter | None = None,
         agent_registry: FakeRegistry | None = None,
         record_agent_registration: Any | None = None,
+        media_sender: Any | None = None,
     ) -> RuntimePluginContext:
         return RuntimePluginContext(
             plugin_name="test",
@@ -89,6 +108,7 @@ class RuntimePluginContextTest(unittest.IsolatedAsyncioTestCase):
             record_subscription=lambda _subscription: None,
             agent_registry=agent_registry,
             record_agent_registration=record_agent_registration,
+            media_sender=media_sender,
         )
 
     async def test_send_methods_delegate_to_adapter(self) -> None:
@@ -112,6 +132,52 @@ class RuntimePluginContextTest(unittest.IsolatedAsyncioTestCase):
             await ctx.send_group("A1B2C3D4", "hi")
             self.assertEqual(adapter.calls[0], ("send", ConversationRef(kind="private", id="2F1B3C4D"), "hello"))
             self.assertEqual(adapter.calls[1], ("send", ConversationRef(kind="group", id="A1B2C3D4"), "hi"))
+
+    async def test_send_passes_proactive_only_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = FakeAdapter()
+            ctx = self.make_context(Path(temp), adapter)
+            conversation = ConversationRef(kind="group", id="456")
+            await ctx.send(conversation, "后台推送", proactive=True)
+            await ctx.send(conversation, "普通回复")
+            await ctx.send_private(10001, "后台推送", proactive=True)
+            await ctx.send_group(123, "后台推送", proactive=True)
+            await ctx.send_group(123, "普通回复", proactive=False)
+
+            # proactive=True 时把语义透传给适配器
+            self.assertEqual(adapter.send_kwargs[0], {"proactive": True})
+            self.assertEqual(adapter.send_kwargs[2], {"proactive": True})
+            self.assertEqual(adapter.send_kwargs[3], {"proactive": True})
+            # 默认值 / 显式 False 保持原有调用形态：不传多余关键字参数
+            self.assertEqual(adapter.send_kwargs[1], {})
+            self.assertEqual(adapter.send_kwargs[4], {})
+            # 会话与消息内容不受 proactive 影响
+            self.assertEqual(
+                adapter.calls[2],
+                ("send", ConversationRef(kind="private", id="10001"), "后台推送"),
+            )
+            self.assertEqual(
+                adapter.calls[3],
+                ("send", ConversationRef(kind="group", id="123"), "后台推送"),
+            )
+
+    async def test_send_image_passes_proactive_to_media_sender(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = FakeAdapter()
+            media_sender = FakeMediaSender()
+            ctx = self.make_context(Path(temp), adapter, media_sender=media_sender)
+            conversation = ConversationRef(kind="group", id="456")
+            image_path = Path("image.png")
+            await ctx.send_image(conversation, path=image_path, proactive=True)
+            await ctx.send_image(conversation, path=image_path)
+
+            self.assertEqual(len(media_sender.calls), 2)
+            self.assertIs(media_sender.calls[0]["adapter"], adapter)
+            self.assertEqual(media_sender.calls[0]["conversation"], conversation)
+            self.assertEqual(media_sender.calls[0]["path"], image_path)
+            # proactive=True 时透传；默认 False 保持旧调用形态（不多传关键字参数）
+            self.assertEqual(media_sender.calls[0]["kwargs"], {"proactive": True})
+            self.assertEqual(media_sender.calls[1]["kwargs"], {})
 
     async def test_reply_uses_conversation_from_event(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

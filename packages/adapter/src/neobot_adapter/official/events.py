@@ -111,7 +111,6 @@ class EventMapper:
         self.bot_username = ""
         #: 告警限流属于单条连接/单实例，避免全量群消息逐条刷屏。
         self._missing_bot_openid_warned = False
-        self._bot_mention_fallback_warned = False
 
     def reset_identity(self) -> None:
         """凭据/机器人身份变化后清空身份缓存与告警限流，避免沿用上一条连接。"""
@@ -119,7 +118,6 @@ class EventMapper:
         self.bot_openid = ""
         self.bot_username = ""
         self._missing_bot_openid_warned = False
-        self._bot_mention_fallback_warned = False
 
     def from_dispatch(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         """完整 op0 载荷 → OneBot 事件；非消息事件/重复投递返回 None。"""
@@ -226,7 +224,6 @@ class EventMapper:
             usernames = [str(item.get("username") or "").strip() for item in bot_items]
             for name in usernames:
                 if name == bot_username:
-                    self._warn_bot_mention_fallback(data)
                     return True
             if any(usernames):
                 # mentions 里标明是别的机器人：位置兜底会把「@别的 bot」误判成 @ 自己。
@@ -248,7 +245,6 @@ class EventMapper:
         if not at_start and len(content_ids) != 1:
             # 不在开头且正文还有别的 @：不能证明是机器人自己。
             return False
-        self._warn_bot_mention_fallback(data)
         return True
 
     def _warn_missing_bot_openid(self) -> None:
@@ -257,18 +253,6 @@ class EventMapper:
         self._missing_bot_openid_warned = True
         self._logger.warning(
             "官方机器人 openid 未知，群全量消息无法判定是否 @ 了机器人，按未 @ 处理",
-        )
-
-    def _warn_bot_mention_fallback(self, data: dict[str, Any]) -> None:
-        if self._bot_mention_fallback_warned:
-            return
-        self._bot_mention_fallback_warned = True
-        self._logger.warning(
-            "群全量消息 @机器人 的 openid 与 READY 的 d.user.id 不同（群场景 member_openid），按被 @ 处理",
-            bot_openid=self.bot_openid,
-            bot_username=self.bot_username,
-            content_at_ids=_content_mention_ids(data.get("content")),
-            bot_mention_ids=_bot_mention_ids(data),
         )
 
     def _log_addressing(

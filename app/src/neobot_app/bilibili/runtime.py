@@ -535,19 +535,48 @@ class BilibiliRuntime:
                 fallback=f"直播间 {room_id} ASR{'开' if action else '关'}",
             )
 
-        async def _list(ctx: Any) -> str:
+        async def _list(ctx: Any) -> str | None:
             rooms = self.live_interactor.list_rooms()
             if not rooms:
                 return "还没有启用的直播间交互；用 /直播互动 <房间号> 开 启用。"
             lines = ["已启用的直播间交互："]
+            table: list[list[str]] = []
             for room in rooms:
+                name = room.get("name") or "(未命名)"
+                auto_reply = "开" if room.get("auto_reply") else "关"
+                asr = "开" if room.get("asr", True) else "关"
                 lines.append(
-                    f"- {room.get('name') or '(未命名)'}（{room.get('room_id')}，"
+                    f"- {name}（{room.get('room_id')}，"
                     f"真实房间 {room.get('real_room_id')}，"
-                    f"自动回复{'开' if room.get('auto_reply') else '关'}，"
-                    f"ASR{'开' if room.get('asr', True) else '关'}）"
+                    f"自动回复{auto_reply}，"
+                    f"ASR{asr}）"
                 )
-            return "\n".join(lines)
+                table.append(
+                    [
+                        name,
+                        str(room.get("room_id")),
+                        str(room.get("real_room_id")),
+                        auto_reply,
+                        asr,
+                    ]
+                )
+            from neobot_app.commands.card import send_card
+
+            return await send_card(
+                ctx,
+                title="直播互动列表",
+                subtitle=f"共 {len(rooms)} 个",
+                blocks=[
+                    {
+                        "kind": "rows",
+                        "columns": ["主播", "房间号", "真实房间号", "自动回复", "ASR"],
+                        "rows": table,
+                    },
+                    {"kind": "note", "text": "用 /直播互动 <房间号> 开 启用或停用"},
+                ],
+                fallback_text="\n".join(lines),
+                filename="bilibili-live-rooms.png",
+            )
 
         async def _speak(ctx: Any) -> str:
             args = [str(a).strip() for a in (ctx.args or [])]

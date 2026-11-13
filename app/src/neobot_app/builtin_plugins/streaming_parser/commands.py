@@ -1,4 +1,4 @@
-"""订阅类命令：监听 / 取消监听 / 监听列表（推送开关见 commands_toggle.py）。
+"""订阅类命令：直播监听 / 直播状态 / 取消直播监听 / 直播监听列表（推送开关见 commands_toggle.py）。
 
 与旧实现的区别：
 1. 命令注册进宿主命令表（ctx.app_commands.register），因此会出现在 /help 列表与详情里，
@@ -97,11 +97,12 @@ def _register_subscription_commands(registrar: Any, ctx: Any, state: Any) -> lis
     names: list[str] = []
 
     @registrar.register(
-        "监听",
+        "直播监听",
         description="让本群监听一个直播间（开播/下播时推送卡片）",
         usage="<房间号|短号|直播间链接|UP主空间链接>",
         permission=PERM_SUB_ADMIN,
         params=(("目标", "房间号、短号、直播间链接或 UP 主空间链接"),),
+        aliases=("监听",),
     )
     async def _subscribe(command_ctx: Any) -> None:
         group_id = conv_group_id(command_ctx)
@@ -115,9 +116,9 @@ def _register_subscription_commands(registrar: Any, ctx: Any, state: Any) -> lis
                 usage_card(
                     "监听直播间",
                     [
-                        "/监听 <房间号|短号|直播间链接|UP主空间链接>",
-                        "例如：/监听 1914112138",
-                        "例如：/监听 https://space.bilibili.com/392669996",
+                        "/直播监听 <房间号|短号|直播间链接|UP主空间链接>",
+                        "例如：/直播监听 1914112138",
+                        "例如：/直播监听 https://space.bilibili.com/392669996",
                     ],
                 ),
                 screenshots=shots(ctx),
@@ -161,14 +162,88 @@ def _register_subscription_commands(registrar: Any, ctx: Any, state: Any) -> lis
             screenshots=shots(ctx),
         )
 
-    names.append("监听")
+    names.append("直播监听")
 
     @registrar.register(
-        "取消监听",
+        "直播状态",
+        description=(
+            "查询直播间当前状态，并按本群卡片风格预览通知卡片"
+            "（与开播推送同一张卡片；不新增订阅、不触发通知）"
+        ),
+        usage="<房间号|短号|直播间链接|UP主空间链接>",
+        permission=PERM_EVERYONE,
+        params=(("目标", "房间号、短号、直播间链接或 UP 主空间链接"),),
+    )
+    async def _status(command_ctx: Any) -> None:
+        group_id = conv_group_id(command_ctx)
+        if not group_id:
+            await fail(command_ctx, ctx, "只能在群里使用", "这个命令需要在群聊里发送。")
+            return
+        args = command_args(command_ctx)
+        if not args:
+            await cards.send_card(
+                command_ctx,
+                usage_card(
+                    "查询直播状态",
+                    [
+                        "/直播状态 <房间号|短号|直播间链接|UP主空间链接>",
+                        "例如：/直播状态 1914112138",
+                    ],
+                ),
+                screenshots=shots(ctx),
+            )
+            return
+        try:
+            kind, value = parse_target(args[0])
+        except ValueError as exc:
+            await fail(command_ctx, ctx, "参数不对", str(exc))
+            return
+        poller = getattr(state, "poller", None)
+        notifier = getattr(state, "notifier", None)
+        if poller is None or notifier is None or getattr(state, "client", None) is None:
+            await fail(
+                command_ctx,
+                ctx,
+                "插件还没就绪",
+                "轮询或 B站客户端尚未启动，请稍后再试。",
+            )
+            return
+        try:
+            resolved = await state.resolve_target(kind, value)
+        except (BilibiliAPIError, BilibiliTransportError) as exc:
+            await fail(command_ctx, ctx, "查询直播间失败", str(exc))
+            return
+        except ValueError as exc:
+            await fail(command_ctx, ctx, "没有找到直播间", str(exc))
+            return
+        room_id = int(resolved["room_id"])
+        # refresh 只即时查询、不写库：预览命令不能吞掉真实的开播/下播跳变。
+        snapshot = (await poller.refresh([room_id])).get(room_id)
+        if snapshot is None:
+            await fail(
+                command_ctx,
+                ctx,
+                "查询直播状态失败",
+                "B站接口没有返回这个直播间的状态，请稍后再试。",
+            )
+            return
+        await notifier.send_status_preview(
+            group_id,
+            room_id=room_id,
+            name=str(resolved.get("name") or ""),
+            avatar_url=str(resolved.get("avatar_url") or ""),
+            snapshot=snapshot,
+        )
+
+    names.append("直播状态")
+
+    @registrar.register(
+        "取消直播监听",
         description="取消本群对某个直播间的监听",
         usage="<房间号|短号|直播间链接|UP主空间链接>",
         permission=PERM_SUB_ADMIN,
-        params=(("目标", "与 /监听 相同的目标写法"),),
+        params=(("目标", "与 /直播监听 相同的目标写法"),),
+        aliases=("取消监听",),
     )
     async def _unsubscribe(command_ctx: Any) -> None:
         group_id = conv_group_id(command_ctx)
@@ -179,7 +254,7 @@ def _register_subscription_commands(registrar: Any, ctx: Any, state: Any) -> lis
         if not args:
             await cards.send_card(
                 command_ctx,
-                usage_card("取消监听", ["/取消监听 <房间号|短号|链接>"]),
+                usage_card("取消直播监听", ["/取消直播监听 <房间号|短号|链接>"]),
                 screenshots=shots(ctx),
             )
             return
@@ -195,7 +270,7 @@ def _register_subscription_commands(registrar: Any, ctx: Any, state: Any) -> lis
                 ctx,
                 "没有监听这个直播间",
                 "本群当前没有监听它。",
-                hint="用 /监听列表 看看都在监听什么",
+                hint="用 /直播监听列表 看看都在监听什么",
             )
             return
         removed = await SubscriptionService(state).remove(group_id, row.room_id)
@@ -214,12 +289,13 @@ def _register_subscription_commands(registrar: Any, ctx: Any, state: Any) -> lis
         else:
             await fail(command_ctx, ctx, "取消失败", "请稍后再试一次。")
 
-    names.append("取消监听")
+    names.append("取消直播监听")
 
     @registrar.register(
-        "监听列表",
+        "直播监听列表",
         description="列出本群监听的全部直播间与推送开关",
         permission=PERM_EVERYONE,
+        aliases=("监听列表",),
     )
     async def _list(command_ctx: Any) -> None:
         group_id = conv_group_id(command_ctx)
@@ -236,7 +312,7 @@ def _register_subscription_commands(registrar: Any, ctx: Any, state: Any) -> lis
                 command_ctx,
                 cards.message_card(
                     title="本群还没有监听任何直播间",
-                    lines=["用 /监听 房间号 添加第一个"],
+                    lines=["用 /直播监听 房间号 添加第一个"],
                 ),
                 screenshots=shots(ctx),
             )
@@ -263,5 +339,5 @@ def _register_subscription_commands(registrar: Any, ctx: Any, state: Any) -> lis
             screenshots=shots(ctx),
         )
 
-    names.append("监听列表")
+    names.append("直播监听列表")
     return names

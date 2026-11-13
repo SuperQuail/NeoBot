@@ -231,12 +231,12 @@ async def test_chat_and_panel_keep_the_same_group_defaults_and_existing_switches
     async with state.database.transaction() as session:
         await db.ensure_group_setting(session, 20001, {"default_push_live": False, "default_push_live_end": True})
     register_commands(command_host, state)
-    await handlers["监听"](context)
+    await handlers["直播监听"](context)
     plugin = surface(state)
     row = (await invoke(plugin, "list", permission="read"))["items"][0]
     assert row["push_live"] is False and row["push_live_end"] is True
     await invoke(plugin, "toggle", {"group_id": 20001, "room_id": 610001, "push_live": True, "push_live_end": False})
-    await handlers["监听"](context)
+    await handlers["直播监听"](context)
     row = (await invoke(plugin, "list", permission="read"))["items"][0]
     assert row["push_live"] is True and row["push_live_end"] is False
     assert len(replies) == 2

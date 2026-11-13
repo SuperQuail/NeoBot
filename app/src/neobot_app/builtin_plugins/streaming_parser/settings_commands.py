@@ -71,7 +71,7 @@ async def _setting_view(state: Any, group_id: int | str) -> Any:
 def group_defaults(config: Any) -> dict[str, Any]:
     """建群设置行时用的默认值，全部取自插件配置。
 
-    任何一条建行路径都要用同一份默认值，否则 /config 里看到的值和 /监听
+    任何一条建行路径都要用同一份默认值，否则 /config 里看到的值和 /直播监听
     实际用的群级默认会对不上（空 defaults 会落到 db 模型自带的默认值）。
     """
     return {
@@ -154,7 +154,7 @@ def register_settings_commands(registrar: Any, ctx: Any, state: Any) -> list[str
         if not rows:
             await cards.send_card(
                 command_ctx,
-                cards.message_card(title="本群还没有监听任何直播间", lines=["用 /监听 房间号 添加第一个"]),
+                cards.message_card(title="本群还没有监听任何直播间", lines=["用 /直播监听 房间号 添加第一个"]),
                 screenshots=shots(ctx),
             )
             return

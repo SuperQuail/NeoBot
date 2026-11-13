@@ -466,14 +466,41 @@ class RuntimePluginContext(PluginMessaging):
     def record_subscription(self, subscription: Any) -> None:
         self._record_subscription(subscription)
 
-    async def send_private(self, user_id: int | str, message: MessagePayload) -> SendMsgResponse:
-        return await self.send(ConversationRef(kind="private", id=str(user_id)), message)
+    async def send_private(
+        self, user_id: int | str, message: MessagePayload, *, proactive: bool = False
+    ) -> SendMsgResponse:
+        """私聊发送；proactive 语义同 send()。"""
+        return await self.send(
+            ConversationRef(kind="private", id=str(user_id)), message, proactive=proactive
+        )
 
-    async def send_group(self, group_id: int | str, message: MessagePayload) -> SendMsgResponse:
-        return await self.send(ConversationRef(kind="group", id=str(group_id)), message)
+    async def send_group(
+        self, group_id: int | str, message: MessagePayload, *, proactive: bool = False
+    ) -> SendMsgResponse:
+        """群聊发送；proactive 语义同 send()。"""
+        return await self.send(
+            ConversationRef(kind="group", id=str(group_id)), message, proactive=proactive
+        )
 
-    async def send(self, conversation: ConversationRef, message: MessagePayload) -> SendMsgResponse:
-        return await self._adapter.send(conversation, normalize_message_payload(message))
+    async def send(
+        self,
+        conversation: ConversationRef,
+        message: MessagePayload,
+        *,
+        proactive: bool = False,
+    ) -> SendMsgResponse:
+        """向会话发送消息。
+
+        proactive=True 表示这条消息不是对入站消息的回复（定时任务、开播通知
+        这类后台推送）：官方 QQ 通道在没有被动回复窗口时会拒发，只能按主动
+        消息发送；OneBot/local 后端忽略该语义。传 False 时保持普通回复路径，
+        也不向适配器多传关键字参数，兼容只实现 send(conversation, message)
+        的第三方适配器。
+        """
+        payload = normalize_message_payload(message)
+        if proactive:
+            return await self._adapter.send(conversation, payload, proactive=True)
+        return await self._adapter.send(conversation, payload)
 
     async def send_image(
         self,
@@ -482,11 +509,21 @@ class RuntimePluginContext(PluginMessaging):
         path: Path | None = None,
         data: bytes | None = None,
         filename: str | None = None,
+        proactive: bool = False,
     ) -> SendMsgResponse:
+        """发送图片；proactive 语义同 send()。
+
+        定时/后台推送没有被动回复窗口时传 proactive=True，官方通道按主动消息
+        发送；OneBot/local 后端忽略该语义。
+        """
         if self._media_sender is None:
             raise RuntimeError("MediaSender not configured")
+        # 只在需要主动消息时才传该参数，兼容未声明 proactive 的旧注入实现
+        proactive_kwargs = {"proactive": True} if proactive else {}
         if path is not None:
-            return await self._media_sender.send_image(self._adapter, conversation, path=path)
+            return await self._media_sender.send_image(
+                self._adapter, conversation, path=path, **proactive_kwargs
+            )
         if data is not None:
             if self._file_server is None:
                 raise RuntimeError("FileServer not configured")
@@ -499,7 +536,9 @@ class RuntimePluginContext(PluginMessaging):
             temp_path.parent.mkdir(parents=True, exist_ok=True)
             try:
                 temp_path.write_bytes(data)
-                return await self._media_sender.send_image(self._adapter, conversation, path=temp_path)
+                return await self._media_sender.send_image(
+                    self._adapter, conversation, path=temp_path, **proactive_kwargs
+                )
             finally:
                 temp_path.unlink(missing_ok=True)
         raise ValueError("Must provide path or data+filename")

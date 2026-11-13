@@ -221,6 +221,79 @@ async def test_v3_rebuild_copies_by_name_not_position(tmp_path: Path) -> None:
         await new.close()
 
 
+async def test_legacy_v3_profile_misalignment_is_repaired(tmp_path: Path) -> None:
+    """旧 v3 的 SELECT * 按位置搬运会错位；命中学历校验和后 v5 必须按原映射修回。"""
+    from neobot_app.user_identity import bind_user_identity
+
+    databases_dir = tmp_path / "databases"
+    bind_user_identity(None)
+    old = _v2_database()
+    await old.bind(databases_dir)
+    try:
+        async with old.transaction() as session:
+            await _insert_v2_profile(session, "1001", score=11, user_name="昵称甲")
+            # 模拟旧 v3：按位置搬运（user_name 在旧表末尾，新表在第二列）
+            await session.execute(
+                text(
+                    "CREATE TABLE mg_profile_v3 ("
+                    "user_id VARCHAR(128) NOT NULL PRIMARY KEY,"
+                    "user_name VARCHAR(128) NOT NULL DEFAULT '',"
+                    "score INTEGER NOT NULL DEFAULT 0,"
+                    "best_score INTEGER NOT NULL DEFAULT 0,"
+                    "plays INTEGER NOT NULL DEFAULT 0,"
+                    "wins INTEGER NOT NULL DEFAULT 0,"
+                    "updated_at DATETIME NOT NULL)"
+                )
+            )
+            await session.execute(text("INSERT INTO mg_profile_v3 SELECT * FROM mg_profile"))
+            await session.execute(text("DROP TABLE mg_profile"))
+            await session.execute(text("ALTER TABLE mg_profile_v3 RENAME TO mg_profile"))
+            await session.execute(
+                text(
+                    "INSERT INTO _neobot_plugin_migrations (version, name, checksum, applied_at) "
+                    "VALUES (3, 'widen-user-ids', :checksum, :applied_at)"
+                ),
+                {"checksum": mg_migrations.LEGACY_V3_CHECKSUMS[0], "applied_at": TIMESTAMP},
+            )
+    finally:
+        await old.close()
+
+    new = _full_database()
+    await new.bind(databases_dir)
+    try:
+        async with new.session() as session:
+            versions = [
+                int(row[0])
+                for row in await session.execute(
+                    text("SELECT version FROM _neobot_plugin_migrations ORDER BY version")
+                )
+            ]
+            assert versions == [1, 2, 3, 4, 5]
+            profile = (
+                (
+                    await session.execute(
+                        text(
+                            "SELECT user_id, user_name, score, best_score, plays, wins, updated_at "
+                            "FROM mg_profile"
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            assert dict(profile) == {
+                "user_id": "1001",
+                "user_name": "昵称甲",
+                "score": 11,
+                "best_score": 22,
+                "plays": 3,
+                "wins": 4,
+                "updated_at": TIMESTAMP,
+            }
+    finally:
+        await new.close()
+
+
 async def test_v4_rewrites_legacy_ids_to_openid(tmp_path: Path, identity: Path) -> None:
     """v4 借 identities.json 把旧 13 位合成号改写成 openid（含群/用户两种会话）。"""
     from neobot_app.user_identity import bind_user_identity
