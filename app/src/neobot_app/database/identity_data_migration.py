@@ -654,15 +654,19 @@ def _migrate_core_db(
                     _migrate_profile_rows(conn, table, pk, mapping, run_at, counts)
             if _table_exists(conn, "archive_memories"):
                 _migrate_archive_memories(conn, mappings, run_at, counts)
-                _migrate_counter_keys(conn, mappings, run_at, counts)
+                if official_only:
+                    # 计数器是会话级数据：dual/onebot 仍使用数字 ID，不能改写。
+                    _migrate_counter_keys(conn, mappings, run_at, counts)
             if _table_exists(conn, "archive_snapshots"):
                 _migrate_archive_snapshots(conn, mappings, counts)
-            _migrate_conversation_columns(conn, counts)
-            if _table_exists(conn, "cross_chat_sessions"):
-                _migrate_cross_chat_sessions(
-                    conn, mappings, counts, log, warn_unmapped=official_only
-                )
             if official_only:
+                # 消息/记忆/用量/跨聊天/定时任务绑定都是会话级数据：只有官方单通道才改写，
+                # dual/onebot 下改写会让 OneBot 历史与任务目标断档。
+                _migrate_conversation_columns(conn, counts)
+                if _table_exists(conn, "cross_chat_sessions"):
+                    _migrate_cross_chat_sessions(
+                        conn, mappings, counts, log, warn_unmapped=True
+                    )
                 _migrate_scheduled(conn, mappings, counts, log)
     except Exception as exc:  # 迁移是 best-effort：任何解析/DB 异常都不能阻断启动
         log.warning("身份数据迁移失败，核心库保持原样", path=str(db_path), error=str(exc))

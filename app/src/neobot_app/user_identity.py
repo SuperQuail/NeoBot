@@ -432,6 +432,38 @@ class UserIdentityMap:
             return "群号"
         return _bot_group_label(self._openid_for(_GROUP, group_id))
 
+    def _trusted_local_for_number(
+        self, kind: str, number: Any, channel: str | None
+    ) -> str | None:
+        """真实 QQ/群号 -> 本地 ID，只认管理员命令写入的 trusted 映射。
+
+        agent 工具写入的映射只影响展示；拿它做 profile/archive 主键会让模型把
+        数据路由到任意 openid（审计发现），因此 canonical 归一必须排除。
+        """
+        target = _to_int(number)
+        if not target:
+            return None
+        candidates: list[tuple[str, str]] = []
+        for key, entry in self._aliases.items():
+            if not isinstance(entry, dict) or not entry.get("trusted"):
+                continue
+            if _to_int(entry.get("qq")) != target:
+                continue
+            parsed = _parse_alias_key(key)
+            if parsed is None or parsed[0] != kind:
+                continue
+            _kind, local_channel, local = parsed
+            if local:
+                candidates.append((local_channel, local))
+        if not candidates:
+            return None
+        if channel:
+            for local_channel, local in candidates:
+                if local_channel == str(channel):
+                    return self._openid_for(kind, local)
+            return None
+        return self._openid_for(kind, candidates[0][1])
+
     def canonical_user_id(self, user_id: Any, channel: str | None = None) -> str:
         """把任意本地用户 ID 归一成主键：优先 openid，其次是旧合成号迁移值。
 
@@ -445,7 +477,7 @@ class UserIdentityMap:
         if migrated:
             return migrated
         if text.isdigit():
-            mapped = self.openid_for_qq(text, channel)
+            mapped = self._trusted_local_for_number(_USER, text, channel)
             if mapped:
                 return mapped
         return text
@@ -459,7 +491,7 @@ class UserIdentityMap:
         if migrated:
             return migrated
         if text.isdigit():
-            mapped = self.openid_for_group(text, channel)
+            mapped = self._trusted_local_for_number(_GROUP, text, channel)
             if mapped:
                 return mapped
         return text

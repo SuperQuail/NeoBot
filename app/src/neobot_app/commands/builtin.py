@@ -859,6 +859,17 @@ async def _handle_link_qq(ctx: CommandContext) -> str:
     )
     if not ok:
         return f"映射失败：{message_text}"
+    # 先由迁移入口在快照/备份保护下完成档案与历史数据合并；失败也不会先删源行。
+    migrator = get_identity_migration()
+    if migrator is not None:
+        try:
+            migrated = await migrator.run()
+            if migrated:
+                message_text += "（历史数据已迁移到 openid）"
+        except Exception:
+            message_text += "（历史数据迁移失败，重启后会重试）"
+        return message_text
+    # 测试/未装配 coordinator 时退回即时档案合并。
     merger = get_identity_merge()
     if merger is not None:
         try:
@@ -871,10 +882,6 @@ async def _handle_link_qq(ctx: CommandContext) -> str:
                 message_text += "（历史档案已并入 openid）"
         except Exception:
             message_text += "（历史档案合并失败，可重试 /linkqq）"
-    # 档案之外的历史数据（消息/档案快照/定时任务等）在 link 后立即迁移一遍。
-    migrator = get_identity_migration()
-    if migrator is not None:
-        await migrator.run()
     return message_text
 
 
@@ -891,6 +898,17 @@ async def _handle_link_group(ctx: CommandContext) -> str:
     )
     if not ok:
         return f"映射失败：{message_text}"
+    # 先由迁移入口在快照/备份保护下完成档案与历史数据合并；失败也不会先删源行。
+    migrator = get_identity_migration()
+    if migrator is not None:
+        try:
+            migrated = await migrator.run()
+            if migrated:
+                message_text += "（历史数据已迁移到 openid）"
+        except Exception:
+            message_text += "（历史数据迁移失败，重启后会重试）"
+        return message_text
+    # 测试/未装配 coordinator 时退回即时档案合并。
     merger = get_identity_merge()
     if merger is not None:
         try:
@@ -903,10 +921,6 @@ async def _handle_link_group(ctx: CommandContext) -> str:
                 message_text += "（历史档案已并入 openid）"
         except Exception:
             message_text += "（历史档案合并失败，可重试 /linkgroup）"
-    # 档案之外的历史数据（消息/档案快照/定时任务等）在 link 后立即迁移一遍。
-    migrator = get_identity_migration()
-    if migrator is not None:
-        await migrator.run()
     return message_text
 
 

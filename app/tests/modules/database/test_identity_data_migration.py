@@ -402,7 +402,7 @@ def test_migrates_core_and_agent_data(tmp_path: Path) -> None:
     _write_mappings(data_dir)
     log = _RecordingLogger()
 
-    counts = migrate_identity_data(db, data_dir, logger=log)
+    counts = migrate_identity_data(db, data_dir, official_only=True, logger=log)
 
     assert counts == {
         "user_data": 3,
@@ -413,6 +413,8 @@ def test_migrates_core_and_agent_data(tmp_path: Path) -> None:
         "memories": 4,
         "model_usage_records": 2,
         "cross_chat_sessions": 1,
+        "scheduled_tasks": 1,
+        "completed_scheduled_tasks": 1,
         "agent_state": 5,
         "agent_events": 1,
         "agent_receipts": 1,
@@ -511,9 +513,13 @@ def test_migrates_core_and_agent_data(tmp_path: Path) -> None:
     }
     assert _scalar(db, "SELECT origin_id FROM cross_chat_sessions") == OPENID_A
     assert _scalar(db, "SELECT target_id FROM cross_chat_sessions") == GROUP_OPENID_A
-    # official_only=False：定时任务绑定保持原样（OneBot 可能还在跑）
-    assert OLD_GROUP_A in _scalar(db, "SELECT bindings_json FROM scheduled_tasks")
-    assert OLD_USER_A in _scalar(db, "SELECT archived_payload_json FROM completed_scheduled_tasks")
+    # official_only=True：定时任务绑定迁移到 openid，bilibili 等其它 kind 不动
+    bindings = _scalar(db, "SELECT bindings_json FROM scheduled_tasks")
+    assert OLD_GROUP_A not in bindings
+    assert GROUP_OPENID_A in bindings
+    assert '"kind": "bilibili"' in bindings
+    archived = _scalar(db, "SELECT archived_payload_json FROM completed_scheduled_tasks")
+    assert OLD_USER_A not in archived
     # 备份：合并/删除前写入旧行 JSON
     backup = _rows(db, "SELECT table_name, old_key, new_key, payload FROM identity_migration_backup")
     assert ("user_data", OLD_USER_A, OPENID_A) in {(t, o, n) for t, o, n, _p in backup}
@@ -590,7 +596,12 @@ def test_migrates_core_and_agent_data(tmp_path: Path) -> None:
     # 只汇总一条 INFO，无 WARNING
     infos = [(msg, kw) for level, msg, kw in log.records if level == "info"]
     assert len(infos) == 1 and "身份数据迁移完成" in infos[0][0]
-    assert [record for record in log.records if record[0] == "warning"] == []
+    warnings = [record for record in log.records if record[0] == "warning"]
+    # official 迁移会为没有 openid 映射的活跃任务/跨聊天会话输出 WARNING（fixture 含 1 条）。
+    assert all(
+        "缺少 openid 映射" in message or "跨聊天" in message
+        for _level, message, _kw in warnings
+    )
 
 
 def test_second_run_is_idempotent(tmp_path: Path) -> None:

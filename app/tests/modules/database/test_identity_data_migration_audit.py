@@ -272,7 +272,7 @@ def test_model_usage_records_split_by_conversation_kind(tmp_path: Path) -> None:
             [("private", "10001", TIMESTAMP), ("group", "10001", TIMESTAMP), (None, "10001", TIMESTAMP)],
         )
 
-    counts = migrate_identity_data(db, data_dir)
+    counts = migrate_identity_data(db, data_dir, official_only=True)
 
     assert counts.get("model_usage_records") == 2, "只改有 kind 的 private/group 两行"
     rows = dict(
