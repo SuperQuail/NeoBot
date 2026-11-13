@@ -390,6 +390,10 @@ class BilibiliReplyEngine:
     async def _load_user_data(self, qq_number: str) -> Any:
         if self._uow_factory is None:
             return None
+        # 已 link 的 QQ 号在库里以 openid 为主键；按 canonical 主键读，避免迁移后丢资料。
+        from neobot_app.user_identity import canonical_user_id
+
+        qq_number = canonical_user_id(qq_number)
         try:
             async with self._uow_factory() as uow:
                 profiles = getattr(uow, "profiles", None)

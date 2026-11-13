@@ -10,6 +10,7 @@ from neobot_app.bootstrap._runtime import build_browser_components, build_creato
 from neobot_app.bootstrap._services import build_adapter_service, build_context_recorder, build_debug_recorder, build_emoji_service, build_file_server, build_memory_services, build_message_queues
 from neobot_app.bootstrap._usage import build_usage_components
 from neobot_app.core import DATA_DIR, SRC_DATA_DIR
+from neobot_app.database.identity_data_migration import official_only_mode
 from neobot_app.observability.logging import LoguruLoggerFactory, configure_loguru, set_console_show_module
 from neobot_app.prompt.store import PromptStore, sync_default_prompts
 from neobot_app.runtime.adapter_supervisor import AdapterSupervisor
@@ -127,7 +128,10 @@ def _build_core_services(state: _BuildState) -> None:
     db_path = DATA_DIR / "neobot.db"
     db_url = sqlite_url(db_path)
     _engine, uow_factory = _reuse_or(
-        "storage", lambda: _build_storage(db_path, db_url, logger_factory)
+        "storage",
+        lambda: _build_storage(
+            db_path, db_url, logger_factory, official_only=official_only_mode(config)
+        ),
     )
 
     usage = _reuse_or(

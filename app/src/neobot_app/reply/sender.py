@@ -24,6 +24,7 @@ from neobot_app.reply.event import ReplyState
 from neobot_app.reply.output_guard import clean_segments, clean_text, should_drop
 from neobot_app.reply.postprocess import ReplySplitPreview, process_reply_text
 from neobot_app.bot_accounts import primary_bot_account
+from neobot_app.message.addressing import is_addressed_to_bot
 from neobot_app.utils.media_sender import prepare_image_segment, send_image
 from neobot_app.time_context import monotonic_seconds
 
@@ -252,6 +253,16 @@ class ReplySender:
             conv_ref, segments, channel="official", proactive=proactive
         )
 
+    def _event_is_addressed(self, event: Any) -> bool:
+        """本轮是否因被 @ 触发：被 @ 的回复固定在来源通道，不再切到 OneBot/官方。"""
+        message = getattr(event, "message", None)
+        if message is None:
+            return False
+        try:
+            return bool(is_addressed_to_bot(message, self._config))
+        except Exception:
+            return False
+
     def _preferred_linked_group_target(
         self, conversation_ref: ConversationRef, channel: str | None
     ) -> tuple[ConversationRef, str | None]:
@@ -439,7 +450,8 @@ class ReplySender:
         conv_ref = event.conversation_ref
         if conv_ref is None:
             raise ValueError("ReplyEvent.conversation_ref is None")
-        if requested_channel is None:
+        if requested_channel is None and not self._event_is_addressed(event):
+            # 普通/随机回复优先非官方；被 @ 时只由被 @ 的那个 bot 回复，不跨通道改投。
             conv_ref, channel = self._preferred_linked_group_target(conv_ref, channel)
 
         send_results: list[object] = []

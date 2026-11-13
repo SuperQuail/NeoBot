@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from neobot_contracts.ports.clock import Clock, SystemClock
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.repository import MemoryRepository
@@ -28,10 +30,12 @@ def build_archive_memory_service(
     *,
     uow_factory: UnitOfWorkFactory,
     logger: Logger | None = None,
+    key_mapper: Any = None,
 ) -> ArchiveMemoryService:
     return ArchiveMemoryService(
         uow_factory=uow_factory,
         logger=logger or NullLogger(),
+        key_mapper=key_mapper,
     )
 
 

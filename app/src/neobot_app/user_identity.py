@@ -432,6 +432,38 @@ class UserIdentityMap:
             return "群号"
         return _bot_group_label(self._openid_for(_GROUP, group_id))
 
+    def canonical_user_id(self, user_id: Any, channel: str | None = None) -> str:
+        """把任意本地用户 ID 归一成主键：优先 openid，其次是旧合成号迁移值。
+
+        QQ 号有 /linkqq 映射时返回对应 openid；openid 原样返回；旧 13 位合成号走
+        identities.json 迁移；无映射的 QQ 号保持原样（还没 link 的用户）。
+        """
+        text = identity_text(user_id)
+        if not text:
+            return ""
+        migrated = self.openid_for_legacy_id(_USER, text)
+        if migrated:
+            return migrated
+        if text.isdigit():
+            mapped = self.openid_for_qq(text, channel)
+            if mapped:
+                return mapped
+        return text
+
+    def canonical_group_id(self, group_id: Any, channel: str | None = None) -> str:
+        """把任意本地群 ID 归一成主键（openid 优先，兼容旧合成号/真实群号）。"""
+        text = identity_text(group_id)
+        if not text:
+            return ""
+        migrated = self.openid_for_legacy_id(_GROUP, text)
+        if migrated:
+            return migrated
+        if text.isdigit():
+            mapped = self.openid_for_group(text, channel)
+            if mapped:
+                return mapped
+        return text
+
     def profile_identity(self, user_id: Any, channel: str | None = None) -> str:
         """用户档案里的身份展示：映射后同时给真实 QQ 号和完整 openid。"""
         text = identity_text(user_id)
@@ -494,6 +526,28 @@ def unlink_user_qq(
     return _singleton.unlink(user_id, channel, force=force)
 
 
+def canonical_user_id(user_id: Any, channel: str | None = None) -> str:
+    return _singleton.canonical_user_id(user_id, channel)
+
+
+def canonical_group_id(group_id: Any, channel: str | None = None) -> str:
+    return _singleton.canonical_group_id(group_id, channel)
+
+
+#: 档案表 -> 主键类型；这两个函数给 ArchiveMemoryService 做统一 key 归一。
+_USER_ARCHIVE_TABLES = frozenset({"user_profile", "user_summary"})
+_GROUP_ARCHIVE_TABLES = frozenset({"group_profile", "group_summary"})
+
+
+def canonical_archive_key(table_name: str, key: str) -> str:
+    """档案 key 归一：用户表按用户主键、群表按群主键，其它表原样返回。"""
+    if table_name in _USER_ARCHIVE_TABLES:
+        return canonical_user_id(key)
+    if table_name in _GROUP_ARCHIVE_TABLES:
+        return canonical_group_id(key)
+    return key
+
+
 def display_user_id(user_id: Any, channel: str | None = None) -> str:
     return _singleton.display_user_id(user_id, channel)
 
@@ -541,6 +595,9 @@ def group_label(group_id: Any, channel: str | None = None) -> str:
 __all__ = [
     "UserIdentityMap",
     "bind_user_identity",
+    "canonical_archive_key",
+    "canonical_group_id",
+    "canonical_user_id",
     "display_group_id",
     "display_user_id",
     "get_user_identity",

@@ -14,6 +14,8 @@ from neobot_app.utils.prompt_text import escape_prompt_text
 
 from neobot_app.bot_accounts import identity_text
 from neobot_app.user_identity import (
+    canonical_group_id,
+    canonical_user_id,
     display_user_id,
     group_number_for,
     profile_identity,
@@ -64,6 +66,15 @@ class UserProfileService:
         self._logger = logger or NullLogger()
         self._archive_memory_service = archive_memory_service
 
+    @staticmethod
+    def _user_key(user_id: Any) -> str:
+        """资料/档案主键归一：已 link 的 QQ 号统一落到 openid。"""
+        return canonical_user_id(identity_text(user_id))
+
+    @staticmethod
+    def _group_key(group_id: Any) -> str:
+        return canonical_group_id(identity_text(group_id))
+
     def _get_dependency_timeout_seconds(self) -> float:
         return 10.0
 
@@ -89,13 +100,15 @@ class UserProfileService:
         observed_fields: Optional[dict[str, Any]] = None,
     ) -> Any | None:
         user_id_str = str(user_id)
-        record = await self.get_user(user_id_str)
+        canonical = self._user_key(user_id_str)
+        record = await self.get_user(canonical)
         if record is not None and observed_fields:
-            record = await self._merge_observed_fields(user_id_str, record, observed_fields)
+            record = await self._merge_observed_fields(canonical, record, observed_fields)
 
         if record is None or self._needs_refresh(record):
             record = await self._refresh_user_profile(
                 user_id_str,
+                canonical_id=canonical,
                 observed_fields=observed_fields,
                 current_profile=record,
             )
@@ -103,14 +116,14 @@ class UserProfileService:
 
     async def get_user(self, user_id: str | int) -> Any | None:
         async with self._uow_factory() as uow:
-            return await uow.profiles.get_user(str(user_id))
+            return await uow.profiles.get_user(self._user_key(user_id))
 
     async def get_group(self, group_id: str | int) -> Any | None:
         async with self._uow_factory() as uow:
-            return await uow.profiles.get_group(str(group_id))
+            return await uow.profiles.get_group(self._group_key(group_id))
 
     async def update_user_remark(self, user_id: str | int, remark: str | None) -> Any | None:
-        user_id_str = str(user_id)
+        user_id_str = self._user_key(user_id)
         remark_text = str(remark or "").strip()
         async with self._uow_factory() as uow:
             await uow.profiles.upsert_user(user_id_str, remark=remark_text)
@@ -122,7 +135,7 @@ class UserProfileService:
         user_id: str | int,
         avatar_analysis: str | None,
     ) -> Any | None:
-        user_id_str = str(user_id)
+        user_id_str = self._user_key(user_id)
         avatar_text = str(avatar_analysis or "").strip()
         async with self._uow_factory() as uow:
             await uow.profiles.upsert_user(user_id_str, avatar_analysis=avatar_text)
@@ -144,7 +157,7 @@ class UserProfileService:
         CAS 失败或 SQLite 锁冲突时重放整个事务，而不是在回滚后仅重试
         commit。每次重读当前值，因此并发回复/摘要任务不会覆盖彼此的增量。
         """
-        user_id_str = str(user_id).strip()
+        user_id_str = self._user_key(user_id).strip()
         if not user_id_str:
             raise ValueError("user_id 不能为空")
         requested = int(change)
@@ -200,7 +213,7 @@ class UserProfileService:
         user_id: str | int,
         favorability: int,
     ) -> Any | None:
-        user_id_str = str(user_id)
+        user_id_str = self._user_key(user_id)
         async with self._uow_factory() as uow:
             await uow.profiles.upsert_user(user_id_str, favorability=favorability)
             await uow.commit()
@@ -390,9 +403,10 @@ class UserProfileService:
         if self._archive_memory_service is None:
             return None
         limit = self._user_archive_max_chars()
+        key = self._user_key(user_id)
         for table in ("user_summary", "user_profile"):
             try:
-                item = await self._archive_memory_service.get(table, user_id)
+                item = await self._archive_memory_service.get(table, key)
             except Exception:
                 continue
             if item is not None and item.value:
@@ -631,9 +645,12 @@ class UserProfileService:
         self,
         user_id: str,
         *,
+        canonical_id: str | None = None,
         observed_fields: Optional[dict[str, Any]] = None,
         current_profile: Any | None = None,
     ) -> Any | None:
+        # 适配器必须用平台原始 ID（QQ号/openid）拉资料；落库统一用 canonical_id。
+        key = canonical_id or self._user_key(user_id)
         try:
             response = await self._adapter_call(
                 self._adapter.get_stranger_info(identity_text(user_id)),
@@ -642,7 +659,7 @@ class UserProfileService:
             )
         except Exception as exc:
             self._logger.warning("刷新用户信息失败", user_id=user_id, error=str(exc))
-            return await self.get_user(user_id)
+            return await self.get_user(key)
 
         data = getattr(response, "data", None)
         fields = self._build_user_fields(
@@ -653,9 +670,9 @@ class UserProfileService:
         fields["fetched_at"] = now_utc()
 
         async with self._uow_factory() as uow:
-            await uow.profiles.upsert_user(user_id, **fields)
+            await uow.profiles.upsert_user(key, **fields)
             await uow.commit()
-            return await uow.profiles.get_user(user_id)
+            return await uow.profiles.get_user(key)
 
     @staticmethod
     def _build_user_fields(

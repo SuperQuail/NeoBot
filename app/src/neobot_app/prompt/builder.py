@@ -171,7 +171,14 @@ class PromptBuilder:
         account = self._bot_account_value(bot_account)
         group_name = await self._profile_service.get_group_name(group_id_str)
         group_description_map = self._config.chat.group_description or {}
+        # 配置按真实群号写、官方消息带 openid 时走 trusted 映射再查一次。
+        from neobot_app.user_identity import trusted_group_number_for
+
         group_description = group_description_map.get(group_id_str, "")
+        if not group_description:
+            mapped_group = trusted_group_number_for(group_id_str)
+            if mapped_group:
+                group_description = group_description_map.get(str(mapped_group), "")
         archive_fetch_window = getattr(self._config.chat, "archive_fetch_window", None)
         inject_member_archives = self._inject_member_archives()
         member_list = await self._profile_service.render_group_member_list(

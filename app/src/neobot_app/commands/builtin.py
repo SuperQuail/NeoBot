@@ -22,6 +22,8 @@ from neobot_app.commands.model import (
 )
 from neobot_app.bot_accounts import identity_text, looks_like_real_qq
 from neobot_app.user_identity import (
+    canonical_group_id,
+    canonical_user_id,
     link_group_number,
     link_user_qq,
     openid_for_qq,
@@ -40,6 +42,8 @@ from neobot_app.runtime.sleep_service import (
     format_sleep_duration,
     parse_sleep_duration,
 )
+from neobot_app.database.identity_data_migration import get_identity_migration
+from neobot_app.identity_merge import get_identity_merge
 
 if TYPE_CHECKING:
     from neobot_app.commands.service import CommandService
@@ -84,20 +88,6 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
                 ),
             ),
             handler=_handle_help,
-        ),
-        Command(
-            name="get",
-            description=(
-                "查看当前通道的 ID：/get openid 看你自己（或 @ 到的用户）的 openid，"
-                "/get groupid 看本群的 openid"
-            ),
-            permission=PERM_EVERYONE,
-            usage="openid [@用户] | groupid",
-            params=(
-                ("openid [@用户]", "查看你本人（或 @ 到的用户）在当前通道的 openid"),
-                ("groupid", "查看本群的 openid（仅群聊）"),
-            ),
-            handler=_handle_get,
         ),
         Command(
             name="add_admin",
@@ -319,47 +309,6 @@ async def _handle_reload(ctx: CommandContext) -> str:
         fallback_text="\n".join(lines),
         filename="reload.png",
     )
-
-
-async def _handle_get(ctx: CommandContext) -> str:
-    """/get openid [@用户] / /get groupid：只读展示当前通道的完整 openid。
-
-    官方通道的 user_id / conv_id 本身就是 openid；OneBot 通道没有 openid，
-    只说明不可用，绝不回显 QQ 号/群号（命令回复遵循「不出现 QQ 号」约定）。
-    """
-    args = [str(arg).strip() for arg in (ctx.args or ()) if str(arg).strip()]
-    sub = args[0].casefold() if args else ""
-    channel = str(getattr(ctx.message, "neobot_channel", "") or "").strip().casefold()
-    official = channel == "official"
-
-    if sub == "openid":
-        bot_id = identity_text(ctx.service._bot_account(ctx.message))
-        targets: list[str] = []
-        for raw in ctx.at_qqs or ():
-            value = identity_text(raw)
-            # 排除 @bot 自身与官方 @ 事件的 qq=0 占位，其余按顺序保留
-            if value and value not in {bot_id, "0"}:
-                targets.append(value)
-        if len(targets) > 1:
-            return "一次只能 @ 一个用户。"
-        if len(args) > 1:
-            return "用法：/get openid 或 /get openid @用户"
-        target = targets[0] if targets else identity_text(ctx.user_id)
-        if not target:
-            return "无法确定用户 ID。"
-        if official:
-            return f"openid：{target}"
-        return "当前通道是 OneBot，没有 openid（openid 仅官方机器人通道可用）。"
-
-    if sub == "groupid":
-        if ctx.kind != "group":
-            return "只能在群聊中使用 /get groupid。"
-        group_id = identity_text(ctx.conv_id)
-        if official:
-            return f"本群 group openid：{group_id}"
-        return "当前通道是 OneBot，没有 group openid（openid 仅官方机器人通道可用）。"
-
-    return "用法：/get openid [@用户] 或 /get groupid"
 
 
 async def _handle_help(ctx: CommandContext) -> str | None:
@@ -853,7 +802,25 @@ async def _handle_link_qq(ctx: CommandContext) -> str:
     ok, message_text = link_user_qq(
         target, qq_number, channel=channel, trusted=True
     )
-    return message_text if ok else f"映射失败：{message_text}"
+    if not ok:
+        return f"映射失败：{message_text}"
+    merger = get_identity_merge()
+    if merger is not None:
+        try:
+            merged = await merger.merge_user(
+                openid=canonical_user_id(target, channel) or target,
+                qq=qq_number,
+                channel=channel,
+            )
+            if merged.get("merged"):
+                message_text += "（历史档案已并入 openid）"
+        except Exception:
+            message_text += "（历史档案合并失败，可重试 /linkqq）"
+    # 档案之外的历史数据（消息/档案快照/定时任务等）在 link 后立即迁移一遍。
+    migrator = get_identity_migration()
+    if migrator is not None:
+        await migrator.run()
+    return message_text
 
 
 async def _handle_link_group(ctx: CommandContext) -> str:
@@ -867,7 +834,25 @@ async def _handle_link_group(ctx: CommandContext) -> str:
     ok, message_text = link_group_number(
         ctx.conv_id, int(args[0]), channel=channel, trusted=True
     )
-    return message_text if ok else f"映射失败：{message_text}"
+    if not ok:
+        return f"映射失败：{message_text}"
+    merger = get_identity_merge()
+    if merger is not None:
+        try:
+            merged = await merger.merge_group(
+                openid=canonical_group_id(ctx.conv_id, channel) or ctx.conv_id,
+                number=int(args[0]),
+                channel=channel,
+            )
+            if merged.get("merged"):
+                message_text += "（历史档案已并入 openid）"
+        except Exception:
+            message_text += "（历史档案合并失败，可重试 /linkgroup）"
+    # 档案之外的历史数据（消息/档案快照/定时任务等）在 link 后立即迁移一遍。
+    migrator = get_identity_migration()
+    if migrator is not None:
+        await migrator.run()
+    return message_text
 
 
 async def _handle_unlink_qq(ctx: CommandContext) -> str:

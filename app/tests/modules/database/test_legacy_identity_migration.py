@@ -334,13 +334,24 @@ def test_build_storage_migrates_between_schema_and_engine(monkeypatch: Any, tmp_
         "migrate_legacy_identity_ids",
         lambda db, data, **k: calls.append("identity") or {},
     )
+    seen: dict[str, Any] = {}
+
+    def _fake_data_migration(db: Any, data: Any, **kwargs: Any) -> dict[str, int]:
+        seen.update(kwargs)
+        calls.append("data")
+        return {}
+
+    monkeypatch.setattr(core_reuse, "migrate_identity_data", _fake_data_migration)
     monkeypatch.setattr(core_reuse, "build_storage", lambda url: ("engine", "uow"))
 
     class _Factory:
         def get_logger(self, name: str) -> Logger:
             return NullLogger()
 
-    result = core_reuse._build_storage(tmp_path / "neobot.db", "sqlite+aiosqlite:///x", _Factory())
+    result = core_reuse._build_storage(
+        tmp_path / "neobot.db", "sqlite+aiosqlite:///x", _Factory(), official_only=True
+    )
 
     assert result == ("engine", "uow")
-    assert calls == ["schema", "identity"]
+    assert calls == ["schema", "identity", "data"]
+    assert seen["official_only"] is True
