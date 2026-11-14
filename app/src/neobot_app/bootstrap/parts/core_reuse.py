@@ -142,10 +142,16 @@ def _build_storage(
     # 上面的 db_backup 快照就是这次数据迁移的回滚点。
     migration_logger = logger_factory.get_logger("app.db_migration")
     migrate_legacy_identity_ids(db_path, DATA_DIR, logger=migration_logger)
-    # 上面只改了无冲突的主键；这里再做完整合并迁移（消息/档案/定时任务等）。
-    migrate_identity_data(
-        db_path, DATA_DIR, official_only=official_only, logger=migration_logger
-    )
+    # a10→a11：若映射出现“多个旧 ID→同一 openid”（a10 @ 目标 bug），先从迁移前
+    # 快照恢复个人档案；本次启动跳过后面的身份迁移，避免错误映射再次覆盖。
+    from neobot_app.database.identity_repair import auto_repair_if_needed
+
+    repaired = auto_repair_if_needed(DATA_DIR, migration_logger)
+    if not repaired:
+        # 上面只改了无冲突的主键；这里再做完整合并迁移（消息/档案/定时任务等）。
+        migrate_identity_data(
+            db_path, DATA_DIR, official_only=official_only, logger=migration_logger
+        )
     return build_storage(db_url)
 
 
