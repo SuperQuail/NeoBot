@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
 from types import SimpleNamespace
-
 
 from neobot_app.commands.builtin import _extract_target_qq
 from neobot_app.commands.model import (
@@ -312,40 +309,3 @@ async def test_permissions_reflect_config_reload() -> None:
     )
     # 40000 现在是次级管理员,但 add_admin 需要超级管理员权限 → 拒绝并消费
     assert result.consumed is True
-
-
-@pytest.mark.asyncio
-async def test_command_at_args_wildcard_injects_mentioned_user():
-    from neobot_adapter.model.message import GroupMessage, MessageSegment
-    from neobot_app.commands.model import Command
-
-    seen = {}
-
-    async def handler(ctx):
-        seen["args"] = list(ctx.args)
-        return "ok"
-
-    async def _send(*args, **kwargs):
-        return None
-
-    config = SimpleNamespace(chat=SimpleNamespace(admin_accounts=[], sub_admin_accounts=[]), bot=SimpleNamespace(account=88888))
-    service = CommandService(config=config, send_callback=_send)
-    service.registry.register(
-        Command(name="echo_at", description="", handler=handler, permission=PERM_EVERYONE, at_args=(0,))
-    )
-    message = GroupMessage(
-        message_id=1,
-        user_id="SENDER_OPENID",
-        group_id="GROUP",
-        neobot_channel="official",
-        self_id=88888,
-        mentioned_self=True,
-        message=[
-            MessageSegment(type="at", data={"qq": 88888}),
-            MessageSegment(type="text", data={"text": " /echo_at hello"}),
-            MessageSegment(type="at", data={"qq": "TARGET_OPENID"}),
-        ],
-    )
-    await service.handle_message(message, kind="group", queue_key="GROUP")
-    assert seen["args"] == ["TARGET_OPENID", "hello"]
-

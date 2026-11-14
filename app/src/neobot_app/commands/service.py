@@ -188,12 +188,6 @@ class CommandService:
         if command is None:
             # / 开头但命令未注册:移交正常管线
             return CommandHandleResult(consumed=False)
-        at_args = getattr(command, "at_args", ()) or ()
-        if at_args:
-            at_targets = self._collect_at_targets(message)
-            for slot in sorted(at_args):
-                if slot < len(at_targets):
-                    args.insert(min(slot, len(args)), at_targets[slot])
 
         # 权限检查
         if not self._permissions.can(user_id, command.permission):
@@ -260,19 +254,6 @@ class CommandService:
         if isinstance(data, dict):
             return data
         return {}
-
-    def _collect_at_targets(self, message: Any) -> list[str]:
-        """按出现顺序返回非 bot 的 @ 目标（openid/QQ 字符串），供 at_args 通配符。"""
-        bot_id = identity_text(self._bot_account(message))
-        targets: list[str] = []
-        for qq in message.message or ():
-            segment_type = self._segment_type(qq)
-            if segment_type not in ("at", "mention"):
-                continue
-            value = identity_text(self._segment_data(qq).get("qq") or self._segment_data(qq).get("user_id"))
-            if value and value not in {bot_id, "0", "all"}:
-                targets.append(value)
-        return targets
 
     @staticmethod
     def _collect_at_qqs(message: Any) -> set[str]:
@@ -457,7 +438,7 @@ class CommandService:
         except Exception as exc:
             self._log(f"命令回复发送失败: {exc}")
 
-    async def save_sub_admins(self, new_list: list[str]) -> ConfigSaveResult:
+    async def save_sub_admins(self, new_list: list[int]) -> ConfigSaveResult:
         """保存次级管理员列表(经注入的回调,含配置写回与热重载)。
 
         回调返回 ConfigSaveResult：只有 ok=True 才代表磁盘上确实写成功了。

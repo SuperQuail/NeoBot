@@ -49,8 +49,6 @@ if TYPE_CHECKING:
     from neobot_app.commands.service import CommandService
 
 _QQ_PATTERN = re.compile(r"^\d{5,15}$")
-#: 官方 openid 形状（字母数字/下划线/连字符）；用于 /add_admin 直接接受 openid。
-_OPENID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16,}$")
 
 
 def _display_operator(raw: Any) -> str:
@@ -962,15 +960,6 @@ async def _handle_unlink_group(ctx: CommandContext) -> str:
     return text if ok else f"解除映射失败：{text}"
 
 
-def _extract_target_qq(ctx: CommandContext) -> int | None:
-    """兼容旧调用：返回数字 QQ 目标；openid 目标返回 None。"""
-    target = _extract_admin_target(ctx)
-    try:
-        return int(target) if target and str(target).isdigit() else None
-    except (TypeError, ValueError):
-        return None
-
-
 async def _handle_add_admin(ctx: CommandContext) -> str:
     return await _modify_admin(ctx, add=True)
 
@@ -985,10 +974,9 @@ async def _modify_admin(ctx: CommandContext, *, add: bool) -> str:
     **回复里不出现任何 QQ 号**（含目标本人、其它次级管理员、超级管理员）：
     卡片只画头像 + 人数，纯文本降级也只说人数（issue #85）。
     """
-    target_qq = _extract_admin_target(ctx)
+    target_qq = _extract_target_qq(ctx)
     if target_qq is not None:
-        # 本地 ID（openid/QQ）已人工映射时，管理员名单统一存真实 QQ 号；
-        # 未映射的官方 openid 直接存 openid（配置本来就支持 openid 字符串）。
+        # 本地 ID（openid/QQ）已人工映射时，管理员名单统一存真实 QQ 号。
         target_qq = trusted_qq_for_user(target_qq) or target_qq
     if target_qq is None:
         # 参数缺失：一行提示就够，不上卡片；但仍然**不带任何号码**
@@ -1104,11 +1092,11 @@ async def _handle_set_password(ctx: CommandContext) -> str:
     )
 
 
-def _extract_admin_target(ctx: CommandContext) -> str | None:
-    """从参数或 @ 段提取管理员目标（真实 QQ 号或官方 openid，排除 @bot 段）。
+def _extract_target_qq(ctx: CommandContext) -> int | None:
+    """从参数或 @ 段提取目标真实 QQ 号（排除 @bot 触发段）。
 
-    官方通道 @ 到的是 openid：有 trusted 映射时优先用真实 QQ 号（与旧配置兼容），
-    没有映射时直接返回 openid——配置的 admin/sub_admin 本来就允许 openid 字符串。
+    @ 段可能是 openid：只有 trusted 映射能落到真实 QQ 号；映射不到时继续看
+    显式 QQ 号参数，避免把 openid 当管理员 QQ 写进配置。
     """
     bot_account = ctx.service._bot_account(getattr(ctx, "message", None))
     bot_id = identity_text(bot_account)
@@ -1118,19 +1106,15 @@ def _extract_admin_target(ctx: CommandContext) -> str | None:
         if not text or text == bot_id:
             continue
         if looks_like_real_qq(text, min_digits=5):
-            return str(int(text))
+            return int(text)
         mapped = trusted_qq_for_user(text)
         if mapped:
-            return str(int(mapped))
-        if _OPENID_PATTERN.match(text):
-            return text
-    # 参数中的 QQ 号或 openid
+            return int(mapped)
+    # 参数中的 QQ 号
     for arg in ctx.args:
         candidate = arg.strip()
         if candidate.startswith("@"):
             candidate = candidate[1:]
         if _QQ_PATTERN.match(candidate):
-            return str(int(candidate))
-        if _OPENID_PATTERN.match(candidate):
-            return candidate
+            return int(candidate)
     return None
