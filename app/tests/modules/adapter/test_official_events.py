@@ -851,3 +851,24 @@ def test_subscribe_message_status_maps_to_notice(workdir) -> None:
     assert event is not None
     assert event["notice_type"] == "subscribe_message_status"
     assert event["subscribe_results"] == [{"template_id": 1, "op": 1}]
+
+
+def test_group_at_event_without_mentions_keeps_explicit_at_target(workdir) -> None:
+    """GROUP_AT_MESSAGE_CREATE 只带正文 @ 标记、没有 mentions 时也要保留 at 段。"""
+    mapper = _mapper(workdir)
+
+    event = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_AT_MESSAGE_CREATE",
+            _group_data(content="<@!BOTOPENID> /linkqq <@!member-openid-2> 3514733681"),
+        )
+    )
+
+    assert event is not None
+    at_ids = [
+        str(segment["data"].get("qq"))
+        for segment in event["message"]
+        if segment["type"] == "at"
+    ]
+    assert "member-openid-2" in at_ids
+
