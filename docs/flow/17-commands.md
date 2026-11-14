@@ -2,8 +2,8 @@
 flow: 17-commands
 covers:
   - app/src/neobot_app/commands/
-verified_against: f3c37fa6
-verified_hash: 18718bc4379b
+verified_against: 5d26dec8
+verified_hash: 56dbdc87b73b
 ---
 
 # 17 命令系统：注册 / 解析 / 权限 / 内置命令
