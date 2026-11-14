@@ -886,12 +886,3 @@ def test_group_at_event_without_bot_prefix_keeps_first_mention(workdir) -> None:
     at_ids = [str(s["data"].get("qq")) for s in event["message"] if s["type"] == "at"]
     assert "member-openid-2" in at_ids
 
-
-def test_at_event_is_marked_official_at_event(workdir) -> None:
-    mapper = _mapper(workdir)
-    mapper.bot_openid = "BOTOPENID"
-    at_event = mapper.from_dispatch(_dispatch("GROUP_AT_MESSAGE_CREATE", _group_data(content="<@!BOTOPENID> /help")))
-    full_event = mapper.from_dispatch(_dispatch("GROUP_MESSAGE_CREATE", _group_data(id="ROBOT1.0_full-msg", content="<@!BOTOPENID> /help"), event_id="evt-2"))
-    assert at_event is not None and at_event["official_at_event"] is True
-    assert full_event is not None and full_event["official_at_event"] is False
-

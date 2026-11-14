@@ -376,7 +376,6 @@ class GroupMessage(GeneralMessage):
     """群消息数据结构"""
     group_id : Optional[LocalId] = None #群 ID（OneBot 群号 / 官方 group openid）
     mentioned_self : Optional[bool] = None #官方通道「是否 @ 机器人」权威结论：None=非官方/未知
-    official_at_event : Optional[bool] = None #True=GROUP_AT_MESSAGE_CREATE（平台不提供被 @ 用户信息）
 
 class FastGroupReplay(GroupMessage):
     reply: Optional[Message] = None #回复内容

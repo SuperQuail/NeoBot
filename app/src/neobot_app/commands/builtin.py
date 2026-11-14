@@ -129,15 +129,17 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
             name="linkqq",
             description=(
                 "把用户与本通道真实 QQ 号映射：只给 QQ 号时映射发送者本人；"
-                "@ 一个用户再给 QQ 号时映射对方。官方 openid 之后会显示为 QQ 号，"
-                "管理员/名单也能按真实 QQ 号识别"
+                "@ 一个用户再给 QQ 号时映射对方；官方仅 AT 事件的群必须用 self 显式映射自己。\n"
+                "官方 openid 之后会显示为 QQ 号，管理员/名单也能按真实 QQ 号识别"
             ),
             permission=PERM_SUB_ADMIN,
-            usage="<QQ号> 或 <@用户> <QQ号>",
+            usage="<QQ号> 或 <@用户> <QQ号> 或 self <QQ号>",
             params=(
                 ("QQ号", "必填。真实 QQ 号（5~11 位纯数字）；不 @ 人时映射发送者自己"),
                 ("@用户", "可选。要映射的当前通道用户；提供时映射对方"),
+                ("self", "官方只收到 AT 事件、平台不给 @ 信息时，显式声明映射发送者本人"),
             ),
+            at_args=(0,),
             handler=_handle_link_qq,
         ),
         Command(
@@ -842,29 +844,15 @@ async def _handle_link_qq(ctx: CommandContext) -> str:
     bot_account = ctx.service._bot_account(message)
     bot_id = identity_text(bot_account)
     args = list(ctx.args or ())
-    explicit_self = bool(args) and str(args[0]).casefold() in {"self", "自己", "本人"}
-    if explicit_self:
-        args = args[1:]
     targets = [qq for qq in ctx.at_qqs if identity_text(qq) != bot_id]
-    at_event = bool(getattr(message, "official_at_event", False))
-    if not targets and at_event and not explicit_self:
-        # 官方 GROUP_AT_MESSAGE_CREATE 不下发被 @ 用户信息，无法判断用户是否 @ 了别人。
-        ctx.service._log(
-            "linkqq 官方 AT 事件缺少 @ 目标信息",
-            raw_args=ctx.raw_args,
-            at_qqs=list(ctx.at_qqs or ()),
-            segments=getattr(ctx.message, "message", None),
-        )
-        return (
-            "无法判断你是否 @ 了别人：本群官方 bot 只收到 @ 事件，平台不提供被 @ 用户信息。\n"
-            "映射你自己请发 /linkqq self <QQ号>；映射别人请让对方本人发送 /linkqq <QQ号>。"
-        )
     if not targets and any(
         str(arg).startswith(("@", "＠")) for arg in args
     ):
         return "无法识别被 @ 的用户（官方事件未提供 openid），请让被 @ 者本人发送 /linkqq <QQ号>"
     if len(targets) > 1:
         return "一次只能 @ 一个用户。"
+    target = targets[0] if targets else identity_text(ctx.user_id)
+    args = [arg for arg in args if identity_text(arg) != target]
     qq_args = [arg for arg in args if arg.isdigit()]
     if len(qq_args) != 1:
         return (
@@ -874,7 +862,6 @@ async def _handle_link_qq(ctx: CommandContext) -> str:
     qq_number = int(qq_args[0])
     if not looks_like_real_qq(qq_number, min_digits=5):
         return "QQ 号必须是 5~11 位纯数字。"
-    target = targets[0] if targets else identity_text(ctx.user_id)
     if not target:
         return "无法确定要映射的用户。"
     if identity_text(target) == bot_id:

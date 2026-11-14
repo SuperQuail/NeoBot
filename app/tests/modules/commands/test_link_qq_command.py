@@ -449,37 +449,3 @@ async def test_linkqq_refuses_silent_self_link_when_mention_unresolved():
     assert "无法识别" in sent[-1][2]
     assert qq_for_user(SUB) is None
 
-
-@pytest.mark.asyncio
-async def test_linkqq_at_event_without_target_info_refuses_self_mapping():
-    sent: list[tuple] = []
-    service = _service(sent)
-    message = _message("/linkqq 3789029663", user_id=SUB, at_qqs=[BOT])
-    message.official_at_event = True
-    result = await service.handle_message(message, kind="group", queue_key="100")
-    assert result.consumed is True
-    assert "无法判断" in sent[-1][2]
-    assert qq_for_user(SUB) is None
-
-
-@pytest.mark.asyncio
-async def test_linkqq_at_event_explicit_self_still_maps_sender():
-    sent: list[tuple] = []
-    service = _service(sent)
-    message = _message("/linkqq self 3789029663", user_id=SUB, at_qqs=[BOT])
-    message.official_at_event = True
-    result = await service.handle_message(message, kind="group", queue_key="100")
-    assert result.consumed is True
-    assert qq_for_user(SUB) == 3789029663
-
-
-@pytest.mark.asyncio
-async def test_get_openid_at_event_warns_about_missing_mention_info():
-    sent: list[tuple] = []
-    service = _service(sent)
-    message = _message("/get openid", user_id=SUB, at_qqs=[BOT])
-    message.official_at_event = True
-    message.neobot_channel = "official"
-    await service.handle_message(message, kind="group", queue_key="100")
-    assert "平台不下发被 @ 用户信息" in sent[-1][2]
-
