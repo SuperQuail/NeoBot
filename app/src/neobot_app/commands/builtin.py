@@ -354,6 +354,12 @@ async def _handle_get(ctx: CommandContext) -> str:
         if not target:
             return "无法确定用户 ID。"
         if official:
+            if not targets and bool(getattr(ctx.message, "official_at_event", False)):
+                return (
+                    f"openid：{target}\n"
+                    "（本群官方 bot 只收到 @ 事件，平台不下发被 @ 用户信息；"
+                    "如果你 @ 了别人，这里显示的仍是你自己。查询他人请让对方发送 /get openid。）"
+                )
             return f"openid：{target}"
         return "当前通道是 OneBot，没有 openid（openid 仅官方机器人通道可用）。"
 
@@ -835,21 +841,31 @@ async def _handle_link_qq(ctx: CommandContext) -> str:
     message = ctx.message
     bot_account = ctx.service._bot_account(message)
     bot_id = identity_text(bot_account)
+    args = list(ctx.args or ())
+    explicit_self = bool(args) and str(args[0]).casefold() in {"self", "自己", "本人"}
+    if explicit_self:
+        args = args[1:]
     targets = [qq for qq in ctx.at_qqs if identity_text(qq) != bot_id]
-    if not targets and any(
-        str(arg).startswith(("@", "＠")) for arg in (ctx.args or ())
-    ):
-        # 官方事件没给 mention openid 时，宁可明确失败也不能静默映射发送者本人。
+    at_event = bool(getattr(message, "official_at_event", False))
+    if not targets and at_event and not explicit_self:
+        # 官方 GROUP_AT_MESSAGE_CREATE 不下发被 @ 用户信息，无法判断用户是否 @ 了别人。
         ctx.service._log(
-            "linkqq 显式 @ 未能解析出 openid",
+            "linkqq 官方 AT 事件缺少 @ 目标信息",
             raw_args=ctx.raw_args,
             at_qqs=list(ctx.at_qqs or ()),
             segments=getattr(ctx.message, "message", None),
         )
+        return (
+            "无法判断你是否 @ 了别人：本群官方 bot 只收到 @ 事件，平台不提供被 @ 用户信息。\n"
+            "映射你自己请发 /linkqq self <QQ号>；映射别人请让对方本人发送 /linkqq <QQ号>。"
+        )
+    if not targets and any(
+        str(arg).startswith(("@", "＠")) for arg in args
+    ):
         return "无法识别被 @ 的用户（官方事件未提供 openid），请让被 @ 者本人发送 /linkqq <QQ号>"
     if len(targets) > 1:
         return "一次只能 @ 一个用户。"
-    qq_args = [arg for arg in ctx.args if arg.isdigit()]
+    qq_args = [arg for arg in args if arg.isdigit()]
     if len(qq_args) != 1:
         return (
             "用法：/linkqq <QQ号>（映射你自己）或 /linkqq @用户 <QQ号>"
