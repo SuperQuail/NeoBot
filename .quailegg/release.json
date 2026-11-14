@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "version": "2.1.0-a13",
-  "created_at": "2026-11-14T09:23:01.477900259Z",
+  "version": "2.1.0-a14",
+  "created_at": "2026-11-14T10:34:36.532338487Z",
   "mode": "pr",
   "channel": "alpha",
-  "fingerprint": "sha256:95260a4d1b9e52df7e90ac49e24e551ee1a1ed35b1dc00e1cc634cc7a2751cba",
+  "fingerprint": "sha256:237d49898ec996f89ab5551efeb471c6590973c0dc2d1fa20b2787ea7e035eab",
   "repo": {
     "host": "github.com",
     "owner": "SuperQuail",
@@ -18,95 +18,95 @@
       "uv run pytest --strict-markers -m \"not browser and not network and not slow and not llm\""
     ],
     "skipped": false,
-    "at": "2026-11-14T09:23:01.47790086Z"
+    "at": "2026-11-14T10:34:36.532338977Z"
   },
   "packages": [
     {
       "name": "python@neobot",
       "path": ".",
       "resolver": "python",
-      "current": "2.1.0-a12",
-      "next": "2.1.0-a13",
+      "current": "2.1.0-a13",
+      "next": "2.1.0-a14",
       "bump": "minor",
-      "tag": "v2.1.0a13",
+      "tag": "v2.1.0a14",
       "publish": false
     },
     {
       "name": "python@neobot-app",
       "path": "app",
       "resolver": "python",
-      "current": "2.1.0-a12",
-      "next": "2.1.0-a13",
+      "current": "2.1.0-a13",
+      "next": "2.1.0-a14",
       "bump": "minor",
-      "tag": "v2.1.0a13",
+      "tag": "v2.1.0a14",
       "publish": true
     },
     {
       "name": "python@neobot-contracts",
       "path": "packages/contracts",
       "resolver": "python",
-      "current": "2.1.0-a12",
-      "next": "2.1.0-a13",
+      "current": "2.1.0-a13",
+      "next": "2.1.0-a14",
       "bump": "minor",
-      "tag": "v2.1.0a13",
+      "tag": "v2.1.0a14",
       "publish": true
     },
     {
       "name": "python@neobot-adapter",
       "path": "packages/adapter",
       "resolver": "python",
-      "current": "2.1.0-a12",
-      "next": "2.1.0-a13",
+      "current": "2.1.0-a13",
+      "next": "2.1.0-a14",
       "bump": "minor",
-      "tag": "v2.1.0a13",
+      "tag": "v2.1.0a14",
       "publish": true
     },
     {
       "name": "python@neobot-chat",
       "path": "packages/chat",
       "resolver": "python",
-      "current": "2.1.0-a12",
-      "next": "2.1.0-a13",
+      "current": "2.1.0-a13",
+      "next": "2.1.0-a14",
       "bump": "minor",
-      "tag": "v2.1.0a13",
+      "tag": "v2.1.0a14",
       "publish": true
     },
     {
       "name": "python@neobot-memory",
       "path": "packages/memory",
       "resolver": "python",
-      "current": "2.1.0-a12",
-      "next": "2.1.0-a13",
+      "current": "2.1.0-a13",
+      "next": "2.1.0-a14",
       "bump": "minor",
-      "tag": "v2.1.0a13",
+      "tag": "v2.1.0a14",
       "publish": true
     },
     {
       "name": "python@neobot-modloader",
       "path": "packages/modloader",
       "resolver": "python",
-      "current": "2.1.0-a12",
-      "next": "2.1.0-a13",
+      "current": "2.1.0-a13",
+      "next": "2.1.0-a14",
       "bump": "minor",
-      "tag": "v2.1.0a13",
+      "tag": "v2.1.0a14",
       "publish": true
     },
     {
       "name": "python@neobot-storage",
       "path": "packages/storage",
       "resolver": "python",
-      "current": "2.1.0-a12",
-      "next": "2.1.0-a13",
+      "current": "2.1.0-a13",
+      "next": "2.1.0-a14",
       "bump": "minor",
-      "tag": "v2.1.0a13",
+      "tag": "v2.1.0a14",
       "publish": true
     }
   ],
   "releases": [
     {
-      "version": "2.1.0-a13",
-      "tag": "v2.1.0a13",
-      "previous_tag": "v2.1.0a12",
+      "version": "2.1.0-a14",
+      "tag": "v2.1.0a14",
+      "previous_tag": "v2.1.0a13",
       "packages": [
         "python@neobot",
         "python@neobot-adapter",
@@ -389,6 +389,23 @@
       "commit_url": "https://github.com/SuperQuail/NeoBot/commit/082a79c50d3116c96386df331edf53dedbeb1268",
       "pull_number": 318,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/318",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/fix-known-issues.md",
+      "type": "fix",
+      "scope": "commands",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-adapter",
+        "python@neobot-app",
+        "python@neobot-modloader"
+      ],
+      "body": "修复 a13 通配符/身份重建的已知问题：权限检查先于 at_args 报错；self 只在声明槽位识别；多槽只填可用目标；/linkqq 按注入槽位剥离目标；PluginCommand 透传 at_args。身份重建要求 DB 证据（同一 openid 收到多个真实 QQ 旧行），aux 快照与 core 快照配对，先回滚再拍启动备份，异常时回滚 core/agent/插件/aliases，无快照时清空映射；回滚后同启动完成身份迁移。补对应回归测试。",
+      "commit": "9a693a60e4230ad7705a21fd6d8ea17cb0c178b5",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/9a693a60e4230ad7705a21fd6d8ea17cb0c178b5",
+      "pull_number": 323,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/323",
       "author": "Tang-Tian-dev"
     },
     {
@@ -1519,6 +1536,7 @@
     ".changes/add-official-group.md",
     ".changes/add-official-markdown.md",
     ".changes/at-segment-separates.md",
+    ".changes/at-wildcard-ambiguity.md",
     ".changes/change.md",
     ".changes/channels-nav-under.md",
     ".changes/cot-valuable-reply.md",
