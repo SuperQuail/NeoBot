@@ -872,3 +872,17 @@ def test_group_at_event_without_mentions_keeps_explicit_at_target(workdir) -> No
     ]
     assert "member-openid-2" in at_ids
 
+
+def test_group_at_event_without_bot_prefix_keeps_first_mention(workdir) -> None:
+    """实测：平台常去掉 @机器人 前缀，content 以 /linkqq <@!目标> 开头。"""
+    mapper = _mapper(workdir)
+    event = mapper.from_dispatch(
+        _dispatch(
+            "GROUP_AT_MESSAGE_CREATE",
+            _group_data(content="/linkqq <@!member-openid-2> 3789029663"),
+        )
+    )
+    assert event is not None
+    at_ids = [str(s["data"].get("qq")) for s in event["message"] if s["type"] == "at"]
+    assert "member-openid-2" in at_ids
+

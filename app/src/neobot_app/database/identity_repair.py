@@ -382,7 +382,9 @@ def _clear_aliases(data_dir: Path, safety_dir: Path, logger=None) -> int:
     return len(aliases)
 
 
-def auto_rebuild_if_a10_migration(data_dir: Path, logger=None, *, apply: bool = True) -> bool:
+def auto_rebuild_if_a10_migration(
+    data_dir: Path, logger=None, *, apply: bool = True, force: bool = False
+) -> bool:
     """a10→a11：默认放弃 a10 映射，整体回滚到迁移前快照，再让 a11 重建。
 
     触发：当前核心库存在 identity_migration_backup 表（说明 a10 迁移跑过）。
@@ -394,7 +396,7 @@ def auto_rebuild_if_a10_migration(data_dir: Path, logger=None, *, apply: bool = 
     失败只 WARNING，不阻断启动。
     """
     marker = data_dir / ".neobot" / "identity_rebuild_a11.done"
-    if marker.exists():
+    if marker.exists() and not force:
         return False
     core = data_dir / "neobot.db"
     if not core.is_file():

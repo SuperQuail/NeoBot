@@ -644,9 +644,13 @@ def _append_content_with_mentions(
     cursor = 0
     first_markup = True
     for match in _MENTION_MARKUP.finditer(text):
-        if skip_first_markup and first_markup:
-            # GROUP_AT_MESSAGE_CREATE 的 content 前缀就是 @机器人；_fill_group 已经
-            # 补过 bot at 段，这里不能再把它当成一个普通 @ 用户。
+        if (
+            skip_first_markup
+            and first_markup
+            # 只有位于内容开头的标记才是平台自动带的 @机器人 前缀；真实用户常把
+            # 前缀去掉后再发「/linkqq <@!某人>」，此时首个标记是被 @ 的目标。
+            and not text[: match.start()].strip()
+        ):
             first_markup = False
             cursor = match.end()
             continue
