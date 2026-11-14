@@ -845,19 +845,26 @@ async def _handle_link_qq(ctx: CommandContext) -> str:
     bot_id = identity_text(bot_account)
     args = list(ctx.args or ())
     targets = [qq for qq in ctx.at_qqs if identity_text(qq) != bot_id]
-    if not targets and any(
+    injected = list(getattr(ctx, "at_args_resolved", ()) or ())
+    slots = tuple(getattr(ctx, "at_args_slots", ()) or ())
+    if not targets and not injected and any(
         str(arg).startswith(("@", "＠")) for arg in args
     ):
         return "无法识别被 @ 的用户（官方事件未提供 openid），请让被 @ 者本人发送 /linkqq <QQ号>"
     if len(targets) > 1:
         return "一次只能 @ 一个用户。"
-    target = targets[0] if targets else identity_text(ctx.user_id)
-    args = [arg for arg in args if identity_text(arg) != target]
+    if injected:
+        # 按注入槽位删除目标，避免按值删到恰好同号的 QQ 参数。
+        injected_indexes = set(slots[: len(injected)])
+        args = [arg for index, arg in enumerate(args) if index not in injected_indexes]
+        target = injected[0]
+    else:
+        target = targets[0] if targets else identity_text(ctx.user_id)
     qq_args = [arg for arg in args if arg.isdigit()]
     if len(qq_args) != 1:
         return (
-            "用法：/linkqq <QQ号>（映射你自己）或 /linkqq @用户 <QQ号>"
-            "（QQ 号为 5~11 位纯数字）"
+            "用法：/linkqq <QQ号>（映射你自己）或 /linkqq @用户 <QQ号>；"
+            "官方仅 AT 事件的群请用 /linkqq self <QQ号>（QQ 号为 5~11 位纯数字）"
         )
     qq_number = int(qq_args[0])
     if not looks_like_real_qq(qq_number, min_digits=5):
@@ -1003,7 +1010,9 @@ async def _modify_admin(ctx: CommandContext, *, add: bool) -> str:
     if target_qq is not None:
         # 本地 ID（openid/QQ）已人工映射时，管理员名单统一存真实 QQ 号；
         # 未映射的官方 openid 直接存 openid（配置本来就支持 openid 字符串）。
-        target_qq = trusted_qq_for_user(target_qq) or target_qq
+        mapped_qq = trusted_qq_for_user(target_qq)
+        if mapped_qq is not None:
+            target_qq = str(mapped_qq)
     if target_qq is None:
         # 参数缺失：一行提示就够，不上卡片；但仍然**不带任何号码**
         return (

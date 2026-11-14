@@ -125,6 +125,8 @@ class PluginCommand:
     permission: int = 0
     usage: str = ""
     params: tuple[tuple[str, str], ...] = ()
+    #: @ 用户参数槽位（与本体 Command.at_args 同义；命令服务统一解析/补全）。
+    at_args: tuple[int, ...] = ()
     sync_reply: bool = False
     aliases: tuple[str, ...] = ()
     source: str = ""
@@ -232,6 +234,7 @@ class PluginCommandRegistrar:
                     sync_reply=bool(kwargs.get("sync_reply", False)),
                     aliases=tuple(kwargs.get("aliases") or ()),
                     params=tuple(kwargs.get("params") or ()),
+                    at_args=tuple(kwargs.get("at_args") or ()),
                     handler=handler,
                 ),
                 prefixed=prefixed,

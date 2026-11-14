@@ -133,25 +133,26 @@ def _build_storage(
     db_path: Path, db_url: str, logger_factory: Any, *, official_only: bool = False
 ) -> Any:
     """迁移前备份 → 跑 schema 迁移 → 身份数据迁移 → 建引擎（核心对象，软重启复用）。"""
+    migration_logger = logger_factory.get_logger("app.db_migration")
+    # a10→a11：默认放弃 a10 人工映射，整体回滚到迁移前快照（必须在 alembic
+    # 之前恢复旧库，随后由 a11 重新升级 schema + 用 identities.json 重建身份）。
+    # 关键顺序：先回滚再拍启动备份，否则新备份按 keep=5 轮转时会先删掉唯一
+    # 的 pre-a10 快照，导致回滚静默跳过。
+    from neobot_app.database.identity_repair import auto_rebuild_if_a10_migration
+
+    auto_rebuild_if_a10_migration(DATA_DIR, migration_logger)
     backup_logger = logger_factory.get_logger("app.db_backup")
     backup_path = backup_sqlite_database(db_path, DATA_DIR / "db_backup", logger=backup_logger)
     if backup_path is not None:
         backup_logger.info("迁移前已备份数据库", path=str(backup_path))
-    migration_logger = logger_factory.get_logger("app.db_migration")
-    # a10→a11：默认放弃 a10 人工映射，整体回滚到迁移前快照（必须在 alembic
-    # 之前恢复旧库，随后由 a11 重新升级 schema + 用 identities.json 重建身份）。
-    from neobot_app.database.identity_repair import auto_rebuild_if_a10_migration
-
-    rebuilt = auto_rebuild_if_a10_migration(DATA_DIR, migration_logger)
     run_migrations(db_url)
     # schema 就绪后、任何服务读数据前，把旧合成号本地 ID 改成 openid；
     # 上面的 db_backup 快照就是这次数据迁移的回滚点。
     migrate_legacy_identity_ids(db_path, DATA_DIR, logger=migration_logger)
-    if not rebuilt:
-        # 上面只改了无冲突的主键；这里再做完整合并迁移（消息/档案/定时任务等）。
-        migrate_identity_data(
-            db_path, DATA_DIR, official_only=official_only, logger=migration_logger
-        )
+    # 回滚后 aliases 已清空，本次启动立即用 identities.json 完成重建，不要等下次重启。
+    migrate_identity_data(
+        db_path, DATA_DIR, official_only=official_only, logger=migration_logger
+    )
     return build_storage(db_url)
 
 

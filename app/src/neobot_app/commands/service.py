@@ -21,7 +21,7 @@ from neobot_app.commands.registry import CommandRegistry
 from neobot_app.message.addressing import is_addressed_to_bot
 
 SendCallback = Callable[[str, str, str, str | int | None], Awaitable[Any]]
-ConfigSaveCallback = Callable[[list[int]], Awaitable[ConfigSaveResult]]
+ConfigSaveCallback = Callable[[list[str]], Awaitable[ConfigSaveResult]]
 RestartCallback = Callable[[], Any]
 ConfigReloadCallback = Callable[[], Awaitable[Any]]
 
@@ -188,12 +188,24 @@ class CommandService:
         if command is None:
             # / 开头但命令未注册:移交正常管线
             return CommandHandleResult(consumed=False)
+        # 权限检查先于参数补全：未授权用户不应看到通配符的歧义提示。
+        if not self._permissions.can(user_id, command.permission):
+            await self._send_text(
+                kind, queue_key,
+                f"你没有权限使用 {command.display_name}"
+                f"(需要权限:{_permission_label(command.permission)})",
+                at_user_id=user_id,
+            )
+            return CommandHandleResult(consumed=True)
+
+        resolved = []
         at_slots = getattr(command, "at_args", ()) or ()
         if at_slots:
             at_targets = self._collect_at_targets(message)
             self_tokens = {"self", "自己", "本人"}
+            # 只认 at 槽位上的 self，避免把普通文本参数里的「自己/本人」吞掉。
             self_index = next(
-                (i for i, arg in enumerate(args) if str(arg).casefold() in self_tokens),
+                (slot for slot in sorted(at_slots) if slot < len(args) and str(args[slot]).casefold() in self_tokens),
                 None,
             )
             if self_index is not None:
@@ -206,26 +218,16 @@ class CommandService:
                     kind,
                     queue_key,
                     "无法判断你是否 @ 了别人：本群官方 bot 只收到 @ 事件，平台不提供被 @ 用户信息。\n"
-                    f"操作自己请发送 /{command.name} self ...；操作别人请让对方本人发送。",
+                    f"操作自己请在参数中加入 self（用法：/{command.name} {command.usage}）；"
+                    "操作别人请让对方本人发送。",
                     at_user_id=user_id,
                 )
                 return CommandHandleResult(consumed=True)
             else:
                 resolved = []
             for index, slot in enumerate(sorted(at_slots)):
-                value = resolved[index] if index < len(resolved) else resolved[0] if resolved else None
-                if value is not None:
-                    args.insert(min(slot, len(args)), value)
-
-        # 权限检查
-        if not self._permissions.can(user_id, command.permission):
-            await self._send_text(
-                kind, queue_key,
-                f"你没有权限使用 {command.display_name}"
-                f"(需要权限:{_permission_label(command.permission)})",
-                at_user_id=user_id,
-            )
-            return CommandHandleResult(consumed=True)
+                if index < len(resolved):
+                    args.insert(min(slot, len(args)), resolved[index])
 
         context = CommandContext(
             service=self,
@@ -238,6 +240,8 @@ class CommandService:
             at_qqs=sorted(at_qqs),
             message=message,
         )
+        context.at_args_resolved = list(resolved)
+        context.at_args_slots = tuple(sorted(at_slots))
         try:
             result_text = await command.handler(context)
         except Exception as exc:

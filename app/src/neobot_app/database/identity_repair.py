@@ -16,10 +16,8 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import sqlite3
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -114,6 +112,43 @@ def _find_core_snapshot(backup_dir: Path) -> Path | None:
 def _find_latest(backup_dir: Path, pattern: str) -> Path | None:
     files = sorted(backup_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
     return files[0] if files else None
+
+
+def _find_earliest(backup_dir: Path, pattern: str) -> Path | None:
+    files = sorted(backup_dir.glob(pattern), key=lambda p: p.stat().st_mtime)
+    return files[0] if files else None
+
+
+def _find_aux_snapshot(
+    backup_dir: Path, pattern: str, core_snap: Path | None
+) -> Path | None:
+    """优先取与迁移前 core 快照同一轮启动的 aux 快照（core 备份后 1 小时内最早一份）。"""
+    files = sorted(backup_dir.glob(pattern), key=lambda p: p.stat().st_mtime)
+    if not files:
+        return None
+    if core_snap is not None and core_snap.is_file():
+        base = core_snap.stat().st_mtime
+        nearby = [p for p in files if 0 <= p.stat().st_mtime - base <= 3600]
+        if nearby:
+            return nearby[0]
+    return files[0]
+
+
+def _has_bad_a10_mapping(conn: sqlite3.Connection) -> bool:
+    """a10 bug 的 DB 证据：同一个 openid 收到 ≥2 个真实 QQ 号的旧行。"""
+    if not _has_table(conn, MIGRATION_TABLE):
+        return False
+    try:
+        rows = conn.execute(f"SELECT new_key, old_key FROM {MIGRATION_TABLE}").fetchall()
+    except sqlite3.Error:
+        return False
+    by_target: dict[str, set[str]] = {}
+    for row in rows:
+        old = str(row["old_key"] or "")
+        new = str(row["new_key"] or "")
+        if old.isdigit() and 5 <= len(old) <= 11:
+            by_target.setdefault(new, set()).add(old)
+    return any(len(values) >= 2 for values in by_target.values())
 
 
 def _backup_payload(conn: sqlite3.Connection, old_key: str, new_key: str) -> dict[str, Any] | None:
@@ -251,9 +286,9 @@ def repair(data_dir: Path, apply: bool, *, include_history: bool = False, includ
     agent = data_dir / "agent_tools" / "state" / "agent_state.sqlite3"
     plugin_dbs = sorted(data_dir.glob("plugins_data/*/databases/*.db"))
     core_snap = _find_core_snapshot(backup_dir)
-    agent_snap = _find_latest(backup_dir, "identity_agent_state_*.db")
+    agent_snap = _find_earliest(backup_dir, "identity_agent_state_*.db")
     plugin_snaps = {
-        db.parent.parent.name: _find_latest(backup_dir, f"identity_{db.parent.parent.name}_*.db")
+        db.parent.parent.name: _find_earliest(backup_dir, f"identity_{db.parent.parent.name}_*.db")
         for db in plugin_dbs
     }
     users, groups = _load_mappings(data_dir)
@@ -298,65 +333,6 @@ def repair(data_dir: Path, apply: bool, *, include_history: bool = False, includ
                 result.setdefault("restored_databases", []).append(str(path))
     result["applied"] = apply
     return result
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="自动修复错误的身份迁移（a10→a11）")
-    parser.add_argument("--data-dir", default="app/data")
-    parser.add_argument("--apply", action="store_true", help="真正写库；默认只打印计划")
-    parser.add_argument("--dry-run", action="store_true", help="显式只预览，不写库（默认行为）")
-    parser.add_argument("--include-history", action="store_true", help="额外恢复消息/记忆等 ID（默认只修个人档案）")
-    parser.add_argument("--include-plugins", action="store_true", help="额外恢复 agent/插件库（默认不动）")
-    args = parser.parse_args(argv)
-    data_dir = Path(args.data_dir).resolve()
-    if not (data_dir / "neobot.db").is_file():
-        print(f"找不到 {data_dir / 'neobot.db'}", file=sys.stderr)
-        return 2
-    result = repair(
-        data_dir,
-        bool(args.apply and not args.dry_run),
-        include_history=bool(args.include_history),
-        include_plugins=bool(args.include_plugins),
-    )
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-
-
-def _has_duplicate_targets(data_dir: Path) -> bool:
-    """a10 错误迁移的典型特征：多个旧 ID 被映射到同一个 openid。"""
-    users, groups = _load_mappings(data_dir)
-    for mapping in (users, groups):
-        targets = [str(value) for value in mapping.values()]
-        if len(targets) != len(set(targets)):
-            return True
-    return False
-
-
-def auto_repair_if_needed(data_dir: Path, logger=None) -> bool:
-    """a10→a11 启动时自动修复个人档案；只执行一次。
-
-    触发条件：映射文件里出现“多个旧 ID → 同一 openid”（a10 @ 目标 bug 的典型结果），
-    且 db_backup 里仍有迁移前快照。群档案按用户要求不动。
-    """
-    marker = data_dir / ".neobot" / "identity_repair_a11.done"
-    if marker.exists():
-        return False
-    if not _has_duplicate_targets(data_dir):
-        return False
-    if _find_core_snapshot(data_dir / "db_backup") is None:
-        if logger is not None:
-            logger.warning("检测到重复 openid 映射，但没有迁移前快照，跳过自动修复")
-        return False
-    result = repair(data_dir, True)
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(json.dumps({"repaired_at": datetime.now(timezone.utc).isoformat(), "result": result}, ensure_ascii=False), encoding="utf-8")
-    if logger is not None:
-        logger.warning("检测到 a10 错误身份映射，已自动恢复个人档案", result=result)
-    return True
 
 
 def _clear_aliases(data_dir: Path, safety_dir: Path, logger=None) -> int:
@@ -405,38 +381,84 @@ def auto_rebuild_if_a10_migration(
         conn = _connect(core)
         try:
             migrated = _has_table(conn, MIGRATION_TABLE)
+            bad_mapping = _has_bad_a10_mapping(conn) if migrated else False
         finally:
             conn.close()
-        if not migrated:
+        if not bad_mapping and not (force and marker.exists()):
             return False
         core_snap = _find_core_snapshot(data_dir / "db_backup")
         if core_snap is None:
+            if not apply:
+                return True
+            # 没有快照也要丢弃 a10 人工映射，避免后续迁移继续按坏映射合并。
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            safety = data_dir / "db_backup" / f"pre-rebuild_{stamp}"
+            safety.mkdir(parents=True, exist_ok=True)
+            _clear_aliases(data_dir, safety, logger)
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(json.dumps({"rebuilt": False, "reason": "no_snapshot", "at": datetime.now(timezone.utc).isoformat()}, ensure_ascii=False), encoding="utf-8")
             if logger is not None:
-                logger.warning("检测到 a10 迁移，但没有迁移前快照；无法整体回滚")
+                logger.warning("检测到 a10 坏映射但没有迁移前快照；已清空人工映射并跳过迁移")
             return False
         if not apply:
             if logger is not None:
-                logger.warning("检测到 a10 迁移，dry-run 将回滚到快照", snapshot=str(core_snap))
+                logger.warning("检测到 a10 坏映射，dry-run 将回滚到快照", snapshot=str(core_snap))
             return True
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         safety = data_dir / "db_backup" / f"pre-rebuild_{stamp}"
         safety.mkdir(parents=True, exist_ok=True)
         agent = data_dir / "agent_tools" / "state" / "agent_state.sqlite3"
         plugin_dbs = sorted(data_dir.glob("plugins_data/*/databases/*.db"))
-        for path in [core, agent, *plugin_dbs]:
+        core_safety = safety / "neobot.db"
+        agent_safety = safety / "agent_state.sqlite3"
+        plugin_safety = {db: safety / f"plugin_{db.parent.parent.name}_{db.name}" for db in plugin_dbs}
+        # 安全备份名固定，异常时能确定性回退。
+        for path, target in [(core, core_safety), (agent, agent_safety), *[(db, plugin_safety[db]) for db in plugin_dbs]]:
             if path.is_file():
-                _backup(path, safety / (path.parent.parent.name + "_" + path.name if path.name.startswith("agent") is False else path.name))
-        _backup(core_snap, core)
-        agent_snap = _find_latest(data_dir / "db_backup", "identity_agent_state_*.db")
-        if agent.is_file() and agent_snap is not None:
-            _backup(agent_snap, agent)
-        for db in plugin_dbs:
-            snap = _find_latest(data_dir / "db_backup", f"identity_{db.parent.parent.name}_*.db")
-            if snap is not None:
-                _backup(snap, db)
-        removed = _clear_aliases(data_dir, safety, logger)
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(json.dumps({"rebuilt_at": datetime.now(timezone.utc).isoformat(), "snapshot": str(core_snap), "removed_aliases": removed}, ensure_ascii=False), encoding="utf-8")
+                _backup(path, target)
+        removed = 0
+        try:
+            # aux 取最早快照：第一次迁移前的状态；最新快照通常是坏映射迁移后的状态。
+            agent_snap = _find_aux_snapshot(data_dir / "db_backup", "identity_agent_state_*.db", core_snap)
+            if agent.is_file() and agent_snap is not None:
+                _backup(agent_snap, agent)
+            for db in plugin_dbs:
+                snap = _find_aux_snapshot(data_dir / "db_backup", f"identity_{db.parent.parent.name}_*.db", core_snap)
+                if snap is not None:
+                    _backup(snap, db)
+            removed = _clear_aliases(data_dir, safety, logger)
+            # core 最后覆盖：前面失败时原库仍可用。
+            _backup(core_snap, core)
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(json.dumps({"rebuilt_at": datetime.now(timezone.utc).isoformat(), "snapshot": str(core_snap), "removed_aliases": removed}, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            # 尽力把 core 恢复成回滚前状态；aliases 也恢复，避免下次启动无映射可用。
+            if core_safety.is_file():
+                try:
+                    _backup(core_safety, core)
+                except Exception:
+                    pass
+            if agent_safety.is_file():
+                try:
+                    _backup(agent_safety, agent)
+                except Exception:
+                    pass
+            for db, target in plugin_safety.items():
+                if target.is_file():
+                    try:
+                        _backup(target, db)
+                    except Exception:
+                        pass
+            alias_backup = safety / "user_qq_map.a10.json"
+            if alias_backup.is_file():
+                try:
+                    target_alias = data_dir / "user_qq_map.json"
+                    tmp_alias = target_alias.with_suffix(".restore.tmp")
+                    tmp_alias.write_text(alias_backup.read_text(encoding="utf-8"), encoding="utf-8")
+                    tmp_alias.replace(target_alias)
+                except OSError:
+                    pass
+            raise
         if logger is not None:
             logger.warning("已整体回滚 a10 身份迁移，等待 a11 重建", snapshot=str(core_snap), removed_aliases=removed)
         return True
