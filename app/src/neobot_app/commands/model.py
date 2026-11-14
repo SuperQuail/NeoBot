@@ -91,6 +91,9 @@ class Command:
     permission: int = PERM_EVERYONE
     usage: str = ""
     params: tuple[tuple[str, str], ...] = ()  # (参数名, 说明),用于 /help <命令> 详情
+    #: @ 用户通配符：这些参数位由消息里非 bot 的 @ 目标自动填入（按 @ 顺序）。
+    #: 例：usage="/linkqq [@用户] <QQ号>" 配 at_args=(0,)，handler 直接拿 ctx.args[0]。
+    at_args: tuple[int, ...] = ()
     sync_reply: bool = False
     aliases: tuple[str, ...] = ()
     #: 提供者：空 = 本体内置命令；非空 = 插件名（/help 追加 [来源: <plugin>]）

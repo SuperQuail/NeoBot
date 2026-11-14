@@ -467,6 +467,7 @@ class EventMapper:
                 "sub_type": "normal",
                 "group_id": group_id,
                 "user_id": user_id,
+                "official_at_event": at_event,
                 "sender": {
                     "user_id": user_id,
                     "nickname": _nickname(author, user_id),
