@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "version": "2.1.0-a12",
-  "created_at": "2026-11-14T07:59:11.029653496Z",
+  "version": "2.1.0-a13",
+  "created_at": "2026-11-14T09:23:01.477900259Z",
   "mode": "pr",
   "channel": "alpha",
-  "fingerprint": "sha256:de51b1d9d5b3c5325a9b1b889f0e42e05d105c15f608c8faa34b5fb3de609b9c",
+  "fingerprint": "sha256:95260a4d1b9e52df7e90ac49e24e551ee1a1ed35b1dc00e1cc634cc7a2751cba",
   "repo": {
     "host": "github.com",
     "owner": "SuperQuail",
@@ -18,95 +18,95 @@
       "uv run pytest --strict-markers -m \"not browser and not network and not slow and not llm\""
     ],
     "skipped": false,
-    "at": "2026-11-14T07:59:11.029654277Z"
+    "at": "2026-11-14T09:23:01.47790086Z"
   },
   "packages": [
     {
       "name": "python@neobot",
       "path": ".",
       "resolver": "python",
-      "current": "2.1.0-a11",
-      "next": "2.1.0-a12",
+      "current": "2.1.0-a12",
+      "next": "2.1.0-a13",
       "bump": "minor",
-      "tag": "v2.1.0a12",
+      "tag": "v2.1.0a13",
       "publish": false
     },
     {
       "name": "python@neobot-app",
       "path": "app",
       "resolver": "python",
-      "current": "2.1.0-a11",
-      "next": "2.1.0-a12",
+      "current": "2.1.0-a12",
+      "next": "2.1.0-a13",
       "bump": "minor",
-      "tag": "v2.1.0a12",
+      "tag": "v2.1.0a13",
       "publish": true
     },
     {
       "name": "python@neobot-contracts",
       "path": "packages/contracts",
       "resolver": "python",
-      "current": "2.1.0-a11",
-      "next": "2.1.0-a12",
+      "current": "2.1.0-a12",
+      "next": "2.1.0-a13",
       "bump": "minor",
-      "tag": "v2.1.0a12",
+      "tag": "v2.1.0a13",
       "publish": true
     },
     {
       "name": "python@neobot-adapter",
       "path": "packages/adapter",
       "resolver": "python",
-      "current": "2.1.0-a11",
-      "next": "2.1.0-a12",
+      "current": "2.1.0-a12",
+      "next": "2.1.0-a13",
       "bump": "minor",
-      "tag": "v2.1.0a12",
+      "tag": "v2.1.0a13",
       "publish": true
     },
     {
       "name": "python@neobot-chat",
       "path": "packages/chat",
       "resolver": "python",
-      "current": "2.1.0-a11",
-      "next": "2.1.0-a12",
+      "current": "2.1.0-a12",
+      "next": "2.1.0-a13",
       "bump": "minor",
-      "tag": "v2.1.0a12",
+      "tag": "v2.1.0a13",
       "publish": true
     },
     {
       "name": "python@neobot-memory",
       "path": "packages/memory",
       "resolver": "python",
-      "current": "2.1.0-a11",
-      "next": "2.1.0-a12",
+      "current": "2.1.0-a12",
+      "next": "2.1.0-a13",
       "bump": "minor",
-      "tag": "v2.1.0a12",
+      "tag": "v2.1.0a13",
       "publish": true
     },
     {
       "name": "python@neobot-modloader",
       "path": "packages/modloader",
       "resolver": "python",
-      "current": "2.1.0-a11",
-      "next": "2.1.0-a12",
+      "current": "2.1.0-a12",
+      "next": "2.1.0-a13",
       "bump": "minor",
-      "tag": "v2.1.0a12",
+      "tag": "v2.1.0a13",
       "publish": true
     },
     {
       "name": "python@neobot-storage",
       "path": "packages/storage",
       "resolver": "python",
-      "current": "2.1.0-a11",
-      "next": "2.1.0-a12",
+      "current": "2.1.0-a12",
+      "next": "2.1.0-a13",
       "bump": "minor",
-      "tag": "v2.1.0a12",
+      "tag": "v2.1.0a13",
       "publish": true
     }
   ],
   "releases": [
     {
-      "version": "2.1.0-a12",
-      "tag": "v2.1.0a12",
-      "previous_tag": "v2.1.0a11",
+      "version": "2.1.0-a13",
+      "tag": "v2.1.0a13",
+      "previous_tag": "v2.1.0a12",
       "packages": [
         "python@neobot",
         "python@neobot-adapter",
@@ -165,6 +165,22 @@
       "commit_url": "https://github.com/SuperQuail/NeoBot/commit/78cee36964459418ab2b5b60bd8dc3b9baf1b22a",
       "pull_number": 303,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/303",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/at-wildcard-ambiguity.md",
+      "type": "feat",
+      "scope": "commands",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-adapter",
+        "python@neobot-app"
+      ],
+      "body": "命令注册 `Command.at_args` 通配符自动处理官方 AT 事件缺失 @ 信息：未解析到目标时不再调用 handler，而是自动报错并提示使用 `self`；`self`/`自己`/`本人` 会自动替换为发送者本地 ID。适配器新增 `official_at_event` 元数据，仅在 `GROUP_AT_MESSAGE_CREATE` 时标记。",
+      "commit": "78d0f5965e16495d1fae555a74e435e21090257d",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/78d0f5965e16495d1fae555a74e435e21090257d",
+      "pull_number": 320,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/320",
       "author": "Tang-Tian-dev"
     },
     {
@@ -1515,9 +1531,11 @@
     ".changes/embedded.md",
     ".changes/explicit-proactive-messages.md",
     ".changes/expose-official-action.md",
+    ".changes/fix-at-prefix.md",
     ".changes/fix-minigame-checksum.md",
     ".changes/fix-minigame-migration.md",
     ".changes/fix-official-mention.md",
+    ".changes/fix-rebuild-force.md",
     ".changes/full-group-bot.md",
     ".changes/full-identity-migration.md",
     ".changes/gentle-language-xml.md",
@@ -1573,6 +1591,7 @@
     ".changes/qq-official.md",
     ".changes/qq.md",
     ".changes/queue-willing-log.md",
+    ".changes/rebuild-a10-mappings.md",
     ".changes/relic-init.md",
     ".changes/remove-chat-fallbacks.md",
     ".changes/reply-contract-corrections.md",
