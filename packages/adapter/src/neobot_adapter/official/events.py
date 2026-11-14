@@ -455,6 +455,7 @@ class EventMapper:
             data.get("mentions"),
             bot_self_id=self.self_id,
             bot_openid=self.bot_openid,
+            skip_first_markup=at_event,
         )
         _append_attachments(message, data.get("attachments"))
         role = str(author.get("member_role") or "").strip().casefold()
@@ -621,6 +622,7 @@ def _append_content_with_mentions(
     *,
     bot_self_id: int = 0,
     bot_openid: str = "",
+    skip_first_markup: bool = False,
 ) -> None:
     """按官方 content 里的 @ 标记顺序生成 text/at 段。
 
@@ -640,7 +642,15 @@ def _append_content_with_mentions(
 
     seen: set[str] = set()
     cursor = 0
+    first_markup = True
     for match in _MENTION_MARKUP.finditer(text):
+        if skip_first_markup and first_markup:
+            # GROUP_AT_MESSAGE_CREATE 的 content 前缀就是 @机器人；_fill_group 已经
+            # 补过 bot at 段，这里不能再把它当成一个普通 @ 用户。
+            first_markup = False
+            cursor = match.end()
+            continue
+        first_markup = False
         if match.start() > cursor:
             # 保留原文空格：text 段会被命令解析按空字符串拼接，strip 掉会
             # 把「/linkqq @用户 123」变成「/linkqq123」而无法匹配命令。
@@ -660,7 +670,11 @@ def _append_content_with_mentions(
             seen.add(openid)
         elif bot_openid and openid == bot_openid:
             _append_bot_at(message, bot_self_id)
-        # 其余未知标记（非机器人/openid 未解析）无法确定是谁，丢弃，不制造假用户。
+        else:
+            # 正文里的 <@!openid> 本身就是权威用户 ID；平台在 GROUP_AT_MESSAGE_CREATE
+            # 里可能不给 mentions（实测常见），不能因为缺 mentions 就丢掉显式 @，
+            # 否则 /linkqq @用户、/get openid @用户 会退化成操作发送者本人。
+            message.append({"type": "at", "data": {"qq": str(openid)}})
         cursor = match.end()
     if cursor < len(text):
         _append_text(message, text[cursor:])
