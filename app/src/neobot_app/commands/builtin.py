@@ -840,6 +840,12 @@ async def _handle_link_qq(ctx: CommandContext) -> str:
         str(arg).startswith(("@", "＠")) for arg in (ctx.args or ())
     ):
         # 官方事件没给 mention openid 时，宁可明确失败也不能静默映射发送者本人。
+        ctx.service._log(
+            "linkqq 显式 @ 未能解析出 openid",
+            raw_args=ctx.raw_args,
+            at_qqs=list(ctx.at_qqs or ()),
+            segments=getattr(ctx.message, "message", None),
+        )
         return "无法识别被 @ 的用户（官方事件未提供 openid），请让被 @ 者本人发送 /linkqq <QQ号>"
     if len(targets) > 1:
         return "一次只能 @ 一个用户。"
