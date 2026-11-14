@@ -435,3 +435,17 @@ async def test_linkqq_runs_identity_migration_after_link(tmp_path):
         bind_identity_merge(None)
         bind_user_identity(None)
 
+
+@pytest.mark.asyncio
+async def test_linkqq_refuses_silent_self_link_when_mention_unresolved():
+    sent: list[tuple] = []
+    service = _service(sent)
+    result = await service.handle_message(
+        _message("/linkqq @木南 3789029663", user_id=SUB, at_qqs=[BOT]),
+        kind="group",
+        queue_key="100",
+    )
+    assert result.consumed is True
+    assert "无法识别" in sent[-1][2]
+    assert qq_for_user(SUB) is None
+
