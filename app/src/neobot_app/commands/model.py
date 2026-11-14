@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 if TYPE_CHECKING:
@@ -68,6 +68,8 @@ class CommandContext:
     args: list[str]
     at_qqs: list[str]  # at 目标的本地 ID 字符串（openid 或 QQ 数字字符串）
     message: Any = None
+    at_args_resolved: list[str] = field(default_factory=list)
+    at_args_slots: tuple[int, ...] = ()
     #: 按次覆盖「结果交回复管线」：静态 Command.sync_reply 会把错误文案也交给 AI 改写，
     #: 因此 handler 只在本次确实需要 AI 生成回复时置 True（spec(5) §4.1 / D1）。
     sync_reply: bool = False
@@ -92,7 +94,7 @@ class Command:
     usage: str = ""
     params: tuple[tuple[str, str], ...] = ()  # (参数名, 说明),用于 /help <命令> 详情
     #: @ 用户通配符：这些参数位由消息里非 bot 的 @ 目标自动填入（按 @ 顺序）。
-    #: 例：usage="/linkqq [@用户] <QQ号>" 配 at_args=(0,)，handler 直接拿 ctx.args[0]。
+    #: 例：usage="<@用户> <QQ号> 或 self <QQ号>" 配 at_args=(0,)；self 只能写在槽位上。
     at_args: tuple[int, ...] = ()
     sync_reply: bool = False
     aliases: tuple[str, ...] = ()

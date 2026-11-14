@@ -88,7 +88,7 @@ def _make_config_save_callback(config: Any):
     返回 ConfigSaveResult：只有磁盘上确实写入成功才 ok=True。
     """
 
-    async def _save_sub_admins(new_list: list[int]) -> Any:
+    async def _save_sub_admins(new_list: list[str]) -> Any:
         from neobot_app.commands.model import ConfigSaveResult
         from neobot_app.config.chat_writer import save_sub_admin_accounts
 
