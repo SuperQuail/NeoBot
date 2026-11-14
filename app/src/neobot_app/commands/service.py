@@ -188,9 +188,10 @@ class CommandService:
         if command is None:
             # / 开头但命令未注册:移交正常管线
             return CommandHandleResult(consumed=False)
-        if command.at_args:
+        at_args = getattr(command, "at_args", ()) or ()
+        if at_args:
             at_targets = self._collect_at_targets(message)
-            for slot in sorted(command.at_args):
+            for slot in sorted(at_args):
                 if slot < len(at_targets):
                     args.insert(min(slot, len(args)), at_targets[slot])
 
