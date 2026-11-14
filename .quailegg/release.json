@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "version": "2.1.0-a10",
-  "created_at": "2026-11-13T14:27:40.439829701Z",
+  "version": "2.1.0-a11",
+  "created_at": "2026-11-14T06:13:17.515561159Z",
   "mode": "pr",
   "channel": "alpha",
-  "fingerprint": "sha256:d17a53cac37c0251178741078fb801e513fe2ef61c5d0da06b3212f4a2393e94",
+  "fingerprint": "sha256:fc4aee018197137f9690502d3e77f15309f10fcd8afcda72169f8553cf6f8376",
   "repo": {
     "host": "github.com",
     "owner": "SuperQuail",
@@ -18,95 +18,95 @@
       "uv run pytest --strict-markers -m \"not browser and not network and not slow and not llm\""
     ],
     "skipped": false,
-    "at": "2026-11-13T14:27:40.439830192Z"
+    "at": "2026-11-14T06:13:17.515561615Z"
   },
   "packages": [
     {
       "name": "python@neobot",
       "path": ".",
       "resolver": "python",
-      "current": "2.1.0-a9",
-      "next": "2.1.0-a10",
+      "current": "2.1.0-a10",
+      "next": "2.1.0-a11",
       "bump": "minor",
-      "tag": "v2.1.0a10",
+      "tag": "v2.1.0a11",
       "publish": false
     },
     {
       "name": "python@neobot-app",
       "path": "app",
       "resolver": "python",
-      "current": "2.1.0-a9",
-      "next": "2.1.0-a10",
+      "current": "2.1.0-a10",
+      "next": "2.1.0-a11",
       "bump": "minor",
-      "tag": "v2.1.0a10",
+      "tag": "v2.1.0a11",
       "publish": true
     },
     {
       "name": "python@neobot-contracts",
       "path": "packages/contracts",
       "resolver": "python",
-      "current": "2.1.0-a9",
-      "next": "2.1.0-a10",
+      "current": "2.1.0-a10",
+      "next": "2.1.0-a11",
       "bump": "minor",
-      "tag": "v2.1.0a10",
+      "tag": "v2.1.0a11",
       "publish": true
     },
     {
       "name": "python@neobot-adapter",
       "path": "packages/adapter",
       "resolver": "python",
-      "current": "2.1.0-a9",
-      "next": "2.1.0-a10",
+      "current": "2.1.0-a10",
+      "next": "2.1.0-a11",
       "bump": "minor",
-      "tag": "v2.1.0a10",
+      "tag": "v2.1.0a11",
       "publish": true
     },
     {
       "name": "python@neobot-chat",
       "path": "packages/chat",
       "resolver": "python",
-      "current": "2.1.0-a9",
-      "next": "2.1.0-a10",
+      "current": "2.1.0-a10",
+      "next": "2.1.0-a11",
       "bump": "minor",
-      "tag": "v2.1.0a10",
+      "tag": "v2.1.0a11",
       "publish": true
     },
     {
       "name": "python@neobot-memory",
       "path": "packages/memory",
       "resolver": "python",
-      "current": "2.1.0-a9",
-      "next": "2.1.0-a10",
+      "current": "2.1.0-a10",
+      "next": "2.1.0-a11",
       "bump": "minor",
-      "tag": "v2.1.0a10",
+      "tag": "v2.1.0a11",
       "publish": true
     },
     {
       "name": "python@neobot-modloader",
       "path": "packages/modloader",
       "resolver": "python",
-      "current": "2.1.0-a9",
-      "next": "2.1.0-a10",
+      "current": "2.1.0-a10",
+      "next": "2.1.0-a11",
       "bump": "minor",
-      "tag": "v2.1.0a10",
+      "tag": "v2.1.0a11",
       "publish": true
     },
     {
       "name": "python@neobot-storage",
       "path": "packages/storage",
       "resolver": "python",
-      "current": "2.1.0-a9",
-      "next": "2.1.0-a10",
+      "current": "2.1.0-a10",
+      "next": "2.1.0-a11",
       "bump": "minor",
-      "tag": "v2.1.0a10",
+      "tag": "v2.1.0a11",
       "publish": true
     }
   ],
   "releases": [
     {
-      "version": "2.1.0-a10",
-      "tag": "v2.1.0a10",
-      "previous_tag": "v2.1.0a9",
+      "version": "2.1.0-a11",
+      "tag": "v2.1.0a11",
+      "previous_tag": "v2.1.0a10",
       "packages": [
         "python@neobot",
         "python@neobot-adapter",
@@ -389,6 +389,21 @@
       "commit_url": "https://github.com/SuperQuail/NeoBot/commit/1c27c39ea8ca8b397f380b224a8d5ff0b1ccd541",
       "pull_number": 305,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/fix-official-mention.md",
+      "type": "fix",
+      "scope": "adapter",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-adapter"
+      ],
+      "body": "修复官方群 @ 事件里显式 @ 其他用户被忽略的问题：当 GROUP_AT_MESSAGE_CREATE 的 content 带 `\u003c@!openid\u003e` 标记但平台不返回 mentions 时，适配器此前丢弃该标记，导致 /linkqq @用户、/get openid @用户 退化为操作发送者本人（所有人拿到同一个 openid）。现在正文里的显式 @ 标记即使缺 mentions 也保留为 at 段；AT 事件开头的 @机器人 标记仍跳过，不产生假用户。补回归测试。",
+      "commit": "8a72a24df1cfd4fd953b095d8702ee4e5c115ef3",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/8a72a24df1cfd4fd953b095d8702ee4e5c115ef3",
+      "pull_number": 313,
+      "pull_url": "https://github.com/SuperQuail/NeoBot/pull/313",
       "author": "Tang-Tian-dev"
     },
     {
@@ -1458,12 +1473,14 @@
     ".changes/fix-minigame-checksum.md",
     ".changes/fix-minigame-migration.md",
     ".changes/full-group-bot.md",
+    ".changes/full-identity-migration.md",
     ".changes/gentle-language-xml.md",
     ".changes/get-ids-command.md",
     ".changes/group-id-passthrough.md",
     ".changes/group-trusted.md",
     ".changes/honor-explicit-channel.md",
     ".changes/id-qq.md",
+    ".changes/identity-merge-routing.md",
     ".changes/legacy-identity-migration.md",
     ".changes/legacy-migration-shutdown.md",
     ".changes/linkqq.md",
