@@ -292,6 +292,16 @@ def _add_with_comment(document: Any, key: str, value: Any, comment: str) -> None
     document[key] = item
 
 
+def _without_none(value: dict[str, Any]) -> dict[str, Any]:
+    """递归去掉值为 None 的键：插件配置里 None 表示「不设置」，不是要写入的值。"""
+    cleaned: dict[str, Any] = {}
+    for key, item in value.items():
+        if item is None:
+            continue
+        cleaned[key] = _without_none(item) if isinstance(item, dict) else item
+    return cleaned
+
+
 class PluginConfigEditor:
     """插件数据目录下 config.toml 的读写（密钥只写不读）。"""
 
@@ -454,6 +464,16 @@ class PluginConfigEditor:
             except Exception:
                 document = tomlkit.document()
         for key, value in submitted.items():
+            if value is None:
+                # 可选字段留空 = 不设置：删掉文件里已有的键；新键本就无需写入。
+                # tomlkit.item(None) 会抛 ConvertError，之前会兜成 400 内部错误。
+                if key in document:
+                    del document[key]
+                continue
+            if isinstance(value, dict):
+                # 嵌套分组整体重建时，子字段的 None 同样表示「不设置」，
+                # 直接丢掉该键（否则 tomlkit.item 仍会拒绝）。
+                value = _without_none(value)
             if key in document:
                 existing = document[key]
                 if hasattr(existing, "items") and not hasattr(value, "items"):

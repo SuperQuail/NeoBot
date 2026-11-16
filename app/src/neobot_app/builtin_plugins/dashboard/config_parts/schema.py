@@ -7,7 +7,7 @@ from datetime import date, datetime, time
 from enum import Enum
 from functools import lru_cache
 from types import UnionType
-from typing import Any, Union, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, Union, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel, SecretBytes, SecretStr
 
@@ -22,7 +22,19 @@ _UNION_ORIGINS = (Union, UnionType)
 _TEMPORAL_KINDS: dict[Any, str] = {datetime: "datetime", date: "date", time: "time"}
 
 
+def _strip_annotated(annotation: Any) -> Any:
+    """剥掉 ``Annotated[X, ...]`` 外壳，取回真正的类型。
+
+    Pydantic 把 ``Field(...)`` 记在 Annotated 里，``Optional[Annotated[datetime, ...]]``
+    是很常见的写法；不剥壳会让时间类字段落到 unknown（前端退化成 JSON 文本域）。
+    """
+    while get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    return annotation
+
+
 def _type_name(field_type: Any) -> str:
+    field_type = _strip_annotated(field_type)
     origin = get_origin(field_type)
     if origin in _UNION_ORIGINS:
         args = [item for item in get_args(field_type) if item is not type(None)]
@@ -56,12 +68,14 @@ def _resolved_field_types(schema: type) -> dict[str, Any]:
 
 
 def _is_optional(field_type: Any) -> bool:
+    field_type = _strip_annotated(field_type)
     return get_origin(field_type) in _UNION_ORIGINS and type(None) in get_args(field_type)
 
 
 def _inner_types(field_type: Any) -> tuple[Any, ...]:
+    field_type = _strip_annotated(field_type)
     if get_origin(field_type) in _UNION_ORIGINS:
-        return tuple(item for item in get_args(field_type) if item is not type(None))
+        return tuple(_strip_annotated(item) for item in get_args(field_type) if item is not type(None))
     return (field_type,)
 
 
@@ -286,9 +300,8 @@ def _validate_payload(schema: type, data: Any, path: str, errors: list[dict[str,
                         )
             continue
         if not _matches(raw, target):
-            errors.append(
-                {
-                    "path": field_path,
-                    "message": f"类型应为 {_type_name(target)}，实际为 {type(raw).__name__}",
-                }
-            )
+            if raw is None and target in _TEMPORAL_KINDS:
+                message = "该字段必填，不能清空"
+            else:
+                message = f"类型应为 {_type_name(target)}，实际为 {type(raw).__name__}"
+            errors.append({"path": field_path, "message": message})

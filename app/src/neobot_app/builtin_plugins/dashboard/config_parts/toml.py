@@ -340,7 +340,10 @@ def _merge_into_document(document: Any, data: dict[str, Any], prefix: tuple[str,
                 del document[key]
             continue
         if value is None:
-            # 可选字段留空：不写入该键，读取时按默认值（None）处理
+            # 可选字段留空 = 不设置：文件里已有的旧值必须删掉，否则保存后读回来的
+            # 仍是旧值（表单会弹回原值），用户以为清空了、实际什么都没发生。
+            if key in document:
+                del document[key]
             continue
         if isinstance(value, dict):
             existing = document.get(key)

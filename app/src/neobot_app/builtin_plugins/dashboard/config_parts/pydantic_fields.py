@@ -1,7 +1,7 @@
 """将插件的 Pydantic 模型映射到宿主已有控件，凭据保护沿用配置接口规则。"""
 
 from enum import Enum
-from typing import Annotated, Any, Literal, get_args, get_origin
+from typing import Any, Literal, get_args, get_origin
 
 from pydantic import BaseModel, SecretBytes, SecretStr
 from pydantic.fields import FieldInfo
@@ -13,8 +13,7 @@ from .secret_values import PluginSecretPolicy
 
 
 def _target(annotation: Any) -> Any:
-    if get_origin(annotation) is Annotated:
-        annotation = get_args(annotation)[0]
+    # _inner_types 会剥掉 Annotated 外壳，这里拿到的就是真实类型
     variants = _inner_types(annotation)
     return variants[0] if len(variants) == 1 else None
 

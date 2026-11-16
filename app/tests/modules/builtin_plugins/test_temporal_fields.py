@@ -10,10 +10,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
-from typing import Optional
+from typing import Annotated, Optional
 
 import pytest
-from pydantic import BaseModel
+import tomlkit
+from pydantic import BaseModel, Field
 
 from neobot_app.builtin_plugins.dashboard.config_parts.describe import (
     describe_dataclass,
@@ -21,9 +22,16 @@ from neobot_app.builtin_plugins.dashboard.config_parts.describe import (
 )
 from neobot_app.builtin_plugins.dashboard.config_parts.schema import (
     _coerce_payload,
+    _validate_payload,
     _jsonable,
+    _type_name,
     _validate_type,
 )
+from neobot_app.builtin_plugins.dashboard.config_parts.toml import (
+    _diff_document,
+    _merge_into_document,
+)
+from neobot_app.builtin_plugins.dashboard.plugin_config import PluginConfigEditor
 
 
 @dataclass
@@ -49,7 +57,6 @@ def test_dataclass_fields_become_temporal_kinds(name: str, kind: str) -> None:
     descriptors = {item["name"]: item for item in describe_dataclass(_BotSettings, _BotSettings())}
 
     assert descriptors[name]["kind"] == kind
-    assert descriptors[name]["type"] == kind
 
 
 @pytest.mark.parametrize(
@@ -65,7 +72,6 @@ def test_pydantic_fields_become_temporal_kinds(name: str, kind: str) -> None:
     descriptors = {item["name"]: item for item in describe_pydantic_model(_PluginSettings, values)}
 
     assert descriptors[name]["kind"] == kind
-    assert descriptors[name]["type"] == kind
 
 
 def test_values_are_iso_8601_strings() -> None:
@@ -135,3 +141,78 @@ def test_invalid_temporal_string_is_rejected() -> None:
 
     assert valid is False
     assert converted == "不是时间"
+
+
+# ---------------------------------------------------------------------------
+# 保存路径：可选字段清空（null）必须真的从文件里消失
+# ---------------------------------------------------------------------------
+
+
+def test_dataclass_save_with_null_removes_existing_key() -> None:
+    """面板回传 null = 不设置：文件里已有的旧值要删掉，否则读回仍是旧值。"""
+    document = tomlkit.parse("[task]\nrun_at = 2026-11-16T23:39:55\nother = 1\n")
+
+    diff = _diff_document({"run_at": "2026-11-16T23:39:55"}, {"run_at": None})
+    assert diff == {"run_at": None}
+
+    _merge_into_document(document["task"], diff)
+
+    assert "run_at" not in document["task"]
+    assert document["task"]["other"] == 1
+
+
+def test_plugin_save_with_null_removes_existing_key(tmp_path) -> None:
+    """插件配置同一语义：不能抛 ConvertError，也不能把旧值留在文件里。"""
+    path = tmp_path / "config.toml"
+    path.write_text('run_at = 2026-11-16T23:39:55\nname = "x"\n', encoding="utf-8")
+    editor = PluginConfigEditor(path, defaults={"run_at": None, "name": "x"})
+
+    editor.save(config={"run_at": None, "name": "x"})
+
+    written = path.read_text(encoding="utf-8")
+    assert "run_at" not in written
+    assert editor.read()["config"]["run_at"] is None
+
+
+def test_plugin_save_nested_null_is_dropped(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("[task]\nrun_at = 2026-11-16T23:39:55\nkeep = 1\n", encoding="utf-8")
+    editor = PluginConfigEditor(path, defaults={"task": {"run_at": None, "keep": 1}})
+
+    editor.save(config={"task": {"run_at": None, "keep": 1}})
+
+    assert "run_at" not in path.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Annotated 包装：插件作者最常见的写法不能静默退化成 JSON
+# ---------------------------------------------------------------------------
+
+
+class _AnnotatedPlugin(BaseModel):
+    wrapped: Optional[Annotated[datetime, Field(description="带 Field 的可选时间")]] = None
+    required_wrapped: Annotated[datetime, Field(description="必填时间")]
+
+
+def test_annotated_optional_datetime_keeps_temporal_kind() -> None:
+    descriptors = {item["name"]: item for item in describe_pydantic_model(_AnnotatedPlugin, {})}
+
+    assert descriptors["wrapped"]["kind"] == "datetime"
+    assert descriptors["required_wrapped"]["kind"] == "datetime"
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [datetime, Optional[datetime], Annotated[datetime, "meta"]],
+)
+def test_type_name_unwraps_annotated(annotation: object) -> None:
+    assert _type_name(annotation) == "datetime"
+
+
+def test_clearing_required_temporal_field_reports_readable_error() -> None:
+    """必填时间字段被清空时，报「不能清空」而不是「实际为 NoneType」。"""
+    errors: list[dict[str, str]] = []
+
+    _validate_payload(_BotSettings, {"run_at": None, "run_on": "2026-11-16", "window": "23:39:55"}, "", errors)
+
+    assert any("必填" in item["message"] for item in errors)

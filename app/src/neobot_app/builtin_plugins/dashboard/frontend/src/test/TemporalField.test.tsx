@@ -134,14 +134,19 @@ describe('TemporalField：渲染与提交', () => {
   });
 
   it('禁用或只读时不提交改动', () => {
-    const disabled = renderField('date', '2026-11-16', {});
-    fireEvent.change(screen.getByLabelText('执行时间'), { target: { value: '2027-01-01' } });
-    expect(disabled.onChange).toHaveBeenCalled();
-    disabled.unmount();
-
     const readonly = renderField('date', '2026-11-16', { readonly: true });
     expect(screen.getByLabelText('执行时间')).toBeDisabled();
     fireEvent.change(screen.getByLabelText('执行时间'), { target: { value: '2027-01-01' } });
     expect(readonly.onChange).not.toHaveBeenCalled();
+    readonly.unmount();
+
+    const onChange = vi.fn();
+    const descriptor = temporalDescriptor('date', '2026-11-16');
+    render(
+      <TemporalField descriptor={descriptor} value="2026-11-16" onChange={onChange} disabled />,
+    );
+    expect(screen.getByLabelText('执行时间')).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('执行时间'), { target: { value: '2027-01-01' } });
+    expect(onChange).not.toHaveBeenCalled();
   });
 });
