@@ -38,7 +38,7 @@ def make_plugin(
     code_dependencies = dependencies if code_dependencies is None else code_dependencies
     (directory / "__init__.py").write_text(
         "from neobot_modloader import Plugin\n"
-        f"plugin = Plugin({name!r}, version={version!r}, dependencies={code_dependencies!r})\n" + body,
+        f"plugin = Plugin({name!r}, dependencies={code_dependencies!r})\n" + body,
         encoding="utf-8",
     )
     return directory

@@ -11,7 +11,6 @@ from .models import Base, ExampleUser
 
 plugin = Plugin(
     "example",
-    version="1.0.0",
     description="Demo: plugin-owned SQLite database with migrations",
 )
 

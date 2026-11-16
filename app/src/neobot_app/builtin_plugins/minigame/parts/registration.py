@@ -16,7 +16,6 @@ from .constants import PACKAGE_BASE
 
 plugin = Plugin(
     "minigame",
-    version="1.0.0",
     description="NeoBot 官方小游戏：漂流瓶 / 成语接龙 / 签到与积分 / 抽签（AI 交互型）",
     author="NeoBot",
     config=MinigameConfig,

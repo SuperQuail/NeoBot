@@ -12,7 +12,7 @@ def make_project(root: Path, name: str = "sample", *, body: str = "") -> Path:
         encoding="utf-8",
     )
     (path / "__init__.py").write_text(
-        f"from neobot_modloader import Plugin\nplugin = Plugin({name!r}, version='0.1.0')\n" + body,
+        f"from neobot_modloader import Plugin\nplugin = Plugin({name!r})\n" + body,
         encoding="utf-8",
     )
     write_contract(path, name)

@@ -33,7 +33,7 @@ from neobot_modloader.state import PluginStateStore
 
 PLUGIN_SOURCE = (
     "from neobot_modloader import Plugin\n"
-    "plugin = Plugin({name!r}, version={version!r}, dependencies={dependencies!r})\n"
+    "plugin = Plugin({name!r}, dependencies={dependencies!r})\n"
 )
 
 
@@ -78,7 +78,7 @@ def make_package(
     (directory / "plugin.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (directory / "__init__.py").write_text(
         "from neobot_modloader import Plugin\n"
-        f"plugin = Plugin({name!r}, version={version!r}, dependencies={dependencies!r})\n"
+        f"plugin = Plugin({name!r}, dependencies={dependencies!r})\n"
         + body,
         encoding="utf-8",
     )

@@ -5,7 +5,7 @@ from neobot_modloader.context import RuntimePluginContext
 from neobot_modloader.hooks import HookSubscription
 from .config import ScheduleConfig
 
-plugin = Plugin("speaking_schedule", version="1.0.0", config=ScheduleConfig, config_hot_reload=True)
+plugin = Plugin("speaking_schedule", config=ScheduleConfig, config_hot_reload=True)
 
 
 @plugin.on_load

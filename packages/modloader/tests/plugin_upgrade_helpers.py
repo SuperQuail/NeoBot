@@ -20,7 +20,7 @@ def project(root: Path, version: int, *, migration_failure: bool = False, startu
         "from contextlib import closing\nimport sqlite3\n"
         "from pydantic import BaseModel\nfrom neobot_modloader import Plugin\n"
         f'class Config(BaseModel):\n    {field}: str = "默认标题"\n'
-        f'plugin = Plugin("tasks", version="0.{version}.0", config=Config)\n'
+        'plugin = Plugin("tasks", config=Config)\n'
         "@plugin.on_load\nasync def load(ctx):\n"
         "    ctx.data_dir.mkdir(parents=True, exist_ok=True)\n"
         '    with closing(sqlite3.connect(ctx.data_dir / "tasks.sqlite3")) as db, db:\n'

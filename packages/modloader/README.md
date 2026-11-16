@@ -236,7 +236,7 @@ from neobot_modloader import Migration, Plugin
 from .models import Base
 from .migrations import create_initial_schema, add_user_index
 
-plugin = Plugin("example", version="1.0.0", description="数据库示例插件")
+plugin = Plugin("example", description="数据库示例插件")
 
 database = plugin.sqlite_database(
     "main",
@@ -425,7 +425,7 @@ allow_remote_manage = true
 {"version": 1, "plugins": {"weather": {"enabled": false}}}
 ```
 
-插件名、版本、描述、作者以 `Plugin(...)` 为准：
+插件名、描述、作者以 `Plugin(...)` 为准，版本号只认 `plugin.toml`：
 
 ```python
 from pydantic import BaseModel
@@ -439,7 +439,6 @@ class Config(BaseModel):
 
 plugin = Plugin(
     "weather",
-    version="1.0.0",
     description="Weather query plugin",
     config=Config,
 )
@@ -450,7 +449,10 @@ async def weather(city: str | None, config: Config, reply: Reply):
     await reply.send(city or config.default_city)
 ```
 
-如果 `plugin.toml` 声明了和 `Plugin(...)` 冲突的 `name` 或 `version`，插件加载会失败。
+如果 `plugin.toml` 声明了和 `Plugin(...)` 冲突的 `name`，插件加载会失败；
+版本号只从 `plugin.toml` 读取，`Plugin(version=...)` 仍可传（兼容既有插件源码，会给一条 `DeprecationWarning`）但不参与加载，
+缺少 `version` 时按 `0.1.0` 处理，单文件插件（无清单）同样固定 `0.1.0`。
+注入发生在插件模块 import 之后，所以模块顶层读到的 `plugin.version` 仍是 `0.1.0`。
 
 ## 注册子 Agent
 
@@ -672,7 +674,6 @@ priority = -1
 ```python
 plugin = Plugin(
     "starship",
-    version="1.0.0",
     # 支持 >= <= == != > < ~= ，逗号分隔表示「与」
     dependencies=("dashboard>=1.0.0",),
 )

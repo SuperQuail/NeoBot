@@ -33,7 +33,7 @@ def _write_plugin(root: Path, name: str, *, manifest_extra: str = "", plugin_ext
     )
     (plugin_dir / "__init__.py").write_text(
         "from neobot_modloader import Plugin\n\n"
-        f'plugin = Plugin("{name}", version="1.0.0"{plugin_extra})\n',
+        f'plugin = Plugin("{name}"{plugin_extra})\n',
         encoding="utf-8",
     )
     return plugin_dir

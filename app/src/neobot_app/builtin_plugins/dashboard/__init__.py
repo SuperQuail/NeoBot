@@ -21,7 +21,6 @@ from .server import DashboardServer
 
 plugin = Plugin(
     "dashboard",
-    version="1.0.0",
     description="NeoBot 网页面板：运行监测、日志、插件管理、本体配置在线编辑",
     author="NeoBot",
     config=DashboardConfig,

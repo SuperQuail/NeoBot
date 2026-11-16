@@ -100,7 +100,7 @@ def _runtime_context(plugin: Plugin, hook_bus: PluginHookBus, tmp_path: Path) ->
 
 
 def _packaged_plugin() -> Plugin:
-    plugin = Plugin("demo", version="1.0.0", description="demo plugin")
+    plugin = Plugin("demo", description="demo plugin")
     plugin.tool_package("bottle", description="瓶子包", instructions="瓶子包的说明")
     plugin.tool_package("chengyu", description="接龙包")
 
@@ -183,7 +183,7 @@ async def test_tool_packages_activation_selects_only_that_package(tmp_path: Path
 
 async def test_ungrouped_tools_keep_legacy_single_skill(tmp_path: Path) -> None:
     """C：不声明 package 时行为与历史完全一致（技能名 = 插件名）。"""
-    plugin = Plugin("solo", version="1.0.0", description="solo")
+    plugin = Plugin("solo", description="solo")
 
     @plugin.tool("ping", description="p")
     async def ping() -> str:
@@ -197,7 +197,7 @@ async def test_ungrouped_tools_keep_legacy_single_skill(tmp_path: Path) -> None:
 
 async def test_message_handler_agent_reply_intent_is_recorded(tmp_path: Path) -> None:
     """D：消息处理器通过 ctx.agent_reply 登记意图（含预激活技能包），一次消费即清除。"""
-    plugin = Plugin("intent_demo", version="1.0.0")
+    plugin = Plugin("intent_demo")
     hook_bus = PluginHookBus()
 
     @plugin.message(keywords=["漂流瓶"])
@@ -237,7 +237,7 @@ async def test_message_handler_agent_reply_intent_is_recorded(tmp_path: Path) ->
 
 async def test_message_handler_without_intent_changes_nothing(tmp_path: Path) -> None:
     """E：未登记意图时既有行为完全不变（无意图、不消费、不拦截）。"""
-    plugin = Plugin("no_intent", version="1.0.0")
+    plugin = Plugin("no_intent")
     hook_bus = PluginHookBus()
     seen: list[dict[str, Any]] = []
 
@@ -270,7 +270,7 @@ async def test_message_handler_without_intent_changes_nothing(tmp_path: Path) ->
 
 async def test_agent_reply_outside_dispatch_is_ignored(tmp_path: Path) -> None:
     """F：事件分发之外调用 agent_reply 只是返回 False，绝不抛异常。"""
-    plugin = Plugin("outside", version="1.0.0")
+    plugin = Plugin("outside")
     hook_bus = PluginHookBus()
     context = _runtime_context(plugin, hook_bus, tmp_path)
 

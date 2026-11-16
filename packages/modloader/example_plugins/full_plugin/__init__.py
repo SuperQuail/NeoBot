@@ -13,7 +13,6 @@ class Config(BaseModel):
 
 plugin = Plugin(
     "full_plugin",
-    version="1.0.0",
     description="Demo: commands, tools, sub-agents and SKILL.md",
     config=Config,
 )
