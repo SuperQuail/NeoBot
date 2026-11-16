@@ -11,8 +11,8 @@ covers:
   - app/src/neobot_app/config/chat_writer.py
   - app/src/neobot_app/config/hot_reload.py
   - app/src/neobot_app/config/loader/backup.py
-verified_against: d525a5b
-verified_hash: 5706184b4be6
+verified_against: d1f9600f
+verified_hash: 86390d6437ab
 ---
 
 # 09c 面板配置编辑：三条写入通道 · diff 与掩码 · 前端编辑器数据流
@@ -223,12 +223,13 @@ flowchart TD
     D -- List 元素是 dataclass --> D2["kind=model_list：item_fields 加 items 逐条展开"]
     D -- List 是标量 --> D3["kind=list 加 element_type"]
     D -- Dict --> D4["kind=dict"]
+    D -- datetime / date / time --> D6["kind=date / time / datetime：TemporalField 渲染原生选择器，取值 ISO 8601"]
     D -- 其它 --> D5["kind=scalar，type 只可能是 int/float/bool/str/any"]
     D1 --> E["metadata：readonly、hidden、options、options_strict 原样带出"]
     E --> F["apply_model_param_catalog：settings 组隐藏目录字段，尾部注入 kind=model_params / model_params.py:327"]
     F --> G{"前端 fieldRegistry 命中 kind"}
     G -- 否 --> G1["resolveFieldComponent 回退 ScalarField 当只读文本，并 console.warn / fieldRegistry.ts:28"]
-    G -- 是 --> H["scalar / model_list / model_params / list / dict 各自渲染"]
+    G -- 是 --> H["scalar / model_list / model_params / list / dict / date / time / datetime 各自渲染"]
     G1 --> H
     I["插件配置：describe_mapping 从字典值反推 kind，没有类型信息 / plugin_config.py:200"] --> H
     J["官方插件另有 describe_pydantic_model / config_manager.py:430"] --> K["annotation 经 _type_name 得 int/float/bool/str（Union 解包）"]
@@ -240,6 +241,8 @@ flowchart TD
 
 要点：
 
+* 时间类字段（`datetime` / `date` / `time`）走 `TemporalField`；可选字段清空回传 `null`，
+  保存时由 `_merge_into_document` 删除该键（本体 `config_parts/toml.py`、插件 `plugin_config.py`）。
 * `required = not _is_optional(field.type)`；`default = _jsonable(_default_of(field))`，
   `default_factory` 会被**真的调用一次**，抛异常则回落 `None`（`_default_of`，`:123`）。
 * `value` 来自「按文件解析出的实例」，因此**文件里没写的键也会带默认值**（这是下一条

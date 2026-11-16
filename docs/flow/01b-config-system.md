@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/config/
   - app/src/neobot_app/runtime/hot_reload_registry.py
   - app/src/neobot_app/bootstrap/_config.py
-verified_against: d525a5b
-verified_hash: 7b1b77eae8bd
+verified_against: d1f9600f
+verified_hash: 24a73c6ff6d6
 ---
 
 # 01b 配置系统：schema 分层 · 加载校验 · 默认值回落 · 热重载边界
@@ -237,7 +237,7 @@ flowchart TD
     A["单字段取值｜converter.py:195 dict_to_dataclass"] --> B["_get_config_value：先按字段名，再按 metadata aliases｜:287"]
     B --> C{"TOML 里取到值?"}
     C -- 无 --> D["回落②：field.default / default_factory｜:237"]
-    C -- 有 --> E["_validate_type 类型校验与强转｜:38"]
+    C -- 有 --> E["_validate_type 类型校验与强转（含 datetime/date/time 的 ISO 8601 解析）｜:39"]
     E --> F{"校验通过?"}
     F -- 否 --> G["warning 类型不匹配，视为缺失项后走默认值｜:213"]
     F -- 是 --> H["_apply_probability_clamp：group_chat_chance 与 random_sticker_probability 钳到 0..1｜:22"]
