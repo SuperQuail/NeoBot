@@ -292,14 +292,17 @@ def _add_with_comment(document: Any, key: str, value: Any, comment: str) -> None
     document[key] = item
 
 
-def _without_none(value: dict[str, Any]) -> dict[str, Any]:
-    """递归去掉值为 None 的键：插件配置里 None 表示「不设置」，不是要写入的值。"""
-    cleaned: dict[str, Any] = {}
-    for key, item in value.items():
-        if item is None:
-            continue
-        cleaned[key] = _without_none(item) if isinstance(item, dict) else item
-    return cleaned
+def _without_none(value: Any) -> Any:
+    """递归剔除 None：插件配置里 None 表示「不设置」，不是要写入的值。
+
+    表里是删键，数组里是丢元素（``list[Model]`` 的某一行清空可选字段就会走到这里，
+    否则 ``tomlkit.item`` 仍会抛 ConvertError）。
+    """
+    if isinstance(value, dict):
+        return {key: _without_none(item) for key, item in value.items() if item is not None}
+    if isinstance(value, (list, tuple)):
+        return [_without_none(item) for item in value if item is not None]
+    return value
 
 
 class PluginConfigEditor:
@@ -470,10 +473,9 @@ class PluginConfigEditor:
                 if key in document:
                     del document[key]
                 continue
-            if isinstance(value, dict):
-                # 嵌套分组整体重建时，子字段的 None 同样表示「不设置」，
-                # 直接丢掉该键（否则 tomlkit.item 仍会拒绝）。
-                value = _without_none(value)
+            # 嵌套分组 / 对象列表整体重建时，子树里的 None 同样表示「不设置」，
+            # 递归剔除后才能交给 tomlkit.item。
+            value = _without_none(value)
             if key in document:
                 existing = document[key]
                 if hasattr(existing, "items") and not hasattr(value, "items"):

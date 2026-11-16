@@ -181,7 +181,9 @@ def test_plugin_save_nested_null_is_dropped(tmp_path) -> None:
 
     editor.save(config={"task": {"run_at": None, "keep": 1}})
 
-    assert "run_at" not in path.read_text(encoding="utf-8")
+    written = path.read_text(encoding="utf-8")
+    assert "run_at" not in written
+    assert "keep = 1" in written
 
 
 # ---------------------------------------------------------------------------
@@ -216,3 +218,16 @@ def test_clearing_required_temporal_field_reports_readable_error() -> None:
     _validate_payload(_BotSettings, {"run_at": None, "run_on": "2026-11-16", "window": "23:39:55"}, "", errors)
 
     assert any("必填" in item["message"] for item in errors)
+
+
+def test_plugin_save_drops_null_inside_object_list(tmp_path) -> None:
+    """list[Model] 的某一行清空可选字段时，不能把 None 喂给 tomlkit。"""
+    path = tmp_path / "config.toml"
+    path.write_text('keep = 1\n\n[[rows]]\nat = 2026-11-16T23:39:55\nnote = "x"\n', encoding="utf-8")
+    editor = PluginConfigEditor(path, defaults={"keep": 1, "rows": []})
+
+    editor.save(config={"keep": 1, "rows": [{"at": None, "note": "x"}]})
+
+    written = path.read_text(encoding="utf-8")
+    assert "at =" not in written
+    assert 'note = "x"' in written
