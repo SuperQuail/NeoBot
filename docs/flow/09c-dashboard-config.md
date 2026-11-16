@@ -217,7 +217,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["describe_dataclass(schema, instance, path) / config_manager.py:264"] --> B["逐 field 产出 name/path/label/description/required/default/value"]
-    B --> C["_type_name 归一：Union 去掉 None、list/dict、dataclass 归 model、其余归 any"]
+    B --> C["_type_name 归一：剥 Annotated 外壳、Union 去掉 None、list/dict、dataclass 归 model、datetime/date/time 归同名 kind、其余归 any｜:36"]
     C --> D{"按 target 类型定 kind"}
     D -- dataclass --> D1["kind=group：递归 fields，并汇总 hot_reload_count 与 field_count"]
     D -- List 元素是 dataclass --> D2["kind=model_list：item_fields 加 items 逐条展开"]
@@ -232,7 +232,7 @@ flowchart TD
     G -- 是 --> H["scalar / model_list / model_params / list / dict / date / time / datetime 各自渲染"]
     G1 --> H
     I["插件配置：describe_mapping 从字典值反推 kind，没有类型信息 / plugin_config.py:200"] --> H
-    J["官方插件另有 describe_pydantic_model / config_manager.py:430"] --> K["annotation 经 _type_name 得 int/float/bool/str（Union 解包）"]
+    J["官方插件另有 describe_pydantic_model / config_manager.py:430"] --> K["annotation 经 _type_name 得 int/float/bool/str/date/time/datetime（剥 Annotated、Union 解包）"]
     K --> L["List 已输出 kind=list + element_type；嵌套 BaseModel 仍退化成字符串输入框"]
     K --> M["hot_reload 恒 True、restart_reason 恒空，每个字段都挂「热重载」徽标"]
     L --> H
@@ -243,7 +243,7 @@ flowchart TD
 
 * 时间类字段（`datetime` / `date` / `time`）走 `TemporalField`；可选字段清空回传 `null`，
   保存时由 `_merge_into_document` 删除该键（本体 `config_parts/toml.py`、插件 `plugin_config.py`）。
-* `required = not _is_optional(field.type)`；`default = _jsonable(_default_of(field))`，
+* `required = not _is_optional(field.type)`（`_is_optional` 同样会剥 `Annotated`）；`default = _jsonable(_default_of(field))`，
   `default_factory` 会被**真的调用一次**，抛异常则回落 `None`（`_default_of`，`:123`）。
 * `value` 来自「按文件解析出的实例」，因此**文件里没写的键也会带默认值**（这是下一条
   「保存即物化」的根源）；前端只用草稿覆盖 `value`，不改描述符结构。

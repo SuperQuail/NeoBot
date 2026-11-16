@@ -65,12 +65,12 @@ flowchart TD
     H -- 是 --> H1["_apply_migrations 链式迁移｜:254"]
     H -- 否 --> I["_infer_missing_model_params：旧配置补 enabled_params｜:157"]
     H1 --> I
-    I --> J["dataclass_to_toml：与现有文件比对缺失项｜converter.py:347"]
+    I --> J["dataclass_to_toml：与现有文件比对缺失项｜converter.py:356"]
     E1 --> J
     J --> K{"首次生成 或 存在缺失项?"}
     K -- 是 --> K1["备份到 config_backup 后整份原子写回｜:620"]
     K -- 否 --> L["不写盘：保留用户文件的键序与注释"]
-    K1 --> M["回读文件 → dict_to_dataclass 类型校验与默认值｜converter.py:195"]
+    K1 --> M["回读文件 → dict_to_dataclass 类型校验与默认值｜converter.py:204"]
     L --> M
     M --> N{"placeholder 字段仍是默认值?"}
     N -- 是 --> N1["warning 列出占位符，不阻断启动"]
@@ -234,26 +234,26 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["单字段取值｜converter.py:195 dict_to_dataclass"] --> B["_get_config_value：先按字段名，再按 metadata aliases｜:287"]
+    A["单字段取值｜converter.py:204 dict_to_dataclass"] --> B["_get_config_value：先按字段名，再按 metadata aliases｜:296"]
     B --> C{"TOML 里取到值?"}
-    C -- 无 --> D["回落②：field.default / default_factory｜:237"]
+    C -- 无 --> D["回落②：field.default / default_factory｜:246"]
     C -- 有 --> E["_validate_type 类型校验与强转（含 datetime/date/time 的 ISO 8601 解析）｜:39"]
     E --> F{"校验通过?"}
-    F -- 否 --> G["warning 类型不匹配，视为缺失项后走默认值｜:213"]
-    F -- 是 --> H["_apply_probability_clamp：group_chat_chance 与 random_sticker_probability 钳到 0..1｜:22"]
+    F -- 否 --> G["warning 类型不匹配，视为缺失项后走默认值｜:222"]
+    F -- 是 --> H["_apply_probability_clamp：group_chat_chance 与 random_sticker_probability 钳到 0..1｜:23"]
     H --> I["写进 kwargs"]
     D --> I
     G --> I
-    I --> J["嵌套 dataclass：靠 _resolve_nested_type_from_default 认子类｜:265"]
+    I --> J["嵌套 dataclass：靠 _resolve_nested_type_from_default 认子类｜:274"]
     J --> K["DeepSeekModelSettings 比 ModelSettings 多 3 个思考参数｜bot.py:218"]
     E --> L["强转细则：int←float/str、float←int/str、str←任意可 str() 的值"]
-    E --> M["bool←int：0/1 直接转，其它值按非零为真并 warning｜:180"]
+    E --> M["bool←int：0/1 直接转，其它值按非零为真并 warning｜:181"]
     N["回落③：字段不存在时写回用的是类型占位符 0 / 0.0 / false / 空串｜:492"] --> O["因此「必须项」缺失只会被补成占位值，不会报错"]
 ```
 
 优先级只有三级，且**没有第四级**（没有环境变量覆盖 config.toml 的机制）：
 文件值（类型校验通过）> dataclass 默认值 > 类型占位符。
-概率钳位只覆盖两个字段（`converter.py:16`），其余数值越界原样保留 ——
+概率钳位只覆盖两个字段（`converter.py:17`），其余数值越界原样保留 ——
 「配了 3.0 的概率却没被拦」不是 bug，是只有这两个字段登记了范围检查。
 别名机制是历史兼容口：`chat.group_Response_coefficient` 是
 `group_response_coefficient` 的别名（`bot.py:75`），规范名优先。
@@ -400,7 +400,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["写入者① Config.load 补全写回｜manager.py:601-627"] --> A1["整份由 schema 重新生成：未知键、自定义分区、注释全部消失"]
-    A1 --> A2["文件头注释自己写明「除键值外内容都会丢失」｜converter.py:360"]
+    A1 --> A2["文件头注释自己写明「除键值外内容都会丢失」｜converter.py:369"]
     B["写入者② chat_writer 定点写｜chat_writer.py:104"] --> B1["[chat] 段不存在就在文档里创建：往游离 dict 写是历史坑｜:136"]
     B1 --> B2["写盘前用 dict_to_dataclass 预校验，写盘后回读比对｜:154 / :171"]
     B2 --> B3["只服务 /add_admin 与两个白名单键｜_commands.py:56"]
@@ -490,6 +490,6 @@ flowchart TD
   `agent_model.problem_solver` 字段根本不存在，永远回落到编号 1。
 * **`auto_compact_chars` 是死配置**（`bot_parts/memory.py:56`）：写它没有任何效果，
   档案长度相关行为由 `max_chars` 与 `max_total_chars` 决定。
-* **概率钳位只覆盖两个字段**（`converter.py:16`）：其它数值字段越界原样保留，
+* **概率钳位只覆盖两个字段**（`converter.py:17`）：其它数值字段越界原样保留，
   不要以为加载期做了全量范围校验。
 * **表单清空密钥是无效操作**：掩码空串会被还原成磁盘现值；要清空得用 TOML 原文模式。
