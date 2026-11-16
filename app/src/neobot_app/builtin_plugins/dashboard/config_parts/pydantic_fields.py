@@ -8,7 +8,7 @@ from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
 from .normalize import _MISSING, _field_input_paths, _submitted_field
-from .schema import _inner_types, _jsonable, _type_name
+from .schema import _TEMPORAL_KINDS, _inner_types, _jsonable, _type_name
 from .secret_values import PluginSecretPolicy
 
 
@@ -158,6 +158,10 @@ class _DescriptorBuilder:
             return descriptor
         if target in (SecretStr, SecretBytes):
             descriptor["type"] = "str"
+            return descriptor
+        if target in _TEMPORAL_KINDS:
+            # 日期 / 时间 / 日期时间控件；取值统一为 ISO 8601 字符串
+            descriptor["kind"] = _TEMPORAL_KINDS[target]
             return descriptor
         if descriptor["type"] == "any":
             # 递归模型、多分支联合和未知结构保持 JSON，不能用 String(object) 丢失信息。

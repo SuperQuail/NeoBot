@@ -2,6 +2,7 @@
 
 import dataclasses
 from dataclasses import MISSING, fields, is_dataclass
+from datetime import date, datetime, time
 from typing import Any, TypeVar, Union, get_args, get_origin
 
 import tomlkit
@@ -186,6 +187,14 @@ def _validate_type(value: Any, expected_type: Any) -> tuple[bool, Any]:
                 return True, value > 0
         elif expected_type is str:
             return True, str(value)
+        elif expected_type is datetime and isinstance(value, str):
+            # 面板的日期时间控件回传 ISO 8601；fromisoformat 同时接受
+            # "2026-11-16T23:39:55" 与 "2026-11-16 23:39:55"（3.11+）。
+            return True, datetime.fromisoformat(value.strip())
+        elif expected_type is date and isinstance(value, str):
+            return True, date.fromisoformat(value.strip())
+        elif expected_type is time and isinstance(value, str):
+            return True, time.fromisoformat(value.strip())
     except (ValueError, TypeError):
         pass
 

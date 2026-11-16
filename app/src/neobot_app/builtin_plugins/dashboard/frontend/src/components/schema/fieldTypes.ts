@@ -53,6 +53,18 @@ export interface SchemaFormProps {
 /** 密钥类字段名：渲染成密码框并给「显示/隐藏」按钮 */
 export const SECRET_RE = /token|password|secret|api[_-]?key|access[_-]?key|credential|authorization|cookie/i;
 
+/**
+ * 「叶子标量」类 kind：单值输入，没有递归结构。
+ *
+ * 时间类控件（date / time / datetime）在搜索过滤、草稿保留等判断上与 scalar 完全同构，
+ * 分散写三处 `kind === 'scalar' || kind === 'date' || ...` 迟早会漏一个，统一走这里。
+ */
+export const SCALAR_KINDS: readonly string[] = ['scalar', 'date', 'time', 'datetime'];
+
+export function isScalarKind(kind: string | undefined): boolean {
+  return !!kind && SCALAR_KINDS.includes(kind);
+}
+
 export function defaultsFromFields(
   fields: FieldDescriptor[] = [],
   parentPath: FieldDescriptor['path'] = [],
