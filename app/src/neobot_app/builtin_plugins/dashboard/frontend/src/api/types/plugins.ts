@@ -3,7 +3,28 @@
 /** 插件 /api/plugins */
 export type PluginStatus = 'loaded' | 'disabled' | 'error' | 'unloaded' | 'stopped';
 
+export interface PluginServiceSlot {
+  service: string;
+  kind: 'required' | 'optional' | 'provides';
+  status: 'loaded' | 'unloaded' | 'disabled' | 'version' | 'missing' | 'conflict';
+  specifier?: string;
+  provider?: string;
+  version?: string;
+  message: string;
+}
+
+export interface PluginServiceConflict {
+  service: string;
+  winner: string;
+  loser: string;
+  message: string;
+}
+
 export interface Plugin {
+  services?: PluginServiceSlot[];
+  service_conflicts?: PluginServiceConflict[];
+  service_undeclared?: string[];
+  dependency_status?: 'ok' | 'warning' | 'blocked';
   id?: string;
   path?: string;
   name: string;

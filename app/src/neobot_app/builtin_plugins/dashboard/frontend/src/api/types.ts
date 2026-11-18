@@ -39,6 +39,8 @@ export type {
   BillingPreviewResult,
 } from './types/models';
 export type {
+  PluginServiceSlot,
+  PluginServiceConflict,
   PluginStatus,
   Plugin,
   PluginCommandRename,

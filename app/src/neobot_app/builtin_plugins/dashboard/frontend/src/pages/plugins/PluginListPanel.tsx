@@ -100,9 +100,19 @@ export default function PluginListPanel(props: PluginListPanelProps) {
                               {plugin.official ? '官方' : '第三方'}
                             </span>
                             {plugin.version || '未声明版本'}
-                            {plugin.auto_disabled && (
-                              <span className="source-badge" title={plugin.disabled_reason || '依赖未满足'}>
-                                依赖未满足
+                            {(plugin.auto_disabled ||
+                              plugin.dependency_status === 'blocked' ||
+                              plugin.dependency_status === 'warning') && (
+                              <span
+                                className="source-badge"
+                                title={
+                                  plugin.services?.find((slot) => slot.status !== 'loaded')?.message ||
+                                  plugin.service_conflicts?.[0]?.message ||
+                                  plugin.disabled_reason ||
+                                  '依赖未满足'
+                                }
+                              >
+                                {plugin.dependency_status === 'warning' ? '有告警' : '依赖未满足'}
                               </span>
                             )}
                           </small>

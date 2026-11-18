@@ -440,3 +440,13 @@ test('static assets remain allowlisted and Bilibili login stays a fictional stat
     400,
   );
 });
+
+test('service diagnostics and update checks use additive plugin contracts', async (t) => {
+  const request = await fixture(t);
+  const plugin = (await request('/api/plugins')).data.items.find((item) => item.name === 'daily_notes');
+  assert.equal(plugin.dependency_status, 'warning');
+  assert.equal(plugin.services.find((slot) => slot.kind === 'required').provider, 'memory');
+  assert.equal(plugin.services.find((slot) => slot.kind === 'optional').status, 'missing');
+  const updates = (await request('/api/plugins/check-updates')).data;
+  assert.equal(updates.items.find((item) => item.name === 'daily_notes').status, 'available');
+});

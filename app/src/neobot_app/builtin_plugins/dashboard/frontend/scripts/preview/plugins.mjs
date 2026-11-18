@@ -102,6 +102,76 @@ export function createPluginPreview(scene) {
       error: '演示：供应商未配置，补全配置后重载插件。',
     },
   ];
+  function serviceDiagnostics(item) {
+    if (item.name === 'daily_notes') {
+      const provider = plugins.find((plugin) => plugin.name === 'memory');
+      const loaded = provider?.status === 'loaded';
+      return {
+        dependency_status: loaded ? 'warning' : 'blocked',
+        services: [
+          {
+            service: 'demo_memory',
+            kind: 'required',
+            status: loaded ? 'loaded' : 'disabled',
+            provider: 'memory',
+            version: provider?.version || '',
+            message: label(
+              loaded ? '演示：必需服务 demo_memory 已加载（memory）' : '演示：提供者 memory 尚未启用',
+            ),
+          },
+          {
+            service: 'demo_calendar',
+            kind: 'optional',
+            status: 'missing',
+            provider: '',
+            message: label('演示：可选服务 demo_calendar 未安装，不影响基础功能'),
+          },
+          {
+            service: 'demo_notes',
+            kind: 'provides',
+            status: item.status === 'loaded' ? 'loaded' : 'unloaded',
+            provider: item.name,
+            message: item.status === 'loaded' ? '演示：正在提供 demo_notes' : '演示：启用后将提供 demo_notes',
+          },
+        ],
+      };
+    }
+    if (item.name === 'sample_error')
+      return {
+        dependency_status: 'blocked',
+        services: [
+          {
+            service: 'demo_missing',
+            kind: 'required',
+            status: 'missing',
+            message: label('演示：缺少必需服务 demo_missing，请安装对应提供者'),
+          },
+        ],
+      };
+    if (item.name === 'weather')
+      return {
+        dependency_status: 'warning',
+        services: [
+          {
+            service: 'demo_weather',
+            kind: 'provides',
+            status: item.status === 'loaded' ? 'loaded' : 'unloaded',
+            provider: item.name,
+            message:
+              item.status === 'loaded' ? '演示：正在提供 demo_weather' : '演示：启用后将提供 demo_weather',
+          },
+        ],
+        service_conflicts: [
+          {
+            service: 'demo_duplicate',
+            winner: 'memory',
+            loser: 'weather',
+            message: label('演示：服务 demo_duplicate 由 memory 提供'),
+          },
+        ],
+      };
+    return {};
+  }
   let proxy = { mode: 'system', description: '跟随系统代理（演示，不建立网络连接）' };
   const pluginConfigs = new Map();
   function pluginDoc(name) {
@@ -182,6 +252,7 @@ export function createPluginPreview(scene) {
             ? []
             : plugins.map((item) => ({
                 ...item,
+                ...serviceDiagnostics(item),
                 id: item.name,
                 source: item.official ? 'official' : 'third_party',
                 description: label(item.description),
@@ -198,7 +269,20 @@ export function createPluginPreview(scene) {
         return json(res, { proxy, message: '演示代理设置已保存；不会建立连接' });
       }
       if (path === '/api/plugins/check-updates')
-        return json(res, { ok: true, message: '已模拟检查：插件均为演示版本，无需更新' });
+        return json(res, {
+          ok: true,
+          available: 1,
+          items: [
+            {
+              name: 'daily_notes',
+              current_version: '0.4.2',
+              remote_version: '0.5.0',
+              status: 'available',
+              error: null,
+            },
+          ],
+          message: '演示：daily_notes 有可用更新，不连接远程仓库',
+        });
       if (path === '/api/plugins/probe')
         return json(res, { conflict: false, official: false, message: '演示安装路径可用' });
       if (path === '/api/plugins/install') {

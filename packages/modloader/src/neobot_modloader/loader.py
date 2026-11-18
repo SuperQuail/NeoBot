@@ -13,6 +13,7 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_modloader.loading.importer import PluginModuleImporter
 from neobot_modloader.loading.manifest import (
     read_dependencies,
+    read_services,
     read_manifest,
     read_optional_bool,
     read_optional_text,
@@ -179,6 +180,7 @@ class FilesystemPluginLoader:
                 author=author,
                 enabled=self.resolve_enabled(name, enabled),
                 dependencies=dependencies,
+                **read_services(metadata),
                 priority=priority,
                 min_neobot_version=min_neobot_version,
                 python_dependencies=python_dependencies,
@@ -222,6 +224,7 @@ class FilesystemPluginLoader:
                 description=str(getattr(plugin, "description", "") or ""),
                 author=str(getattr(plugin, "author", "") or ""),
                 dependencies=tuple(getattr(plugin, "dependencies", ()) or ()),
+                **read_services({}, plugin),
                 priority=int(getattr(plugin, "priority", 0) or 0),
                 min_neobot_version=getattr(plugin, "min_neobot_version", None),
                 python_dependencies=python_dependencies,
@@ -273,12 +276,15 @@ class FilesystemPluginLoader:
             if "dependencies" not in metadata:
                 dependencies = tuple(getattr(plugin, "dependencies", ()) or ())
             # 清单优先级在加载时确定，运行期的反向依赖与停用联动复用同一份结果。
+            for kind, values in read_services(metadata, plugin).items():
+                setattr(plugin, kind, values)
             plugin.dependencies = dependencies
             if not any(key in metadata for key in ("python_dependencies", "pypi_dependencies", "requirements")):
                 python_dependencies = tuple(getattr(plugin, "python_dependencies", ()) or ())
             python_dependencies = _validated_python_dependencies(python_dependencies)
             if "priority" not in metadata:
                 priority = int(getattr(plugin, "priority", 0) or 0)
+            plugin.priority = priority
             if min_neobot_version is None:
                 min_neobot_version = getattr(plugin, "min_neobot_version", None)
             hot_reload = read_optional_bool(metadata, "hot_reload", None)
@@ -296,6 +302,7 @@ class FilesystemPluginLoader:
                 description=str(getattr(plugin, "description", description) or description),
                 author=str(getattr(plugin, "author", author) or author),
                 dependencies=dependencies,
+                **read_services(metadata, plugin),
                 priority=priority,
                 min_neobot_version=min_neobot_version,
                 python_dependencies=python_dependencies,

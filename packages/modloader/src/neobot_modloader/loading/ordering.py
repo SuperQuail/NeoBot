@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
+from neobot_modloader.service import providers_for, service_edges
 from neobot_modloader.dependency import PluginDependency, parse_dependencies
 from neobot_modloader.loading.models import (
     DisabledPlugin,
@@ -63,6 +64,8 @@ def resolve_load_order(
     entries: Sequence[LoadedPlugin],
     *,
     unavailable: Mapping[str, str] | None = None,
+    hosts: Mapping | None = None,
+    service_candidates=None,
 ) -> PluginOrdering:
     """解析依赖关系，返回加载顺序与自动禁用清单。
 
@@ -81,9 +84,13 @@ def resolve_load_order(
 
     specs: dict[str, tuple[PluginDependency, ...]] = {}
     blocked: dict[str, DependencyIssue] = {}
+    providers = providers_for(service_candidates if service_candidates is not None else entries)
     for name, entry in by_name.items():
         try:
-            specs[name] = parse_dependencies(entry.dependencies)
+            edges, issue = service_edges(entry, providers, hosts or {})
+            specs[name] = (*parse_dependencies(entry.dependencies), *edges)
+            if issue is not None:
+                blocked[name] = issue
         except (TypeError, ValueError) as exc:
             specs[name] = ()
             blocked[name] = DependencyIssue(CODE_INVALID, f"依赖声明非法: {exc}")
@@ -230,13 +237,13 @@ def _cycle_path(
     return path
 
 
-def order_results(results: list[PluginLoadResult]) -> list[PluginLoadResult]:
+def order_results(results: list[PluginLoadResult], *, hosts=None, service_candidates=None) -> list[PluginLoadResult]:
     """加载路径排序：前置插件在前，依赖未满足的插件转成自动禁用条目。"""
     errors = [result for result in results if isinstance(result, PluginLoadError)]
     loaded = [result for result in results if isinstance(result, LoadedPlugin)]
     already_disabled = [result for result in results if isinstance(result, DisabledPlugin)]
     unavailable = {item.name: item.reason for item in already_disabled}
-    ordering = resolve_load_order(loaded, unavailable=unavailable)
+    ordering = resolve_load_order(loaded, unavailable=unavailable, hosts=hosts, service_candidates=service_candidates)
     by_name = {item.name: item for item in loaded}
 
     ordered: list[PluginLoadResult] = [by_name[name] for name in ordering.ordered]
@@ -258,7 +265,7 @@ def order_results(results: list[PluginLoadResult]) -> list[PluginLoadResult]:
 
 
 def order_discovery_results(
-    results: list[PluginDiscoveryResult],
+    results: list[PluginDiscoveryResult], *, hosts=None,
 ) -> list[PluginDiscoveryResult]:
     """发现路径排序：给依赖未满足的插件标注自动禁用原因。"""
     errors = [result for result in results if isinstance(result, PluginLoadError)]
@@ -282,6 +289,7 @@ def order_discovery_results(
             description=result.description,
             author=result.author,
             dependencies=result.dependencies,
+            provides=result.provides, required=result.required, optional=result.optional,
             priority=result.priority,
             min_neobot_version=result.min_neobot_version,
             python_dependencies=result.python_dependencies,
@@ -290,7 +298,7 @@ def order_discovery_results(
         )
         for result in enabled
     ]
-    ordering = resolve_load_order(shims, unavailable=unavailable)
+    ordering = resolve_load_order(shims, unavailable=unavailable, hosts=hosts, service_candidates=discovered)
 
     converted: list[PluginDiscoveryResult] = [mapping[name] for name in ordering.ordered]
     for name, issue in sorted(ordering.blocked.items()):
@@ -317,6 +325,7 @@ def _disabled_from(loaded: LoadedPlugin, issue: DependencyIssue) -> DisabledPlug
         description=loaded.description,
         author=loaded.author,
         dependencies=loaded.dependencies,
+        provides=loaded.provides, required=loaded.required, optional=loaded.optional,
         source_path=loaded.source_path,
         source=loaded.source,
         module_names=loaded.module_names,

@@ -1,3 +1,5 @@
+import { useAuthGate } from '../auth/AuthContext';
+import PluginDependencyManager from './plugins/PluginDependencyManager';
 // Plugins.tsx —— 插件工作区：官方/第三方分组、启停、热重载、安装与在线配置
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { api } from '../api/endpoints';
@@ -39,6 +41,7 @@ const SOURCE_FILTERS: Array<[string, string]> = [
 ];
 
 export default function Plugins() {
+  const { canManage: sessionCanManage } = useAuthGate();
   const [items, setItems] = useState<Plugin[]>([]);
   const [permissions, setPermissions] = useState({ manage_enabled: false, hot_reload: false });
   const [consolePlugin, setConsolePlugin] = useState('');
@@ -347,6 +350,9 @@ export default function Plugins() {
     setMobileDetail(true);
   }
 
+  const [dependencyOpen, setDependencyOpen] = useState(false);
+  const [availableUpdates, setAvailableUpdates] = useState<string[]>([]);
+
   async function act(key: string, fn: () => Promise<Result<any>>, success: string, showFeedback = true) {
     if (busyRef.current) return;
     editGeneration.current++;
@@ -359,6 +365,13 @@ export default function Plugins() {
       const message = result.data?.message || result.error || (result.ok ? success : '操作失败');
       if (showFeedback) notify(message, result.ok ? 'ok' : 'err');
       if (result.ok) {
+        if (key === 'check')
+          setAvailableUpdates(
+            (result.data?.items || [])
+              .filter((item: { status: string }) => item.status === 'available')
+              .map((item: { name: string }) => item.name),
+          );
+        if (key === 'update') setAvailableUpdates((names) => names.filter((name) => name !== selected?.name));
         if (key === 'uninstall') setSelectedId('');
         await load(true);
       }
@@ -590,6 +603,8 @@ export default function Plugins() {
         editor={
           <PluginEditorPanel
             selected={selected}
+            onOpenDependencies={() => setDependencyOpen(true)}
+            updateAvailable={!!selected && availableUpdates.includes(selected.name)}
             selectedPresent={selectedExists}
             selectedId={selectedId}
             itemsCount={items.length}
@@ -632,6 +647,27 @@ export default function Plugins() {
           />
         }
       />
+      {selected && (
+        <PluginDependencyManager
+          plugin={selected}
+          items={items}
+          open={dependencyOpen}
+          busy={!!operation}
+          canInstall={permissions.manage_enabled && sessionCanManage === true && selectedExists}
+          onClose={() => {
+            if (!operation) setDependencyOpen(false);
+          }}
+          onSelect={(provider) => {
+            setDependencyOpen(false);
+            void select(provider);
+          }}
+          onInstall={() => {
+            setDependencyOpen(false);
+            setInstallConflict(null);
+            setInstallOpen(true);
+          }}
+        />
+      )}
       {/* 弹窗仍由页面持有：安装第三方插件 / 插件下载代理 */}
       <Modal
         open={installOpen}

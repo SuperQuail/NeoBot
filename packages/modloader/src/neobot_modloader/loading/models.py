@@ -45,6 +45,9 @@ class LoadedPlugin:
     tags: tuple[str, ...] = ()
     hot_reload: bool = True
     config_hot_reload: bool = True
+    provides: tuple[str, ...] = ()
+    required: tuple[str, ...] = ()
+    optional: tuple[str, ...] = ()
 
     @property
     def official(self) -> bool:
@@ -93,6 +96,9 @@ class DiscoveredPlugin:
     disabled_code: str = ""
     #: 是否因依赖未满足而被自动禁用（与用户手动停用区分）
     auto_disabled: bool = False
+    provides: tuple[str, ...] = ()
+    required: tuple[str, ...] = ()
+    optional: tuple[str, ...] = ()
 
     @property
     def official(self) -> bool:
@@ -122,6 +128,9 @@ class DisabledPlugin:
     source_path: Path | None = None
     source: str = THIRD_PARTY_SOURCE
     module_names: tuple[str, ...] = ()
+    provides: tuple[str, ...] = ()
+    required: tuple[str, ...] = ()
+    optional: tuple[str, ...] = ()
 
     @property
     def official(self) -> bool:

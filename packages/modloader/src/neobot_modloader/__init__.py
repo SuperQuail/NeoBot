@@ -31,6 +31,7 @@ from neobot_modloader.dependencies import PythonDependencyInstaller
 from neobot_modloader.generation import RuntimeGeneration
 from neobot_modloader.hooks import PluginHookBus
 from neobot_modloader.host import DefaultServiceRegistry, PluginHostFacade
+from neobot_modloader.service_registry import ServiceUnavailable
 from neobot_modloader.installer import (
     PROXY_MODES,
     PluginInstallError,
@@ -71,6 +72,7 @@ from neobot_contracts.ports.screenshot import (
 )
 
 __all__ = [
+    "ServiceUnavailable",
     "IncomingEvent",
     "MessageWaitBusy",
     "Rule",

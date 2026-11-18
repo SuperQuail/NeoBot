@@ -105,6 +105,10 @@ class SystemMixin:
             "dependents": list(getattr(snapshot, "dependents", ()) or ()),
             "disabled_reason": getattr(snapshot, "disabled_reason", None),
             "auto_disabled": bool(getattr(snapshot, "auto_disabled", False)),
+            "services": list(getattr(snapshot, "services", ()) or ()),
+            "service_conflicts": list(getattr(snapshot, "service_conflicts", ()) or ()),
+            "service_undeclared": list(getattr(snapshot, "service_undeclared", ()) or ()),
+            "dependency_status": getattr(snapshot, "dependency_status", "ok"),
             # 配置校验告警：非空表示已存值非法、运行时已回落默认值
             "config_error": getattr(snapshot, "config_error", None),
             # 命令重名导致的自动改名：原 /x -> 实际 /plugin__x（spec(4) R26）
@@ -114,9 +118,7 @@ class SystemMixin:
                     "actual": f"/{actual}",
                     "message": f"原 /{requested} → 实际 /{actual}（重名）",
                 }
-                for requested, actual in (
-                    getattr(snapshot, "command_renames", ()) or ()
-                )
+                for requested, actual in (getattr(snapshot, "command_renames", ()) or ())
             ],
         }
 
