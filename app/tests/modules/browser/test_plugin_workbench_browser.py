@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import shutil
 
 import pytest
 from playwright.async_api import Page, Request, async_playwright, expect
@@ -173,6 +174,60 @@ async def _expect_notice_above_dialog(page: Page, title: str) -> None:
 async def _select_plugin(page: Page) -> None:
     # 窄屏先从列表进入详情，与使用者实际操作路径一致。
     await page.get_by_role("button", name=re.compile(rf"^{_NAME}\b")).click()
+
+
+@pytest.mark.browser
+async def test_revisit_streaming_subscription_page(installed_panel):
+    _, runtime, base = installed_panel
+    plugins = Path(__file__).resolve().parents[3] / "src/neobot_app/builtin_plugins"
+    path = runtime.plugin_dir / "streaming_parser"
+    shutil.copytree(plugins / path.name, path, ignore=shutil.ignore_patterns("__pycache__", ".ruff_cache"))
+    result = await runtime.load_plugin_path(path)
+    assert result.ok, result.error
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={"width": 1366, "height": 768})
+            await page.goto(base + "/#/login")
+            await page.get_by_label("面板密码", exact=True).fill(_PASSWORD)
+            await page.get_by_role("button", name="登录工作台", exact=True).click()
+            await expect(page).to_have_url(base + "/#/dashboard")
+            await page.goto(base + "/#/plugins")
+            parser = page.get_by_role("button", name=re.compile(r"^streaming_parser\b"))
+            await parser.click()
+            await page.get_by_role("tab", name="插件页面", exact=True).click()
+            frame = page.locator("#plugin-page-panel iframe")
+            await expect(frame).to_be_visible()
+            await _select_plugin(page)
+            await parser.click()
+            search = page.get_by_label("搜索插件")
+            await expect(search).to_have_value("")
+            await expect(frame).to_be_visible()
+            await page.evaluate("document.documentElement.dataset.theme = 'dark'")
+            panel_color = await page.evaluate(
+                "getComputedStyle(document.documentElement).getPropertyValue('--panel').trim()"
+            )
+            inside = frame.content_frame
+            await expect(inside.locator(".preview-panel")).to_have_css(
+                "background-color",
+                await page.evaluate(
+                    """color => {
+                    const sample = document.createElement('span');
+                    sample.style.color = color; document.body.append(sample);
+                    const value = getComputedStyle(sample).color; sample.remove(); return value;
+                }""",
+                    panel_color,
+                ),
+            )
+            # iframe 不裁切订阅列表；整页统一在外层工作区内滚动。
+            await expect(frame).not_to_have_css("height", "420px")
+            assert await inside.locator("body").evaluate(
+                "body => Math.ceil(body.getBoundingClientRect().height) <= window.innerHeight + 1"
+            )
+            await inside.locator("#health-panel").scroll_into_view_if_needed()
+            await expect(inside.locator("#health-panel")).to_be_in_viewport()
+        finally:
+            await browser.close()
 
 
 @pytest.mark.browser
