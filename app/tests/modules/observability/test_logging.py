@@ -312,3 +312,63 @@ def test_app_debug_not_filtered_when_verbose_off(tmp_path) -> None:
 )
 def test_resolve_verbose_logging_modes(debug_cfg, expected) -> None:
     assert resolve_verbose_logging(debug_cfg) is expected
+
+
+@pytest.mark.parametrize(
+    "root", ["aiosqlite", "websockets", "PIL", "httpcore", "httpx", "urllib3"]
+)
+def test_all_noisy_roots_drop_debug(tmp_path, root) -> None:
+    """噪声清单里的每个根名都要真正被过滤，漏一个就会继续放大日志。"""
+    log_dir = tmp_path / "logs"
+    configure_loguru(log_dir)
+    try:
+        stdlib_logging.getLogger(f"{root}.child").debug(f"{root}-debug-should-hide")
+    finally:
+        loguru.logger.remove()
+
+    assert f"{root}-debug-should-hide" not in (log_dir / "neobot.log").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_non_noisy_stdlib_debug_still_lands(tmp_path) -> None:
+    """过滤条件必须只匹配噪声根名；不能退化成「过滤所有第三方 DEBUG」。"""
+    log_dir = tmp_path / "logs"
+    configure_loguru(log_dir)
+    try:
+        stdlib_logging.getLogger("asyncio").debug("asyncio-debug-should-keep")
+    finally:
+        loguru.logger.remove()
+
+    assert "asyncio-debug-should-keep" in (log_dir / "neobot.log").read_text(encoding="utf-8")
+
+
+def test_set_verbose_logging_is_idempotent(tmp_path) -> None:
+    """重复设置同一状态不应重复写分界标记（否则每次启动都刷一条）。"""
+    log_dir = tmp_path / "logs"
+    configure_loguru(log_dir)
+    try:
+        set_verbose_logging(True)
+        set_verbose_logging(True)
+        set_verbose_logging(False)
+        set_verbose_logging(False)
+    finally:
+        loguru.logger.remove()
+
+    content = (log_dir / "neobot.log").read_text(encoding="utf-8")
+    assert content.count("详细日志已开启") == 1
+    assert content.count("详细日志已关闭") == 1
+
+
+def test_resolve_auto_follows_active_recorder() -> None:
+    """auto 跟随实际生效的 DebugRecorder，而不是配置里的 enabled。"""
+    auto_on = SimpleNamespace(enabled=True, verbose_logging="auto")
+    auto_off = SimpleNamespace(enabled=False, verbose_logging="auto")
+    force_on = SimpleNamespace(enabled=False, verbose_logging="on")
+    force_off = SimpleNamespace(enabled=True, verbose_logging="off")
+
+    assert resolve_verbose_logging(auto_on, recorder_active=False) is False
+    assert resolve_verbose_logging(auto_off, recorder_active=True) is True
+    # 显式 on/off 优先于 recorder 状态。
+    assert resolve_verbose_logging(force_on, recorder_active=False) is True
+    assert resolve_verbose_logging(force_off, recorder_active=True) is False

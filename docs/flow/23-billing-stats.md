@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/statistics/
   - app/src/neobot_app/observability/
   - app/src/neobot_app/cache/
-verified_against: d525a5b
-verified_hash: 0cf722e50b32
+verified_against: 2407c2b6
+verified_hash: 11c9acf76137
 ---
 
 # 23 计费、用量统计与可观测性
@@ -217,6 +217,7 @@ flowchart TD
 ```
 
 自修复的完整触发链见 `04-agent-loop.md`。四个出口共用快照；异常不读取源码或局部变量。API 计数另用 metric 事件，不依赖 DEBUG 日志正文。关闭最多冲刷 2 秒，队列容量、丢弃与失败计数可诊断。
+文件出口在落盘前还有一层第三方库过滤：`[debug].verbose_logging` 为 `auto` 且 Debug 模式关闭时，`aiosqlite` / `websockets` / `PIL` / `httpcore` / `httpx` / `urllib3` 的 DEBUG 在 `_InterceptHandler.emit` 入口被丢弃，这些库的 INFO 及以上照常保留；`on` / `off` 由 `VerboseLoggingConsumer` 热重载；`auto` 跟随实际生效的 DebugRecorder（进程启动时构建、软重启复用），改 `debug.enabled` 需重启进程（详见 `04-功能文档/日志与诊断.md`「详细日志开关」）。
 </details>
 
 <details>

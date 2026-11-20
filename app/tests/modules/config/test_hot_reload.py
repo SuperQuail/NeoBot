@@ -189,11 +189,11 @@ def test_verbose_logging_consumer_marks_field_hot() -> None:
     from neobot_app.config.hot_reload import register_rules, unregister_rule
     from neobot_app.observability.logging import VerboseLoggingConsumer
 
-    consumer = VerboseLoggingConsumer()
+    consumer = VerboseLoggingConsumer(recorder_active=False)
     register_rules(consumer.hot_reload_policies)
     try:
         assert is_hot_reloadable(("debug", "verbose_logging")) is True
-        # auto 跟随的 enabled 仍是启动期构建，不能被误标为热重载。
+        # auto 跟随的 enabled 是启动期构建，不能被误标为热重载。
         assert is_hot_reloadable(("debug", "enabled")) is False
 
         before = BotConfig()
@@ -212,16 +212,37 @@ async def test_verbose_logging_consumer_applies_mode(monkeypatch) -> None:
 
     applied: list[bool] = []
     monkeypatch.setattr(logging_module, "set_verbose_logging", applied.append)
-    consumer = VerboseLoggingConsumer()
+    consumer = VerboseLoggingConsumer(recorder_active=False)
 
-    await consumer.apply_config(
-        SimpleNamespace(debug=SimpleNamespace(enabled=False, verbose_logging="on"))
-    )
-    await consumer.apply_config(
-        SimpleNamespace(debug=SimpleNamespace(enabled=False, verbose_logging="off"))
-    )
-    await consumer.apply_config(
-        SimpleNamespace(debug=SimpleNamespace(enabled=True, verbose_logging="auto"))
+    def config(*, enabled: bool, mode: str):
+        return SimpleNamespace(debug=SimpleNamespace(enabled=enabled, verbose_logging=mode))
+
+    await consumer.apply_config(config(enabled=False, mode="on"))
+    await consumer.apply_config(config(enabled=False, mode="off"))
+    # auto 跟随实际生效的 recorder（这里未启用），不看 enabled=true。
+    await consumer.apply_config(config(enabled=True, mode="auto"))
+    assert applied == [True, False, False]
+
+    # recorder 实际启用时，auto 即使配置 enabled=false 也保持开启。
+    enabled_consumer = VerboseLoggingConsumer(recorder_active=True)
+    await enabled_consumer.apply_config(config(enabled=False, mode="auto"))
+    assert applied == [True, False, False, True]
+
+
+async def test_hot_reload_registry_dispatches_verbose_logging(monkeypatch) -> None:
+    """装配级链路：消费者注册进 registry 后，改动 field 真的会被分发并生效。"""
+    from neobot_app.observability import logging as logging_module
+    from neobot_app.observability.logging import VerboseLoggingConsumer
+    from neobot_app.runtime.hot_reload_registry import HotReloadRegistry
+
+    applied: list[bool] = []
+    monkeypatch.setattr(logging_module, "set_verbose_logging", applied.append)
+    registry = HotReloadRegistry([VerboseLoggingConsumer(recorder_active=False)])
+    assert "verbose_logging" in {consumer.name for consumer in registry.consumers}
+
+    await registry.apply(
+        SimpleNamespace(debug=SimpleNamespace(enabled=False, verbose_logging="on")),
+        ["debug.verbose_logging"],
     )
 
-    assert applied == [True, False, True]
+    assert applied == [True]

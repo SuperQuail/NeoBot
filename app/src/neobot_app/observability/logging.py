@@ -35,10 +35,13 @@ _NOISY_LOGGER_ROOTS = frozenset({"aiosqlite", "websockets", "PIL", "httpcore", "
 _verbose_logging = False
 
 
-def resolve_verbose_logging(debug_cfg: Any) -> bool:
+def resolve_verbose_logging(debug_cfg: Any, *, recorder_active: bool | None = None) -> bool:
     """把 ``[debug].verbose_logging`` 的 auto/on/off 解析成布尔值。
 
-    auto 跟随 Debug 模式；未知取值按 auto 处理（配置校验只查类型，不查枚举）。
+    auto 跟随**实际生效的** DebugRecorder（``recorder_active``），而不是只读配置：
+    recorder 是进程启动时构建的核心对象，软重启不会重建它；只看 ``enabled`` 会让
+    「日志说在跟随 Debug 模式、调试包却还是旧状态」。调用方拿不到实际状态时才回退到
+    配置值。未知取值按 auto 处理（配置校验只查类型，不查枚举）。
     """
     mode = str(getattr(debug_cfg, "verbose_logging", "auto") or "auto").strip().lower()
     if mode == "on":
@@ -47,7 +50,9 @@ def resolve_verbose_logging(debug_cfg: Any) -> bool:
         return False
     if mode != "auto":
         loguru.logger.warning(f"未知的 debug.verbose_logging 取值 {mode!r}，按 auto 处理")
-    return bool(getattr(debug_cfg, "enabled", False))
+    if recorder_active is None:
+        return bool(getattr(debug_cfg, "enabled", False))
+    return bool(recorder_active)
 
 
 def set_verbose_logging(enabled: bool) -> None:
@@ -128,6 +133,9 @@ class _InterceptHandler(stdlib_logging.Handler):
     """接入第三方 stdlib 日志，同时保留 extra、原始调用位置与异常。"""
 
     def emit(self, record: stdlib_logging.LogRecord) -> None:
+        # 过滤放在 stdlib -> loguru 的入口，先于任何 sink 的格式化/脱敏。
+        # 当前控制台/面板/自修复的最低级别都 >= INFO，所以等价于「只影响日志文件」；
+        # 若以后把这些出口降到 DEBUG，本开关会一并影响它们（见「日志与诊断」文档）。
         if (
             not _verbose_logging
             and record.levelno < stdlib_logging.INFO
@@ -258,12 +266,16 @@ class LoguruLoggerFactory:
 class VerboseLoggingConsumer:
     """``debug.verbose_logging`` 的热重载消费者。
 
-    只声明自己这个字段：``on``/``off`` 改完重载即生效；``auto`` 跟随的
-    ``debug.enabled`` 是启动期构建，仍需重启/软重启后重新解析。
+    只声明自己这个字段：``on``/``off`` 改完重载即生效；``auto`` 跟随的是
+    **实际生效的 DebugRecorder**（进程启动时构建，软重启复用），不是配置里的
+    ``enabled`` —— 否则会出现「过滤已切换、调试包还是旧状态」的半生效。
     """
 
     name = "verbose_logging"
     config_paths = ("debug.verbose_logging",)
+
+    def __init__(self, *, recorder_active: bool) -> None:
+        self._recorder_active = bool(recorder_active)
 
     @property
     def hot_reload_policies(self) -> tuple[Any, ...]:
@@ -273,9 +285,14 @@ class VerboseLoggingConsumer:
             HotReloadRule(
                 "debug.verbose_logging",
                 True,
-                "日志过滤是模块级开关，重载后立即生效；auto 跟随 Debug 模式在软重启时重新解析",
+                "日志过滤是模块级开关，重载后立即生效；auto 跟随实际生效的 DebugRecorder",
             ),
         )
 
     async def apply_config(self, config: Any) -> None:
-        set_verbose_logging(resolve_verbose_logging(getattr(config, "debug", None)))
+        set_verbose_logging(
+            resolve_verbose_logging(
+                getattr(config, "debug", None),
+                recorder_active=self._recorder_active,
+            )
+        )

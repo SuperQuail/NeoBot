@@ -418,7 +418,7 @@ flowchart TD
 flowchart TD
     A["inbound_event：hook_bus.dispatch 构造，stage=post_type / hooks.py:206"] --> E
     B["output：RuntimeOutput.write / observability/output.py:40，kind=output stage=channel"] --> E
-    C["log：loguru sink / observability/logging.py:123，kind=log stage=日志级别"] --> E
+    C["log：loguru sink / observability/logging.py _loguru_runtime_sink，kind=log stage=日志级别"] --> E
     D["reply_lifecycle：sender 发送前后 / reply/sender.py:184 与 reply/debug.py:33"] --> E
     E["dispatch_envelope / hooks.py:266"] --> F{"envelope.consumed"}
     F -- 是 --> X1["break：后续拦截器不再执行"]

@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/config/
   - app/src/neobot_app/runtime/hot_reload_registry.py
   - app/src/neobot_app/bootstrap/_config.py
-verified_against: d1f9600f
-verified_hash: 24a73c6ff6d6
+verified_against: 2407c2b6
+verified_hash: b4c91c5ba003
 ---
 
 # 01b 配置系统：schema 分层 · 加载校验 · 默认值回落 · 热重载边界
@@ -277,7 +277,10 @@ flowchart TD
     A --> E["DashboardConfigConsumer｜dashboard/hot_reload.py:82"]
     E --> E1["config_paths=(plugin.dashboard,)：走 modloader 通道，不进 HotReloadRegistry"]
     E --> E2["apply_config → plugin.apply_runtime_config 原地刷新｜:114"]
-    F["全仓实现 ConfigConsumer 的类只有这三个"] --> G["没登记的组件 = 改了要重启，或者改完根本没生效"]
+    A --> H["VerboseLoggingConsumer｜observability/logging.py"]
+    H --> H1["config_paths=(debug.verbose_logging,)：日志过滤开关"]
+    H --> H2["apply：set_verbose_logging(resolve(...))；auto 跟随实际生效的 DebugRecorder"]
+    F["全仓实现 ConfigConsumer 的类只有这四个"] --> G["没登记的组件 = 改了要重启，或者改完根本没生效"]
 ```
 
 三个挂载点（`bootstrap/__init__.py:290`）：`reply` → 编排器、
