@@ -45,7 +45,7 @@ class _DiskWatchMixin:
                 raise
 
     def _dir_fingerprint(self) -> tuple[tuple[str, int, int], ...] | None:
-        """定时扫描用的目录指纹：文件名 + 大小 + mtime_ns（图片与 .txt 侧文件都算）。
+        """定时扫描用的目录指纹：文件名 + 大小 + mtime_ns（目录下所有常规文件）。
 
         与 _dir_snapshot() 分工不同：那个只看文件名和目录 mtime，保证新文件
         立即可见；这里多取每个文件的 stat，用来判断定时扫描「值不值得跑」。

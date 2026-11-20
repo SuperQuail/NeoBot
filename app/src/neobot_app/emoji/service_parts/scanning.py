@@ -184,18 +184,20 @@ class _ScanningMixin:
             use_counts,
             records_by_hash,
         )
-        if to_parse or duplicates_removed or snapshot_before != self._last_dir_snapshot:
+        # 是否值得记一条“扫描完成”必须在盖章前算：盖章会把快照更新掉。
+        changed = to_parse or duplicates_removed or snapshot_before != self._last_dir_snapshot
+        cleanup_ok = await self._cleanup_stale_emoji_records(hash_to_path)
+        if scan_ok and cleanup_ok:
+            self._stamp_scan(snapshot_before, fingerprint_before)
+        else:
+            self._mark_scan_failed()
+        if scan_ok and cleanup_ok and changed:
             self._logger.info(
                 "表情包目录扫描完成",
                 file_count=len(path_to_hash),
                 parsed_count=parsed_count,
                 duplicates_removed=duplicates_removed,
             )
-        cleanup_ok = await self._cleanup_stale_emoji_records(hash_to_path)
-        if scan_ok and cleanup_ok:
-            self._stamp_scan(snapshot_before, fingerprint_before)
-        else:
-            self._mark_scan_failed()
 
     async def _cleanup_stale_emoji_records(self, disk_files: dict[str, Path]) -> bool:
         """删除数据库中文件已不存在的表情包记录，更新文件已重命名的记录。

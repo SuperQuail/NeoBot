@@ -315,3 +315,36 @@ async def test_list_directory_failure_keeps_entries_and_does_not_stamp(tmp_path,
         assert service.emoji_count == 1
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_scan_safe_clears_fingerprint_when_scan_raises(tmp_path, monkeypatch) -> None:
+    """_scan_safe 的异常分支也要清指纹，否则下一轮会误判为已经扫过。"""
+    engine, service = await _make_service(tmp_path)
+    try:
+        emoji_dir = tmp_path / "emoji"
+        emoji_dir.mkdir()
+        (emoji_dir / "a.png").write_bytes(_png_bytes())
+        (emoji_dir / "a.txt").write_text("红色方块", encoding="utf-8")
+        await service._scan_safe()
+        assert service._last_dir_fingerprint is not None
+
+        async def boom() -> None:
+            raise RuntimeError("scan failed")
+
+        monkeypatch.setattr(service, "_scan_folder", boom)
+        with pytest.raises(RuntimeError):
+            await service._scan_safe()
+        assert service._last_dir_fingerprint is None
+
+        calls = 0
+
+        async def fake_scan_safe() -> None:
+            nonlocal calls
+            calls += 1
+
+        monkeypatch.setattr(service, "_scan_safe", fake_scan_safe)
+        assert await service._refresh_once() is True
+        assert calls == 1
+    finally:
+        await engine.dispose()

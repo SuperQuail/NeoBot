@@ -528,7 +528,7 @@ flowchart TD
 | 状态 | 谁置位 | 谁清理 | 失败时停在哪 |
 |---|---|---|---|
 | `EmojiService._entries` 编号映射 | `_scan_folder` 走 `_rebuild_mapping`；读接口走 `_merge_disk_entries_fast` | 目录无图片时 `_entries.clear()`；`_rebuild_mapping` 整体替换 | DB 查询或写入异常只记 error 日志，索引仍重建（编号可能暂时与库不一致） |
-| `_last_dir_snapshot` / `_last_dir_fingerprint` / `_last_full_scan_at` | 扫描成功且 DB 清理成功才 `_stamp_scan` 盖章；`_notify_disk_changed` 只更新快照 | `stop()` 置空 | 目录缺失/读失败/DB 查询失败/解析或清理失败都不盖章，下一轮重试；缺失目录指纹为 None，持续重试 |
+| `_last_dir_snapshot` / `_last_dir_fingerprint` / `_last_full_scan_at` | 扫描成功且 DB 清理成功才 `_stamp_scan` 盖章；`_notify_disk_changed` 只更新快照 | `stop()` 置空快照与指纹（全扫时间随实例重建） | 目录缺失/读失败/DB 查询失败/解析或清理失败都不盖章，下一轮重试；缺失目录指纹为 None，持续重试 |
 | `_disk_refresh_task` 即时刷新 | `_schedule_disk_refresh`（读接口触发） | 任务自身结束；`stop()` 先 shield 等 5s 再 cancel | 刷新异常只 error 日志，不影响读取 |
 | `_refresh_task` 900s（15 分钟）定时检查 | `start()` | `stop()` cancel 并 await | 单轮异常只 error，循环继续；指纹未变且未到 8 小时强制全扫则跳过 |
 | `.txt` 侧文件（描述副本） | 视觉解析回写、`update_entry_description`、`add_image_bytes`（有 description 时） | `delete_entry`、去重删除时一并 unlink | `[解析失败]` 与 `[未配置视觉模型]` 也会落盘并被当成权威描述 |
