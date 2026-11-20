@@ -470,8 +470,8 @@ flowchart TD
 flowchart TD
     A["configure_loguru:177"] --> B["stdout sink DEBUG<br/>挂 _redacting_filter"]
     A --> C["文件 sink neobot.log<br/>rotation 10MB, retention 7 days<br/>diagnose=False, 同挂脱敏 filter"]
-    A --> D["runtime_events sink:123<br/>DEBUG 级全量转 RuntimeEnvelope kind=log"]
-    A --> E["self-heal sink:150 ERROR 级<br/>排除 adapter_receiver / app.image_parse / app.self_heal"]
+    A --> D["runtime_events sink:99<br/>DEBUG 级全量转 RuntimeEnvelope kind=log"]
+    A --> E["self-heal sink:117 ERROR 级<br/>排除 adapter_receiver / app.image_parse / app.self_heal"]
     B --> F["排查入口"]
     C --> F
     D --> F

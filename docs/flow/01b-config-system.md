@@ -280,7 +280,7 @@ flowchart TD
     A --> H["VerboseLoggingConsumer｜observability/logging.py"]
     H --> H1["config_paths=(debug.verbose_logging,)：日志过滤开关"]
     H --> H2["apply：set_verbose_logging(resolve(...))；auto 跟随实际生效的 DebugRecorder"]
-    F["全仓实现 ConfigConsumer 的类只有这四个"] --> G["没登记的组件 = 改了要重启，或者改完根本没生效"]
+    F["实现 ConfigConsumer 的类分散在各子系统（另有 Bilibili、ModelConsumerReload 等）"] --> G["没登记的组件 = 改了要重启，或者改完根本没生效"]
 ```
 
 三个挂载点（`bootstrap/__init__.py:290`）：`reply` → 编排器、

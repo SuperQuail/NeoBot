@@ -231,18 +231,23 @@ async def test_verbose_logging_consumer_applies_mode(monkeypatch) -> None:
 
 async def test_hot_reload_registry_dispatches_verbose_logging(monkeypatch) -> None:
     """装配级链路：消费者注册进 registry 后，改动 field 真的会被分发并生效。"""
+    from neobot_app.config.hot_reload import unregister_rule
     from neobot_app.observability import logging as logging_module
     from neobot_app.observability.logging import VerboseLoggingConsumer
     from neobot_app.runtime.hot_reload_registry import HotReloadRegistry
 
     applied: list[bool] = []
     monkeypatch.setattr(logging_module, "set_verbose_logging", applied.append)
-    registry = HotReloadRegistry([VerboseLoggingConsumer(recorder_active=False)])
-    assert "verbose_logging" in {consumer.name for consumer in registry.consumers}
+    try:
+        registry = HotReloadRegistry([VerboseLoggingConsumer(recorder_active=False)])
+        assert "verbose_logging" in {consumer.name for consumer in registry.consumers}
 
-    await registry.apply(
-        SimpleNamespace(debug=SimpleNamespace(enabled=False, verbose_logging="on")),
-        ["debug.verbose_logging"],
-    )
+        await registry.apply(
+            SimpleNamespace(debug=SimpleNamespace(enabled=False, verbose_logging="on")),
+            ["debug.verbose_logging"],
+        )
 
-    assert applied == [True]
+        assert applied == [True]
+    finally:
+        # 注册会把规则写进全局分类表，撤销避免污染后续用例。
+        unregister_rule("debug.verbose_logging")
