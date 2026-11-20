@@ -5,8 +5,8 @@ covers:
   - app/src/neobot_app/image/
   - app/src/neobot_app/vision_detect/
   - app/src/neobot_app/message/image_pipeline.py
-verified_against: 31ac5883
-verified_hash: 199183b47de8
+verified_against: f3285e8e
+verified_hash: 2cb8485ff643
 ---
 
 # 14 表情包与图像解析：入站图片解析 · 表情包库 · 本地 YOLO 检测
