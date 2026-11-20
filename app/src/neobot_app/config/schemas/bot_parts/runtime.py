@@ -84,7 +84,29 @@ class Debug:
 
     enabled: bool = field(
         default=False,
-        metadata={"description": "是否启用 Debug 模式"},
+        metadata={
+            "description": (
+                "是否启用 Debug 模式：把 OneBot 数据包、回复事件与 Markdown 调试包写到 "
+                "data/debug/log（不影响日志文件；日志细节见 verbose_logging）"
+            )
+        },
+    )
+    verbose_logging: str = field(
+        default="auto",
+        metadata={
+            "description": (
+                "详细日志：auto=跟随 Debug 模式；on=总是记录第三方库 DEBUG"
+                "（数据库 SQL、WebSocket 帧、图片解码、HTTP 头）；off=从不记录。"
+                "on 时日志量约为关闭时的 100 倍，排障结束请改回 auto/off"
+            ),
+            "options": ["auto", "on", "off"],
+            "options_strict": True,
+            "option_labels": {
+                "auto": "跟随 Debug 模式",
+                "on": "总是记录",
+                "off": "从不记录",
+            },
+        },
     )
     retention_days: int = field(
         default=10,

@@ -241,3 +241,13 @@ def test_openid_values_are_saved_in_console_config(tmp_path: Path) -> None:
     assert saved["chat"]["reply_blacklist"] == ["OpenId_Blacklist_123"]
     assert saved["chat"]["admin_accounts"] == ["OpenId_Admin_456"]
     assert saved["chat"]["group_list"] == ["OpenId_Group_789"]
+
+
+def test_debug_verbose_logging_section_save(tmp_path: Path) -> None:
+    """面板下拉回传的 auto/on/off 必须原样落盘，不能被当成枚举外的字符串丢掉。"""
+    manager, config_path = _manager(tmp_path)
+
+    manager.update_section("debug", {"verbose_logging": "on"})
+
+    saved = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["debug"]["verbose_logging"] == "on"

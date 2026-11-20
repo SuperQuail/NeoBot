@@ -28,6 +28,39 @@ _SELF_HEAL_EXCLUDE_MODULES = ("adapter_receiver", "app.image_parse", "app.self_h
 _STDLIB_FIELDS = set(stdlib_logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
 # 逐请求/逐连接的第三方 INFO 只对排障有用：控制台与面板不显示，DEBUG 文件仍保留。
 _PER_REQUEST_INFO_LOGGERS = frozenset({"aiohttp.access", "httpx"})
+#: 默认不把 DEBUG 写进日志文件的第三方 logger 根名。WebSocket 帧、SQL 回显、
+#: 图片解码与 HTTP 头在排障时有用，但平时会以数量级放大日志；需要时用
+#: ``[debug].verbose_logging`` 打开（见 ``resolve_verbose_logging``）。
+_NOISY_LOGGER_ROOTS = frozenset({"aiosqlite", "websockets", "PIL", "httpcore", "httpx", "urllib3"})
+_verbose_logging = False
+
+
+def resolve_verbose_logging(debug_cfg: Any) -> bool:
+    """把 ``[debug].verbose_logging`` 的 auto/on/off 解析成布尔值。
+
+    auto 跟随 Debug 模式；未知取值按 auto 处理（配置校验只查类型，不查枚举）。
+    """
+    mode = str(getattr(debug_cfg, "verbose_logging", "auto") or "auto").strip().lower()
+    if mode == "on":
+        return True
+    if mode == "off":
+        return False
+    if mode != "auto":
+        loguru.logger.warning(f"未知的 debug.verbose_logging 取值 {mode!r}，按 auto 处理")
+    return bool(getattr(debug_cfg, "enabled", False))
+
+
+def set_verbose_logging(enabled: bool) -> None:
+    """切换详细日志：第三方库 DEBUG 是否写进日志文件。运行期可安全调用。"""
+    global _verbose_logging
+    enabled = bool(enabled)
+    if enabled == _verbose_logging:
+        return
+    _verbose_logging = enabled
+    # 留一条分界标记：文件体积突然变化时能直接看出是哪次切换造成的。
+    loguru.logger.warning(
+        f"详细日志已{'开启' if enabled else '关闭'}：第三方库 DEBUG {'将' if enabled else '不再'}写入日志文件"
+    )
 
 
 def set_runtime_event_dispatcher(dispatcher: Any) -> None:
@@ -95,6 +128,12 @@ class _InterceptHandler(stdlib_logging.Handler):
     """接入第三方 stdlib 日志，同时保留 extra、原始调用位置与异常。"""
 
     def emit(self, record: stdlib_logging.LogRecord) -> None:
+        if (
+            not _verbose_logging
+            and record.levelno < stdlib_logging.INFO
+            and record.name.partition(".")[0] in _NOISY_LOGGER_ROOTS
+        ):
+            return
         try:
             level = loguru.logger.level(record.levelname).name
         except ValueError:
@@ -214,3 +253,29 @@ class LoguruLoggerAdapter:
 class LoguruLoggerFactory:
     def get_logger(self, module: str) -> Logger:
         return LoguruLoggerAdapter(loguru.logger.bind(module_name=module))
+
+
+class VerboseLoggingConsumer:
+    """``debug.verbose_logging`` 的热重载消费者。
+
+    只声明自己这个字段：``on``/``off`` 改完重载即生效；``auto`` 跟随的
+    ``debug.enabled`` 是启动期构建，仍需重启/软重启后重新解析。
+    """
+
+    name = "verbose_logging"
+    config_paths = ("debug.verbose_logging",)
+
+    @property
+    def hot_reload_policies(self) -> tuple[Any, ...]:
+        from neobot_app.config.hot_reload import HotReloadRule
+
+        return (
+            HotReloadRule(
+                "debug.verbose_logging",
+                True,
+                "日志过滤是模块级开关，重载后立即生效；auto 跟随 Debug 模式在软重启时重新解析",
+            ),
+        )
+
+    async def apply_config(self, config: Any) -> None:
+        set_verbose_logging(resolve_verbose_logging(getattr(config, "debug", None)))

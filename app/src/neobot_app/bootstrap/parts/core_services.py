@@ -11,7 +11,13 @@ from neobot_app.bootstrap._services import build_adapter_service, build_context_
 from neobot_app.bootstrap._usage import build_usage_components
 from neobot_app.core import DATA_DIR, SRC_DATA_DIR
 from neobot_app.database.identity_data_migration import official_only_mode
-from neobot_app.observability.logging import LoguruLoggerFactory, configure_loguru, set_console_show_module
+from neobot_app.observability.logging import (
+    LoguruLoggerFactory,
+    configure_loguru,
+    resolve_verbose_logging,
+    set_console_show_module,
+    set_verbose_logging,
+)
 from neobot_app.prompt.store import PromptStore, sync_default_prompts
 from neobot_app.runtime.adapter_supervisor import AdapterSupervisor
 from neobot_app.runtime.hot_reload_registry import HotReloadRegistry
@@ -29,7 +35,9 @@ def _build_core_services(state: _BuildState) -> None:
     logger_factory = _reuse_or("logger_factory", LoguruLoggerFactory)
     config = _load_config_for_reuse()
     bind_user_identity(DATA_DIR)
-    set_console_show_module(getattr(getattr(config, "debug", None), "console_show_module", False))
+    debug_cfg = getattr(config, "debug", None)
+    set_console_show_module(getattr(debug_cfg, "console_show_module", False))
+    set_verbose_logging(resolve_verbose_logging(debug_cfg))
 
     sync_data_files(SRC_DATA_DIR, DATA_DIR)
     sync_default_prompts(DATA_DIR, logger=logger_factory.get_logger("app.prompt"))

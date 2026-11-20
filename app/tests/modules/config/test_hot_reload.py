@@ -180,3 +180,48 @@ async def test_reload_command_handles_missing_callback() -> None:
     )
 
     assert "不可用" in adapter.sent[-1]
+
+
+# ── debug.verbose_logging：运行期生效的日志开关 ──────────────────────
+
+
+def test_verbose_logging_consumer_marks_field_hot() -> None:
+    from neobot_app.config.hot_reload import register_rules, unregister_rule
+    from neobot_app.observability.logging import VerboseLoggingConsumer
+
+    consumer = VerboseLoggingConsumer()
+    register_rules(consumer.hot_reload_policies)
+    try:
+        assert is_hot_reloadable(("debug", "verbose_logging")) is True
+        # auto 跟随的 enabled 仍是启动期构建，不能被误标为热重载。
+        assert is_hot_reloadable(("debug", "enabled")) is False
+
+        before = BotConfig()
+        after = BotConfig()
+        after.debug.verbose_logging = "on"
+        changes = summarize_changes(diff_configs(before, after))
+        assert [item["path"] for item in changes["hot_reload"]] == ["debug.verbose_logging"]
+    finally:
+        # 分类表是模块级全局状态，登记过就必须撤销，避免污染后续用例。
+        unregister_rule("debug.verbose_logging")
+
+
+async def test_verbose_logging_consumer_applies_mode(monkeypatch) -> None:
+    from neobot_app.observability import logging as logging_module
+    from neobot_app.observability.logging import VerboseLoggingConsumer
+
+    applied: list[bool] = []
+    monkeypatch.setattr(logging_module, "set_verbose_logging", applied.append)
+    consumer = VerboseLoggingConsumer()
+
+    await consumer.apply_config(
+        SimpleNamespace(debug=SimpleNamespace(enabled=False, verbose_logging="on"))
+    )
+    await consumer.apply_config(
+        SimpleNamespace(debug=SimpleNamespace(enabled=False, verbose_logging="off"))
+    )
+    await consumer.apply_config(
+        SimpleNamespace(debug=SimpleNamespace(enabled=True, verbose_logging="auto"))
+    )
+
+    assert applied == [True, False, True]
