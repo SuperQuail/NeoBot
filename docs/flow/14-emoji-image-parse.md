@@ -36,7 +36,7 @@ verified_hash: e611b6cdd946
 **spec 与现实的差异提示**：
 
 1. `VisionDetectService.inspect_image` 自称「备用接口」，docstring 写着「未来在 `image/parser.py` 的 `_parse_single_image` 视觉模型调用之前插入检测」（`service.py:435-443`）—— **HEAD 上这条插入不存在，全仓零调用点**。本地检测只由 agent 显式调用 `vision_detect__detect` 触发，不参与入站图片解析。
-2. emoji 目录的「即时感知」不是文件监听：它是**读取时**比对 `(目录下文件名元组, 目录 mtime_ns)` 快照（`service.py:848-883`）。没有读操作就不会感知，写操作仍然靠 300s 定时刷新兜底。
+2. emoji 目录的「即时感知」不是文件监听：它是**读取时**比对 `(目录下文件名元组, 目录 mtime_ns)` 快照（`service.py:848-883`）。没有读操作就不会感知，写操作仍然靠 15 分钟一次的定时检查兜底（目录指纹没变时跳过扫描，每 8 小时强制全扫一次）。
 3. 运行期生效的推理阈值来自 `models.toml` 的 `[library]` 段，不是 `config.toml`：`agent.vision_detect.default_conf / default_iou / imgsz` 只是首次生成骨架的初值，`refresh()` 之后会被索引里的值覆盖（`service.py:140-149`）。
 
 ## 流程
@@ -260,7 +260,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["_scan_folder 入口 start 300s 循环 各写操作末尾 即时刷新 / service.py:501"] --> B{"emoji 目录存在"}
+    A["_scan_folder 入口 start 900s 循环（指纹未变则跳过） 各写操作末尾 即时刷新 / service.py:501"] --> B{"emoji 目录存在"}
     B -- 否 --> B1["warning 后记录快照返回"]
     B -- 是 --> C["_list_image_files 只收 png jpg jpeg gif webp bmp 按名字排序 / :817"]
     C --> D{"有图片文件"}
@@ -289,6 +289,7 @@ flowchart TD
 * `_parse_batch` 的并发默认 20（`max_concurrency`，`build_emoji_service` 没有覆盖它），单张超时 60s，`asyncio.gather` 全收不抛。
 * 去重删的是**后落盘名字**那一份（保留 mtime 更小者），并把它的 `.txt` 一并删除；日志里两条分支都写「保留较旧文件」，看日志时别被文件名绕晕。
 * 整段扫描被 `_scan_lock` 串行化（`_scan_safe`，`:841`），定时刷新与即时刷新不会并发。
+* 定时循环先比对 `_dir_fingerprint()`（文件名 + 大小 + mtime_ns，图片与 `.txt` 都算）：没变化且未到 8 小时强制全扫周期就直接跳过。只有扫描成功才 `_stamp_scan()` 盖章；目录读失败、DB 查询失败或解析结果保存失败都不盖章，下一轮重试。
 </details>
 
 <details>

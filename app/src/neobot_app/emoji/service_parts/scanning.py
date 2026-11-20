@@ -19,10 +19,10 @@ class _ScanningMixin:
         # 但扫描结束若用最新目录快照盖章，下一次读取会误判「没有变化」而永久漏掉
         # 这个文件（A 群保存、B 群扫描并发时就是这样丢新表情包的）。
         snapshot_before = self._dir_snapshot()
+        fingerprint_before = self._dir_fingerprint()
         if not self._emoji_dir.exists():
             self._logger.warning(f"表情包目录不存在: {self._emoji_dir}")
-            with self._disk_sync_lock:
-                self._last_dir_snapshot = self._dir_snapshot()
+            self._stamp_scan(self._dir_snapshot(), fingerprint_before)
             return
 
         image_files = self._list_image_files()
@@ -31,8 +31,7 @@ class _ScanningMixin:
                 self._logger.info("表情包目录为空", directory=str(self._emoji_dir))
                 self._empty_scan_reported = True
             self._entries.clear()
-            with self._disk_sync_lock:
-                self._last_dir_snapshot = snapshot_before
+            self._stamp_scan(snapshot_before, fingerprint_before)
             await self._cleanup_stale_emoji_records({})
             return
         self._empty_scan_reported = False
@@ -63,7 +62,9 @@ class _ScanningMixin:
                 self._logger.warning(f"无法读取表情包文件 {file_path.name}: {exc}")
 
         if not hash_to_path:
+            # 所有文件都读不出来：不盖章，下一轮重试。
             return
+        scan_ok = True
 
         existing: dict[str, str] = {}
         use_counts: dict[str, int] = {}
@@ -123,6 +124,7 @@ class _ScanningMixin:
                     use_counts[file_hash] = record.use_count
 
             if lookup_failures:
+                scan_ok = False
                 self._logger.error(
                     "表情包数据库查询失败，本轮部分描述无法读取",
                     failed_count=lookup_failures,
@@ -156,6 +158,7 @@ class _ScanningMixin:
                         existing[file_hash] = analysis_text
                     await uow.commit()
             except Exception as exc:
+                scan_ok = False
                 self._logger.error(f"保存表情包解析结果失败: {exc}")
 
         self._rebuild_mapping(
@@ -172,8 +175,8 @@ class _ScanningMixin:
                 parsed_count=parsed_count,
                 duplicates_removed=duplicates_removed,
             )
-        with self._disk_sync_lock:
-            self._last_dir_snapshot = snapshot_before
+        if scan_ok:
+            self._stamp_scan(snapshot_before, fingerprint_before)
         await self._cleanup_stale_emoji_records(hash_to_path)
 
     async def _cleanup_stale_emoji_records(self, disk_files: dict[str, Path]) -> None:
