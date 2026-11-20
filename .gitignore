@@ -178,3 +178,6 @@ app/src/**/parts/__pycache__/
 /.quailegg/state/
 /.quailegg/lock
 /.quailegg/assets/
+
+# 本地临时工作目录
+tmp/
