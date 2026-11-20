@@ -61,10 +61,11 @@ def test_dir_fingerprint_tracks_file_and_sidecar_changes(tmp_path) -> None:
     assert third and third != second
 
 
-def test_dir_fingerprint_missing_directory_is_empty(tmp_path) -> None:
+def test_dir_fingerprint_missing_directory_is_none(tmp_path) -> None:
     service = EmojiService(data_dir=tmp_path, uow_factory=lambda: None)  # type: ignore[arg-type]
 
-    assert service._dir_fingerprint() == ()
+    # 缺失与空目录必须区分：空目录是「稳定状态」，缺失要持续重试。
+    assert service._dir_fingerprint() is None
 
 
 @pytest.mark.asyncio
@@ -146,7 +147,7 @@ async def test_full_scan_is_forced_after_eight_hours(tmp_path, monkeypatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_failed_scan_does_not_stamp(tmp_path, monkeypatch) -> None:
+async def test_failed_scan_does_not_stamp_and_is_retried(tmp_path, monkeypatch) -> None:
     """扫描失败不能盖章，否则目录不变就永远不会重试。"""
     engine, service = await _make_service(tmp_path)
     try:
@@ -164,5 +165,153 @@ async def test_failed_scan_does_not_stamp(tmp_path, monkeypatch) -> None:
 
         assert service._last_dir_fingerprint is None
         assert service._last_full_scan_at == 0.0
+
+        calls = 0
+
+        async def fake_scan_safe() -> None:
+            nonlocal calls
+            calls += 1
+
+        monkeypatch.setattr(service, "_scan_safe", fake_scan_safe)
+        assert await service._refresh_once() is True
+        assert calls == 1
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_does_not_stamp(tmp_path, monkeypatch) -> None:
+    """DB 清理失败不能盖章，否则陈旧记录要等到下次目录变化或 8 小时后才重试。"""
+    engine, service = await _make_service(tmp_path)
+    try:
+        emoji_dir = tmp_path / "emoji"
+        emoji_dir.mkdir()
+        (emoji_dir / "a.png").write_bytes(_png_bytes())
+        (emoji_dir / "a.txt").write_text("红色方块", encoding="utf-8")
+
+        async def failing_cleanup(disk_files):
+            return False
+
+        monkeypatch.setattr(service, "_cleanup_stale_emoji_records", failing_cleanup)
+
+        await service._scan_folder()
+
+        # 已经成功扫过一次；清理失败必须把旧指纹清掉，否则下一轮会误判“没变化”。
+        assert service._last_dir_fingerprint is None
+
+        calls = 0
+
+        async def fake_scan_safe() -> None:
+            nonlocal calls
+            calls += 1
+
+        monkeypatch.setattr(service, "_scan_safe", fake_scan_safe)
+        assert await service._refresh_once() is True
+        assert calls == 1
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_lookup_failure_does_not_stamp(tmp_path, monkeypatch) -> None:
+    """DB 查询失败同样不盖章：下一轮重试而不是封印到 8 小时后。"""
+
+    class _BrokenRepo:
+        async def get_by_hash(self, file_hash):
+            raise RuntimeError("db down")
+
+        async def set(self, *args, **kwargs):
+            return None
+
+        async def list_all(self):
+            return []
+
+    class _BrokenUow:
+        def __init__(self) -> None:
+            self.emojis = _BrokenRepo()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc) -> None:
+            return None
+
+        async def commit(self) -> None:
+            return None
+
+    service = EmojiService(data_dir=tmp_path, uow_factory=lambda: _BrokenUow())
+    emoji_dir = tmp_path / "emoji"
+    emoji_dir.mkdir()
+    (emoji_dir / "a.png").write_bytes(_png_bytes())
+    (emoji_dir / "a.txt").write_text("红色方块", encoding="utf-8")
+
+    await service._scan_folder()
+
+    assert service._last_dir_fingerprint is None
+
+
+@pytest.mark.asyncio
+async def test_missing_directory_retries_then_empty_recreation_clears_entries(
+    tmp_path,
+) -> None:
+    engine, service = await _make_service(tmp_path)
+    try:
+        emoji_dir = tmp_path / "emoji"
+        emoji_dir.mkdir()
+        (emoji_dir / "a.png").write_bytes(_png_bytes())
+        (emoji_dir / "a.txt").write_text("红色方块", encoding="utf-8")
+        await service._scan_safe()
+        assert service.emoji_count == 1
+
+        # 目录被移走：指纹为 None，定时循环每轮重试，且不清理数据库。
+        emoji_dir.rename(tmp_path / "emoji-moved")
+        assert await service._refresh_once() is True
+        assert service._last_dir_fingerprint is None
+        assert service.emoji_count == 1
+
+        # 重建为空目录：这一轮必须真正扫描并清空旧索引，之后才允许跳过。
+        (tmp_path / "emoji").mkdir()
+        assert await service._refresh_once() is True
+        assert service._entries == {}
+        assert await service._refresh_once() is False
+    finally:
+        await service.stop()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_unreadable_file_does_not_stamp(tmp_path) -> None:
+    """有文件读不出来时保留重试：瞬时 IO 错误不该被 8 小时强制周期封印。"""
+    engine, service = await _make_service(tmp_path)
+    try:
+        emoji_dir = tmp_path / "emoji"
+        emoji_dir.mkdir()
+        (emoji_dir / "good.png").write_bytes(_png_bytes())
+        (emoji_dir / "good.txt").write_text("好的", encoding="utf-8")
+        (emoji_dir / "bad.png").write_bytes(b"not-an-image")
+
+        await service._scan_folder()
+
+        assert service._last_dir_fingerprint is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_list_directory_failure_keeps_entries_and_does_not_stamp(tmp_path, monkeypatch) -> None:
+    engine, service = await _make_service(tmp_path)
+    try:
+        emoji_dir = tmp_path / "emoji"
+        emoji_dir.mkdir()
+        (emoji_dir / "a.png").write_bytes(_png_bytes())
+        (emoji_dir / "a.txt").write_text("红色方块", encoding="utf-8")
+        await service._scan_safe()
+
+        monkeypatch.setattr(service, "_list_image_files", lambda: None)
+        await service._scan_folder()
+
+        # 读目录失败：保留索引，但把指纹清掉，让下一轮继续重试。
+        assert service._last_dir_fingerprint is None
+        assert service.emoji_count == 1
     finally:
         await engine.dispose()

@@ -37,7 +37,12 @@ class _DiskWatchMixin:
     async def _scan_safe(self) -> None:
         """带互斥的扫描(定时刷新与即时刷新不并发执行,避免重复解析/重复清理)。"""
         async with self._scan_lock:
-            await self._scan_folder()
+            try:
+                await self._scan_folder()
+            except Exception:
+                # 异常路径也要让下一轮重试：保留旧指纹会让它看起来“已经扫过”。
+                self._mark_scan_failed()
+                raise
 
     def _dir_fingerprint(self) -> tuple[tuple[str, int, int], ...] | None:
         """定时扫描用的目录指纹：文件名 + 大小 + mtime_ns（图片与 .txt 侧文件都算）。
@@ -47,8 +52,9 @@ class _DiskWatchMixin:
         返回 None 表示读目录失败，调用方按「有变化」处理（下一轮重试）。
         """
         if not self._emoji_dir.exists():
-            # 目录不存在等价于空目录；重建时指纹会变化，下一轮自然重扫。
-            return ()
+            # 目录缺失与「空目录」必须区分：空目录该盖章（不反复扫），
+            # 缺失则返回 None 让定时循环每轮重试，重建后才能及时清掉旧索引。
+            return None
         try:
             entries: list[tuple[str, int, int]] = []
             for path in sorted(self._emoji_dir.iterdir()):
@@ -62,6 +68,11 @@ class _DiskWatchMixin:
             return tuple(entries)
         except OSError:
             return None
+
+    def _mark_scan_failed(self) -> None:
+        """清掉指纹，让下一轮定时检查重新扫描（失败路径专用）。"""
+        with self._disk_sync_lock:
+            self._last_dir_fingerprint = None
 
     def _stamp_scan(
         self,
@@ -118,7 +129,7 @@ class _DiskWatchMixin:
         精确数据由后台 _scan_folder 修正(编号经 _rebuild_mapping 保留)。
         """
         known = {entry.file_path for entry in self._entries.values()}
-        for path in self._list_image_files():
+        for path in self._list_image_files() or []:
             if path in known:
                 continue
             text = _read_sidecar_text(path) or "[待解析]"
