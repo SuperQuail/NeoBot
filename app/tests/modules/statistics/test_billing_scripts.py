@@ -151,6 +151,68 @@ def test_peak_valley_boundaries(tmp_path, beijing_time, is_peak):
     assert got.cost_cny == pytest.approx(peak_cost if is_peak else peak_cost * 0.5)
 
 
+# ── 缓存命中拆分：命中 token 不得再按未命中价计一遍 ────────────────
+
+
+def test_builtin_cost_cache_split() -> None:
+    """全命中 / 混合 / 只报命中 / 未报缓存字段，四种口径各算一次。"""
+    pricing = ModelPricing(
+        input_price_per_mtokens=2.0,
+        output_price_per_mtokens=8.0,
+        cache_hit_price_per_mtokens=0.04,
+    )
+    assert builtin_cost(
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        cache_hit_tokens=1_000_000,
+        cache_miss_tokens=0,
+        pricing=pricing,
+    ) == pytest.approx((1_000_000 * 0.04 + 1_000_000 * 8.0) / 1e6)
+    assert builtin_cost(
+        input_tokens=35_000,
+        output_tokens=1_200,
+        cache_hit_tokens=30_000,
+        cache_miss_tokens=5_000,
+        pricing=pricing,
+    ) == pytest.approx((30_000 * 0.04 + 5_000 * 2.0 + 1_200 * 8.0) / 1e6)
+    assert builtin_cost(
+        input_tokens=1_000_000,
+        output_tokens=0,
+        cache_hit_tokens=400_000,
+        cache_miss_tokens=0,
+        pricing=pricing,
+    ) == pytest.approx((400_000 * 0.04 + 600_000 * 2.0) / 1e6)
+    assert builtin_cost(
+        input_tokens=1_000_000,
+        output_tokens=0,
+        cache_hit_tokens=0,
+        cache_miss_tokens=0,
+        pricing=pricing,
+    ) == pytest.approx(2.0)
+
+
+def test_peak_valley_full_cache_hit_charges_hit_price_once(tmp_path) -> None:
+    """峰谷脚本同样只把命中 token 计一次（周三 10:00 高峰，×1）。"""
+    service = make_service(tmp_path)
+    outcome = service.preview(
+        script_name="deepseek_peak_valley",
+        ctx=context(
+            usage={
+                "input_tokens": 1_000_000,
+                "output_tokens": 0,
+                "cache_hit_tokens": 1_000_000,
+                "cache_miss_tokens": 0,
+            },
+            pricing=ModelPricing(
+                input_price_per_mtokens=2.0, cache_hit_price_per_mtokens=0.04
+            ),
+            occurred_at=datetime(2026, 9, 9, 2, 0, tzinfo=timezone.utc),
+        ),
+    )
+    assert outcome.cost_cny == pytest.approx(0.04)
+    assert outcome.components["cache_miss"] == 0.0
+
+
 # ── A3：四种入口组合 ──────────────────────────────────────────────
 
 FUNC_BODY = "def compute_cost(ctx):\n    return 1.5\n"
