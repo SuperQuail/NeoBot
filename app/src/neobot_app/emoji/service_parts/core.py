@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import asyncio
 import threading
+import time
 
 from pathlib import Path
 from typing import Any
@@ -63,8 +64,10 @@ class _CoreMixin:
         # 定时扫描用的目录指纹：上次“成功扫描”时的 (文件名, 大小, mtime_ns)。
         # 只放内存：启动时 start() 必然全扫一次重建索引，持久化没有意义。
         self._last_dir_fingerprint: tuple[tuple[str, int, int], ...] | None = None
-        # 上次成功完整扫描的 monotonic 时间，用于 _FULL_SCAN_INTERVAL_SECONDS 强制全扫。
-        self._last_full_scan_at: float = 0.0
+        # 上次（成功或强制跑过）完整扫描的 monotonic 时间，用于 _FULL_SCAN_INTERVAL_SECONDS。
+        # 初值必须取构造时刻：monotonic 是开机时长，填 0.0 会让开机已 ≥8 小时的宿主
+        # 第一轮就判定「强制全扫到期」，每轮清空不可读名单、永远不盖章。
+        self._last_full_scan_at: float = time.monotonic()
         # 已确认读不出来的文件：文件名 → (大小, mtime_ns)。签名没变就不再重试，
         # 否则永久损坏/被锁的文件会让指纹永不上章，定时扫描每 15 分钟全扫一次。
         self._unreadable_files: dict[str, tuple[int, int]] = {}

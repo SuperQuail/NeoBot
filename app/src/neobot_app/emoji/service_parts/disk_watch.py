@@ -36,7 +36,13 @@ class _DiskWatchMixin:
                 file_count=len(fingerprint),
             )
             return False
-        await self._scan_safe()
+        try:
+            await self._scan_safe()
+        finally:
+            if full_scan_due:
+                # 强制周期按「跑过」算，不按「成功」算：失败后若仍算到期，下一轮又会
+                # 清空名单重试同一个坏文件，于是每轮都是强制全扫、永远不盖章。
+                self._last_full_scan_at = time.monotonic()
         return True
 
     async def _scan_safe(self) -> None:

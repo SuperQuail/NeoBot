@@ -6,7 +6,7 @@ covers:
   - app/src/neobot_app/vision_detect/
   - app/src/neobot_app/message/image_pipeline.py
 verified_against: f3285e8e
-verified_hash: d554655cf481
+verified_hash: 75580d9d4732
 ---
 
 # 14 表情包与图像解析：入站图片解析 · 表情包库 · 本地 YOLO 检测
@@ -291,6 +291,7 @@ flowchart TD
 * 整段扫描被 `_scan_lock` 串行化（`_scan_safe`，`:841`），定时刷新与即时刷新不会并发。
 * 定时循环先比对 `_dir_fingerprint()`（文件名 + 大小 + mtime_ns，目录下所有常规文件）：没变化且未到 8 小时强制全扫周期就直接跳过。只有扫描成功且 DB 清理成功才 `_stamp_scan()` 盖章；目录缺失/读失败、DB 查询失败、解析或清理失败都不盖章，下一轮重试。
 * **唯一的例外是「已知不可读」的文件**：解码失败时把它的签名（文件名 + 大小 + mtime_ns）记进 `_unreadable_files`（`service_parts/scanning.py:81`）；下一轮同名同签名直接跳过、不计入本轮失败，于是第二轮就能盖章。文件被替换（签名变化）时立刻重试，8 小时强制全扫也会先清空这份记忆再试一次（`service_parts/disk_watch.py:30`）。否则一个永久损坏/被杀软锁住的文件会让指纹永不上章，定时扫描每 15 分钟把整个目录重扫一遍（issue #336）。
+* **两个时间口径别写错**：强制全扫跑过就推进 `_last_full_scan_at`（失败也算，否则强制重试失败的下一轮又会清空记忆重试同一个文件），且它的初值取**构造时刻**——`time.monotonic()` 是开机时长，填 `0.0` 会让开机已 ≥8 小时的宿主第一轮就「强制到期」，修复整体失效（`service_parts/core.py:69`）。代价：瞬时读失败要等签名变化或那次强制全扫才恢复（最长 8 小时）。
 </details>
 
 <details>
@@ -529,7 +530,7 @@ flowchart TD
 | 状态 | 谁置位 | 谁清理 | 失败时停在哪 |
 |---|---|---|---|
 | `EmojiService._entries` 编号映射 | `_scan_folder` 走 `_rebuild_mapping`；读接口走 `_merge_disk_entries_fast` | 目录无图片时 `_entries.clear()`；`_rebuild_mapping` 整体替换 | DB 查询或写入异常只记 error 日志，索引仍重建（编号可能暂时与库不一致） |
-| `_last_dir_snapshot` / `_last_dir_fingerprint` / `_last_full_scan_at` | 扫描成功且 DB 清理成功才 `_stamp_scan` 盖章；`_notify_disk_changed` 只更新快照 | `stop()` 置空快照与指纹（全扫时间随实例重建） | 目录缺失/读失败/DB 查询失败/解析或清理失败都不盖章，下一轮重试；缺失目录指纹为 None，持续重试 |
+| `_last_dir_snapshot` / `_last_dir_fingerprint` / `_last_full_scan_at` | 扫描成功且 DB 清理成功才 `_stamp_scan` 盖章；强制全扫跑过与否都推进 `_last_full_scan_at`；`_notify_disk_changed` 只更新快照 | `stop()` 置空快照与指纹（全扫时间随实例重建） | 目录缺失/读失败/DB 查询失败/解析或清理失败都不盖章，下一轮重试；缺失目录指纹为 None，持续重试 |
 | `_disk_refresh_task` 即时刷新 | `_schedule_disk_refresh`（读接口触发） | 任务自身结束；`stop()` 先 shield 等 5s 再 cancel | 刷新异常只 error 日志，不影响读取 |
 | `_refresh_task` 900s（15 分钟）定时检查 | `start()` | `stop()` cancel 并 await | 单轮异常只 error，循环继续；指纹未变且未到 8 小时强制全扫则跳过 |
 | `_unreadable_files`（进程内，文件名 → 大小 + mtime_ns） | 解码失败时登记签名 | 同一文件读成功即移除；8 小时强制全扫前整体清空 | 读不出但签名没变的文件跳过重试；文件被替换（签名变化）时重新尝试 |

@@ -157,6 +157,8 @@ async def test_failed_scan_does_not_stamp_and_is_retried(tmp_path, monkeypatch) 
         emoji_dir.mkdir()
         (emoji_dir / "a.png").write_bytes(_png_bytes())  # 没有 txt，会走视觉解析
 
+        stamped_at = service._last_full_scan_at
+
         async def boom(items):
             raise RuntimeError("parse failed")
 
@@ -166,7 +168,7 @@ async def test_failed_scan_does_not_stamp_and_is_retried(tmp_path, monkeypatch) 
             await service._scan_folder()
 
         assert service._last_dir_fingerprint is None
-        assert service._last_full_scan_at == 0.0
+        assert service._last_full_scan_at == stamped_at
 
         calls = 0
 
@@ -345,6 +347,13 @@ async def test_permanently_unreadable_file_is_not_retried_every_round(
         )
         assert await service._refresh_once() is True
         assert attempts.count("bad.png") == 1
+        assert service._last_dir_fingerprint is None
+
+        # 强制重试又失败：强制周期按「跑过」算，下一轮不能再次清空名单重试同一个文件，
+        # 否则每轮都是强制全扫（评审实测的 1/2/3/4 次解码）。
+        assert await service._refresh_once() is True
+        assert attempts.count("bad.png") == 1
+        assert service._last_dir_fingerprint == service._dir_fingerprint()
 
         # 文件被替换（签名变化）：重新尝试并读成功。
         attempts.clear()
@@ -357,6 +366,30 @@ async def test_permanently_unreadable_file_is_not_retried_every_round(
         assert await service._refresh_once() is False
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_long_uptime_start_does_not_force_full_scan(tmp_path, monkeypatch) -> None:
+    """monotonic 是开机时长：开机已 9 小时再启动的进程，第一轮不能算「强制全扫到期」。"""
+    monkeypatch.setattr(time, "monotonic", lambda: 9 * 60 * 60)
+    service = EmojiService(data_dir=tmp_path, uow_factory=lambda: None)  # type: ignore[arg-type]
+    assert service._last_full_scan_at == 9 * 60 * 60
+
+    emoji_dir = tmp_path / "emoji"
+    emoji_dir.mkdir()
+    (emoji_dir / "a.png").write_bytes(_png_bytes())
+    service._last_dir_fingerprint = service._dir_fingerprint()
+
+    calls = 0
+
+    async def fake_scan_safe() -> None:
+        nonlocal calls
+        calls += 1
+
+    monkeypatch.setattr(service, "_scan_safe", fake_scan_safe)
+
+    assert await service._refresh_once() is False
+    assert calls == 0
 
 
 @pytest.mark.asyncio
