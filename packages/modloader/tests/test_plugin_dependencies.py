@@ -477,6 +477,34 @@ class InstallBeforeImportTest(unittest.IsolatedAsyncioTestCase):
         finally:
             self._cleanup(baseline)
 
+    async def test_invalid_requirement_returns_result_instead_of_raising(self) -> None:
+        """坏依赖串不能把 load_plugin_path 抛穿：它必须照旧返回 PluginOperationResult。"""
+        baseline = set(sys.modules)
+
+        class FakeInstaller:
+            async def confirm_and_install(self, requirements: list[str]) -> object:
+                raise AssertionError("非法依赖串不该触发安装")
+
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                package = root / "plugins" / "bad-req"
+                package.mkdir(parents=True)
+                (package / "plugin.toml").write_text(
+                    'name = "bad-req"\npython_dependencies = ["feedparser>="]\n', encoding="utf-8"
+                )
+                (package / "__init__.py").write_text(
+                    "from neobot_modloader import Plugin\nplugin = Plugin('bad-req')\n", encoding="utf-8"
+                )
+                runtime = make_runtime(root, dependency_installer=FakeInstaller())
+
+                result = await runtime.load_plugin_path(package, auto_install_dependencies=True)
+
+                self.assertFalse(result.ok)
+                await runtime.stop_all()
+        finally:
+            self._cleanup(baseline)
+
     async def test_install_prompt_is_not_repeated_by_activation(self) -> None:
         """预装被拒后不再二次提问：同一次加载只问一遍。"""
         calls: list[list[str]] = []

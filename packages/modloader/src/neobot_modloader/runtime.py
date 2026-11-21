@@ -1028,10 +1028,10 @@ class PluginRuntime:
             return False
         try:
             requirements = read_python_dependencies(read_manifest(manifest))
+            missing = missing_python_dependencies(requirements)
         except Exception:
-            # 清单本身有问题时交给加载器报错，这里不抢先失败。
+            # 清单或依赖串有问题时交给加载器报错，这里不抢先失败。
             return False
-        missing = missing_python_dependencies(requirements)
         if not missing:
             return False
         await self.dependency_installer.confirm_and_install(list(missing))
