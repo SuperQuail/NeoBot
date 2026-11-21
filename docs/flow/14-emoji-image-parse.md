@@ -6,7 +6,7 @@ covers:
   - app/src/neobot_app/vision_detect/
   - app/src/neobot_app/message/image_pipeline.py
 verified_against: f3285e8e
-verified_hash: 2cb8485ff643
+verified_hash: d554655cf481
 ---
 
 # 14 表情包与图像解析：入站图片解析 · 表情包库 · 本地 YOLO 检测
@@ -265,7 +265,7 @@ flowchart TD
     B -- 是 --> C["_list_image_files 只收 png jpg jpeg gif webp bmp 按名字排序 / :817"]
     C --> D{"有图片文件"}
     D -- 无 --> D1["_entries.clear 并清理 DB 幽灵记录 / :515"]
-    D -- 有 --> E["逐文件 prepare_local_image_async 取 sha256 与宽高 / :520"]
+    D -- 有 --> E["逐文件 prepare_local_image_async 取 sha256 与宽高 / scanning.py:57<br/>签名未变的已知不可读文件直接跳过"]
     E --> F{"哈希此前出现过"}
     F -- 是 --> G["去重 保留 mtime 更旧的那个 另一份图片与 txt 一起 unlink / :526"]
     F -- 否 --> H["登记 hash 到 path"]
@@ -290,6 +290,7 @@ flowchart TD
 * 去重删的是**后落盘名字**那一份（保留 mtime 更小者），并把它的 `.txt` 一并删除；日志里两条分支都写「保留较旧文件」，看日志时别被文件名绕晕。
 * 整段扫描被 `_scan_lock` 串行化（`_scan_safe`，`:841`），定时刷新与即时刷新不会并发。
 * 定时循环先比对 `_dir_fingerprint()`（文件名 + 大小 + mtime_ns，目录下所有常规文件）：没变化且未到 8 小时强制全扫周期就直接跳过。只有扫描成功且 DB 清理成功才 `_stamp_scan()` 盖章；目录缺失/读失败、DB 查询失败、解析或清理失败都不盖章，下一轮重试。
+* **唯一的例外是「已知不可读」的文件**：解码失败时把它的签名（文件名 + 大小 + mtime_ns）记进 `_unreadable_files`（`service_parts/scanning.py:81`）；下一轮同名同签名直接跳过、不计入本轮失败，于是第二轮就能盖章。文件被替换（签名变化）时立刻重试，8 小时强制全扫也会先清空这份记忆再试一次（`service_parts/disk_watch.py:30`）。否则一个永久损坏/被杀软锁住的文件会让指纹永不上章，定时扫描每 15 分钟把整个目录重扫一遍（issue #336）。
 </details>
 
 <details>
@@ -531,6 +532,7 @@ flowchart TD
 | `_last_dir_snapshot` / `_last_dir_fingerprint` / `_last_full_scan_at` | 扫描成功且 DB 清理成功才 `_stamp_scan` 盖章；`_notify_disk_changed` 只更新快照 | `stop()` 置空快照与指纹（全扫时间随实例重建） | 目录缺失/读失败/DB 查询失败/解析或清理失败都不盖章，下一轮重试；缺失目录指纹为 None，持续重试 |
 | `_disk_refresh_task` 即时刷新 | `_schedule_disk_refresh`（读接口触发） | 任务自身结束；`stop()` 先 shield 等 5s 再 cancel | 刷新异常只 error 日志，不影响读取 |
 | `_refresh_task` 900s（15 分钟）定时检查 | `start()` | `stop()` cancel 并 await | 单轮异常只 error，循环继续；指纹未变且未到 8 小时强制全扫则跳过 |
+| `_unreadable_files`（进程内，文件名 → 大小 + mtime_ns） | 解码失败时登记签名 | 同一文件读成功即移除；8 小时强制全扫前整体清空 | 读不出但签名没变的文件跳过重试；文件被替换（签名变化）时重新尝试 |
 | `.txt` 侧文件（描述副本） | 视觉解析回写、`update_entry_description`、`add_image_bytes`（有 description 时） | `delete_entry`、去重删除时一并 unlink | `[解析失败]` 与 `[未配置视觉模型]` 也会落盘并被当成权威描述 |
 | `ImageParseService._pending[queue_key]` | `parse_message_images` | 任务 done 回调；`wait_for_queue` 开头 pop | 无人等待时靠 done 回调回收，集合空即删 key |
 | `ImageAnalysis` 描述缓存行 | `_parse_single_image`（`source=chat_image`） | 本图范围内没有 TTL 与清理 | set 失败只 warning，同一张图下次再调一次视觉模型 |

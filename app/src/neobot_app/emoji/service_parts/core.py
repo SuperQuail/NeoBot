@@ -65,6 +65,9 @@ class _CoreMixin:
         self._last_dir_fingerprint: tuple[tuple[str, int, int], ...] | None = None
         # 上次成功完整扫描的 monotonic 时间，用于 _FULL_SCAN_INTERVAL_SECONDS 强制全扫。
         self._last_full_scan_at: float = 0.0
+        # 已确认读不出来的文件：文件名 → (大小, mtime_ns)。签名没变就不再重试，
+        # 否则永久损坏/被锁的文件会让指纹永不上章，定时扫描每 15 分钟全扫一次。
+        self._unreadable_files: dict[str, tuple[int, int]] = {}
         self._disk_sync_lock = threading.Lock()
         self._disk_refresh_task: asyncio.Task[None] | None = None
         self._scan_lock = asyncio.Lock()
