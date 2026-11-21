@@ -18,6 +18,7 @@ from neobot_app.statistics.tracker import UsageTracker
 from neobot_chat.models import ModelPricing, ModelSettings, RegisteredModel, model_registry
 from neobot_storage.engine import create_engine, sqlite_url
 from neobot_storage.models import Base, ModelUsageRecord
+from neobot_storage.repositories.usage import SqlAlchemyUsageRepository
 
 
 class RecordingLogger:
@@ -119,6 +120,7 @@ def register_model(
     billing_config: dict | None = None,
     input_price: float = 1.0,
     output_price: float = 2.0,
+    cache_hit_price: float = 0.0,
 ) -> None:
     model_registry.register(
         RegisteredModel(
@@ -131,6 +133,7 @@ def register_model(
             pricing=ModelPricing(
                 input_price_per_mtokens=input_price,
                 output_price_per_mtokens=output_price,
+                cache_hit_price_per_mtokens=cache_hit_price,
             ),
             settings=ModelSettings(),
             model_type="chat",
@@ -193,6 +196,27 @@ async def test_no_billing_service_matches_legacy(tmp_path, session_factory):
     records = await fetch_records(session_factory)
     assert records[0].cost_cny == expected_builtin()
     assert records[0].cost_source == "builtin"
+
+
+async def test_full_cache_hit_is_not_charged_twice(tmp_path, session_factory):
+    """全缓存命中（miss = 0）时命中 token 只按命中价计一次，面板聚合同步正确。"""
+    register_model("m-cache", input_price=2.0, output_price=8.0, cache_hit_price=0.04)
+    tracker = UsageTracker(session_factory, logger=RecordingLogger())
+    await tracker.record(
+        module="reply_agent",
+        model_name="deepseek-flash",
+        registered_key="m-cache",
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        cache_hit_tokens=1_000_000,
+        cache_miss_tokens=0,
+    )
+    records = await fetch_records(session_factory)
+    expected = (1_000_000 * 0.04 + 1_000_000 * 8.0) / 1_000_000.0
+    assert records[0].cost_cny == pytest.approx(expected)  # 修复前命中部分再按 2.0/百万计一遍
+    async with session_factory() as session:
+        points = await SqlAlchemyUsageRepository(session).series_since(None, bucket="hour")
+    assert sum(point["cost_cny"] for point in points) == pytest.approx(expected)
 
 
 # ── A4：cost_cny 仍是可 SUM 的标量 ───────────────────────────────
