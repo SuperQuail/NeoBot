@@ -2,6 +2,8 @@
 flow: 08b-plugin-runtime
 covers:
   - packages/modloader/src/neobot_modloader/runtime.py
+  - packages/modloader/src/neobot_modloader/service.py
+  - packages/modloader/src/neobot_modloader/service_registry.py
   - packages/modloader/src/neobot_modloader/hot_reload.py
   - app/src/neobot_app/runtime/local_control.py
   - packages/modloader/src/neobot_modloader/development.py
@@ -30,8 +32,8 @@ covers:
   - scripts/plugin_ecosystem.py
   - scripts/plugin_demo.py
   - scripts/plugin_demo/
-verified_against: 5d26dec8
-verified_hash: c26bdf9ec578
+verified_against: 23bdfd26
+verified_hash: 70f4c6a847c3
 ---
 
 # 08b 插件运行时：门面动作矩阵 · 热重载回滚 · 安装器 · 钩子总线

@@ -97,7 +97,12 @@ def declarations(runtime: PluginRuntime, name: str) -> Any:
 
 
 def runtime_providers(runtime: PluginRuntime) -> dict[str, Any]:
-    entries = dict(runtime._service_declarations)
+    # 停用 / 自动禁用的插件不能继续占住声明：赢家不可用时回落到下一个可用提供者。
+    entries = {
+        name: entry
+        for name, entry in runtime._service_declarations.items()
+        if name not in runtime._auto_disabled and runtime._resolve_enabled_state(name, entry.enabled)
+    }
     for name in runtime.manager.names():
         entries[name] = runtime.manager.get_record(name).plugin
     return providers_for(entries.values())

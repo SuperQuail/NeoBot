@@ -544,8 +544,11 @@ class PluginRuntime:
         for name in list(self.manager.names()):
             async with self._named_operation(name):
                 record = self.manager.get_record(name)
-                if not service_issues(self, record.plugin):
-                    await self.manager.load_plugin(name)
+                issues = service_issues(self, record.plugin)
+                if issues:
+                    self.logger.warning(f"插件服务依赖未满足，跳过加载 ({name}): {'; '.join(issues)}")
+                    continue
+                await self.manager.load_plugin(name)
 
     async def start_all(self) -> None:
         for name in list(self.manager.names()):
@@ -1612,6 +1615,10 @@ class PluginRuntime:
             self._auto_disabled.pop(name, None)
             self._loaded_sources.pop(name, None)
             self._loaded_flags.pop(name, None)
+            # 停用的声明要让出服务名：重建选择并按新的提供者恢复被联动停用的使用方。
+            previous_providers = self._service_providers
+            refresh_selection(self)
+            await reconcile_selection(self, previous_providers)
             return PluginOperationResult(
                 ok=True,
                 name=name,
@@ -2249,8 +2256,6 @@ class PluginRuntime:
         return candidate if candidate.is_file() else None
 
     def _register(self, loaded: LoadedPlugin) -> bool:
-        self._service_declarations[loaded.name] = ServiceManifest.from_entry(loaded)
-        refresh_selection(self)
         previous_defaults = self._manifest_configs.get(loaded.name)
         try:
             validate_plugin_name(loaded.name)
@@ -2311,6 +2316,9 @@ class PluginRuntime:
 
             prepare_runtime_storage(self, loaded.name, self._path_for_loaded(loaded))
             self.manager.register(loaded.plugin, context)
+            # 注册成功后才写声明：失败时不留幽灵提供者，下一轮复查可以直接重试。
+            self._service_declarations[loaded.name] = ServiceManifest.from_entry(loaded)
+            refresh_selection(self)
             self._loaded_modules[loaded.name] = loaded.module_names
             self._loaded_paths[loaded.name] = self._path_for_loaded(loaded)
             self._loaded_sources[loaded.name] = loaded.source
