@@ -196,6 +196,60 @@ async def test_registration_failure_leaves_no_provider_declaration(tmp_path, mon
         await rt.stop_all()
 
 
+async def test_startup_registration_failure_falls_back_to_next_provider(tmp_path, monkeypatch):
+    body = "@plugin.on_load\nasync def load(ctx):\n    ctx.services.provide('clock', ctx.plugin_name)\n"
+    package(tmp_path, "a_low", provides=["clock"], body=body, priority=1)
+    package(tmp_path, "z_ghost", provides=["clock"], body=body, priority=10)
+    package(tmp_path, "consumer", required=["clock"])
+    rt = make_runtime(tmp_path)
+    register = rt.manager.register
+
+    def flaky(plugin, context):
+        if context.plugin_name == "z_ghost":
+            raise RuntimeError("register boom")
+        register(plugin, context)
+
+    monkeypatch.setattr(rt.manager, "register", flaky)
+    await start_runtime(rt)
+    try:
+        # 启动扫描期注册失败也不能占住服务名
+        assert rt.dependency_report("consumer")["services"][0]["provider"] == "a_low"
+        assert rt.host.services.require("clock") == "a_low"
+        assert rt.control.get("consumer").state == "running"
+    finally:
+        await rt.stop_all()
+
+
+async def test_auto_disabled_provider_falls_back_immediately(tmp_path):
+    body = "@plugin.on_load\nasync def load(ctx):\n    ctx.services.provide('clock', ctx.plugin_name)\n"
+    package(tmp_path, "a_low", provides=["clock"], body=body, priority=1)
+    package(tmp_path, "z_high", provides=["clock"], required=["dbapi"], body=body, priority=10)
+    package(tmp_path, "consumer", required=["clock"])
+    rt = make_runtime(tmp_path)
+    await start_runtime(rt)
+    try:
+        # 自动禁用的高优先级提供者不能继续占位，使用方应立刻落到次选
+        assert rt.dependency_report("consumer")["services"][0]["provider"] == "a_low"
+        assert rt.host.services.require("clock") == "a_low"
+        assert rt.control.get("consumer").state == "running"
+    finally:
+        await rt.stop_all()
+
+
+async def test_only_disabled_provider_reports_disabled_not_missing(tmp_path):
+    package(tmp_path, "only", provides=["clock"], enabled=False)
+    package(tmp_path, "consumer", required=["clock"])
+    rt = make_runtime(tmp_path)
+    await start_runtime(rt)
+    try:
+        slot = rt.dependency_report("consumer")["services"][0]
+        assert slot["provider"] == "only"
+        assert slot["status"] == "disabled"
+        assert rt.control.get("consumer").auto_disabled
+    finally:
+        await rt.stop_all()
+
+
 async def test_explicit_service_version_can_exceed_plugin_version(tmp_path):
     package(
         tmp_path,

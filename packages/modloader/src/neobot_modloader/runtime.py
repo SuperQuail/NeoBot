@@ -151,6 +151,8 @@ class PluginRuntime:
         )
         self._service_declarations: dict[str, ServiceManifest] = {}
         self._service_providers: dict[str, Any] = {}
+        #: 扫描（同步）期间的提供者选择变化，交给下一次异步入口补联动恢复。
+        self._pending_selection: dict[str, Any] | None = None
         self.host = host or PluginHostFacade()
         self.host.services.ready = self._service_provider_ready
         enabled_resolver = self._resolve_enabled_state if self._state_store is not None else None
@@ -488,6 +490,7 @@ class PluginRuntime:
             if isinstance(item, DiscoveredPlugin):
                 self._service_declarations.setdefault(item.name, ServiceManifest.from_entry(item))
         refresh_selection(self)
+        previous_providers = self._service_providers
         results = order_results(deduped, hosts=self._host_services(), service_candidates=list(self._service_declarations.values()))
         loaded_count = 0
         error_count = 0
@@ -538,6 +541,12 @@ class PluginRuntime:
                     existing.add(result.name)
                 else:
                     error_count += 1
+                    # 注册失败不能继续占住服务名：回滚声明，复查（重新加载）可重试
+                    self._service_declarations.pop(result.name, None)
+        # 自动禁用 / 注册失败都会改变选择：同步阶段先重建，联动恢复交给异步入口
+        refresh_selection(self)
+        if previous_providers != self._service_providers and self._pending_selection is None:
+            self._pending_selection = previous_providers
         self.logger.info(f"插件扫描完成: loaded={loaded_count}, errors={error_count}")
 
     async def load_registered(self) -> None:
@@ -549,6 +558,13 @@ class PluginRuntime:
                     self.logger.warning(f"插件服务依赖未满足，跳过加载 ({name}): {'; '.join(issues)}")
                     continue
                 await self.manager.load_plugin(name)
+        await self._reconcile_pending_selection()
+
+    async def _reconcile_pending_selection(self) -> None:
+        """扫描期选择变化在第一个异步入口补联动：按新提供者恢复被自动禁用的使用方。"""
+        previous, self._pending_selection = self._pending_selection, None
+        if previous is not None:
+            await reconcile_selection(self, previous)
 
     async def start_all(self) -> None:
         for name in list(self.manager.names()):
@@ -571,6 +587,7 @@ class PluginRuntime:
                 prerequisite for prerequisites, _ in self._auto_disabled.values() for prerequisite in prerequisites
             ):
                 await self._cascade_restore_dependents(key)
+        await self._reconcile_pending_selection()
         if self._hot_reloader is not None:
             await self._hot_reloader.start()
 
@@ -1821,11 +1838,12 @@ class PluginRuntime:
         issues += service_issues(self, loaded)
         if issues:
             # 前置插件未满足：自动禁用（不是错误），前置插件就绪后可再启用
+            reason = "; ".join(issues)
+            # 先登记自动禁用再刷新：这条声明立刻让出服务名，回落提供者可以接管
+            self._remember_auto_disabled(loaded.name, loaded.dependencies, reason)
             if self.manager.get_record(loaded.name) is None:
                 self._service_declarations[loaded.name] = ServiceManifest.from_entry(loaded)
                 refresh_selection(self)
-            reason = "; ".join(issues)
-            self._remember_auto_disabled(loaded.name, loaded.dependencies, reason)
             self.logger.warning(f"插件依赖未满足，已自动禁用 ({loaded.name}): {reason}")
             self.loader.clear_module_cache(loaded.module_names)
             return PluginOperationResult(
