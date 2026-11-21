@@ -4,12 +4,12 @@ import { HotBadge } from './FieldChrome';
 import { Highlight } from './Highlight';
 import { fieldMatches } from './searchHit';
 import { resolveFieldComponent } from './fieldRegistry';
-import { pathKey, type FieldProps } from './fieldTypes';
+import { isScalarKind, pathKey, type FieldProps } from './fieldTypes';
 import type { FieldDescriptor } from '../../api/types';
 import { setPath } from '../../utils/paths';
 
 function retainsCollectionDraft(field: FieldDescriptor): boolean {
-  if (field.kind === 'scalar') return false;
+  if (isScalarKind(field.kind)) return false;
   if (field.kind === 'group') return !!field.fields?.some(retainsCollectionDraft);
   return true;
 }
@@ -42,7 +42,7 @@ export default function Field(props: FieldProps) {
   if (
     filter &&
     !descriptor.force_visible &&
-    descriptor.kind === 'scalar' &&
+    isScalarKind(descriptor.kind) &&
     !fieldMatches(descriptor, filter)
   )
     return null;
@@ -55,7 +55,7 @@ export default function Field(props: FieldProps) {
     const inherited = descriptor.force_visible === true;
     const visible = (descriptor.fields || []).filter(
       (field) =>
-        (!filter || inherited || field.kind !== 'scalar' || fieldMatches(field, filter)) &&
+        (!filter || inherited || !isScalarKind(field.kind) || fieldMatches(field, filter)) &&
         !(paramCatalog && field.hidden),
     );
     if (filter && visible.length === 0) return null;

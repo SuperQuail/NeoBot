@@ -70,7 +70,18 @@ export interface DeployStatus {
 }
 
 /** schema 字段描述（由后端 config_manager.describe_dataclass 生成） */
-export type FieldKind = 'scalar' | 'group' | 'list' | 'dict' | 'model_list' | 'model_params' | 'json';
+export type FieldKind =
+  | 'scalar'
+  | 'group'
+  | 'list'
+  | 'dict'
+  | 'model_list'
+  | 'model_params'
+  | 'json'
+  // 时间类标量：取值一律 ISO 8601（date=YYYY-MM-DD / time=HH:MM:SS / datetime=YYYY-MM-DDTHH:MM:SS）
+  | 'date'
+  | 'time'
+  | 'datetime';
 
 export interface FieldDescriptor {
   name: string;

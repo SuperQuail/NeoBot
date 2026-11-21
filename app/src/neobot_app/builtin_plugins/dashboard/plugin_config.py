@@ -91,8 +91,9 @@ def _jsonable(value: Any, *, for_toml: bool = False) -> Any:
         return {str(key): _jsonable(item, for_toml=for_toml) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_jsonable(item, for_toml=for_toml) for item in value]
-    if for_toml and isinstance(value, (datetime, date, time)):
-        return value
+    if isinstance(value, (datetime, date, time)):
+        # 写 TOML 保留原生 datetime；读给面板一律 ISO 8601（str() 的 datetime 用空格分隔）
+        return value if for_toml else value.isoformat()
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return str(value)
@@ -292,6 +293,19 @@ def _add_with_comment(document: Any, key: str, value: Any, comment: str) -> None
     document[key] = item
 
 
+def _without_none(value: Any) -> Any:
+    """递归剔除 None：插件配置里 None 表示「不设置」，不是要写入的值。
+
+    表里是删键，数组里是丢元素（``list[Model]`` 的某一行清空可选字段就会走到这里，
+    否则 ``tomlkit.item`` 仍会抛 ConvertError）。
+    """
+    if isinstance(value, dict):
+        return {key: _without_none(item) for key, item in value.items() if item is not None}
+    if isinstance(value, (list, tuple)):
+        return [_without_none(item) for item in value if item is not None]
+    return value
+
+
 class PluginConfigEditor:
     """插件数据目录下 config.toml 的读写（密钥只写不读）。"""
 
@@ -394,7 +408,8 @@ class PluginConfigEditor:
     def prepare_values(self, config: dict[str, Any]) -> dict[str, Any]:
         """在模型校验之前恢复只写字段，避免占位符被当作新凭据校验或保存。"""
         effective = merge_plugin_config(self._defaults, self._stored())
-        return self._secrets.restore(_jsonable(config), effective)
+        # 落盘一侧保留原生 datetime：否则每次面板保存都把文件里的时间降级成字符串
+        return self._secrets.restore(_jsonable(config, for_toml=True), effective)
 
     def save(
         self,
@@ -454,6 +469,15 @@ class PluginConfigEditor:
             except Exception:
                 document = tomlkit.document()
         for key, value in submitted.items():
+            if value is None:
+                # 可选字段留空 = 不设置：删掉文件里已有的键；新键本就无需写入。
+                # tomlkit.item(None) 会抛 ConvertError，之前会兜成 400 内部错误。
+                if key in document:
+                    del document[key]
+                continue
+            # 嵌套分组 / 对象列表整体重建时，子树里的 None 同样表示「不设置」，
+            # 递归剔除后才能交给 tomlkit.item。
+            value = _without_none(value)
             if key in document:
                 existing = document[key]
                 if hasattr(existing, "items") and not hasattr(value, "items"):

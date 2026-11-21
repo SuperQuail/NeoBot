@@ -315,13 +315,23 @@ def _diff_document(current: Any, new: Any, managed: Any = None) -> Any:
     return changes
 
 
+def _without_none(value: Any) -> Any:
+    """递归剔除 None：可选字段留空 = 不设置，而 tomlkit.item 见到 None 会抛 ConvertError。"""
+    if isinstance(value, dict):
+        return {key: _without_none(item) for key, item in value.items() if item is not None}
+    if isinstance(value, (list, tuple)):
+        return [_without_none(item) for item in value if item is not None]
+    return value
+
+
 def _merge_sequence(document: Any, values: list[Any]) -> None:
     """把元素级 diff 合并回 TOML 表数组（保留未变元素的注释与顺序）。"""
     while len(document) > len(values):
         del document[-1]
     for index, item in enumerate(values):
         if index >= len(document):
-            document.append(tomlkit.item(item))
+            # 新增行是整行写入，没有「None = 删键」的语义：先剔干净再交给 tomlkit
+            document.append(tomlkit.item(_without_none(item)))
             continue
         target = document[index]
         if isinstance(item, dict) and hasattr(target, "get"):
@@ -340,7 +350,10 @@ def _merge_into_document(document: Any, data: dict[str, Any], prefix: tuple[str,
                 del document[key]
             continue
         if value is None:
-            # 可选字段留空：不写入该键，读取时按默认值（None）处理
+            # 可选字段留空 = 不设置：文件里已有的旧值必须删掉，否则保存后读回来的
+            # 仍是旧值（表单会弹回原值），用户以为清空了、实际什么都没发生。
+            if key in document:
+                del document[key]
             continue
         if isinstance(value, dict):
             existing = document.get(key)
@@ -351,7 +364,7 @@ def _merge_into_document(document: Any, data: dict[str, Any], prefix: tuple[str,
         elif isinstance(value, list) and _is_table_array(document.get(key)):
             _merge_sequence(document.get(key), value)
         else:
-            document[key] = tomlkit.item(value)
+            document[key] = tomlkit.item(_without_none(value))
 
 
 def _is_table_array(node: Any) -> bool:

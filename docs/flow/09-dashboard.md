@@ -4,8 +4,8 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/
   - app/src/neobot_app/panel_auth.py
   - app/src/neobot_app/panel_web.py
-verified_against: 21bfdff0
-verified_hash: 9589ef8d578d
+verified_against: d1f9600f
+verified_hash: ef258ca80f90
 ---
 
 # 09 网页面板：HTTP 路由 · 鉴权 · 静态产物 · 前端数据流
