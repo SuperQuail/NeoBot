@@ -324,6 +324,16 @@ describe('内部页面桥接与说明书演示隔离', () => {
     });
   });
 
+  it('局域网 http 等非安全上下文缺少 crypto.randomUUID 时不中断渲染', () => {
+    vi.stubGlobal('crypto', {});
+    try {
+      render(<PluginViewFrame {...liveProps()} />);
+      expect(screen.getByTitle('插件设置')).toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('配置桥接保留不透明revision、冲突诊断及公开字段边界', async () => {
     const test = await renderLive();
     expect(await test.bridge.request('getConfig')).toMatchObject({

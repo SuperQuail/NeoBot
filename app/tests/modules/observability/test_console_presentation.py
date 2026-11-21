@@ -12,7 +12,11 @@ from rich.cells import cell_len
 from rich.console import Console
 
 from neobot_app.observability.log_console import RichConsoleSink, get_console
-from neobot_app.observability.logging import configure_loguru, set_console_show_module
+from neobot_app.observability.logging import (
+    configure_loguru,
+    set_console_show_module,
+    set_verbose_logging,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -125,11 +129,15 @@ def test_alembic_diagnostics_go_to_file_but_warning_stays_visible(name, tmp_path
     ],
 )
 def test_per_request_info_goes_to_file_but_warning_stays_visible(name, message, tmp_path, capsys):
-    """第三方逐请求 INFO 只留 DEBUG 文件，控制台留给可行动信息。"""
+    """第三方逐请求 INFO 只在详细日志开启时留 DEBUG 文件，控制台留给可行动信息。"""
     configure_loguru(tmp_path)
-    logger = logging.getLogger(name)
-    logger.info(message)
-    logger.warning("请求失败后重试")
+    set_verbose_logging(True)
+    try:
+        logger = logging.getLogger(name)
+        logger.info(message)
+        logger.warning("请求失败后重试")
+    finally:
+        set_verbose_logging(False)
     console = capsys.readouterr().out
     assert message not in console
     assert "请求失败后重试" in console

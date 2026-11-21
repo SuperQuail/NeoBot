@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -71,7 +72,8 @@ class PythonDependencyInstallerTest(unittest.TestCase):
             result = installer.confirm_and_install_sync(["pyfiglet"])
 
         self.assertTrue(result.installed)
-        self.assertEqual(run.call_args.args[0], ["uv", "pip", "install", "pyfiglet"])
+        # 回归 #327：uv 找不到目标环境，必须显式 --python 当前解释器
+        self.assertEqual(run.call_args.args[0], ["uv", "pip", "install", "--python", sys.executable, "pyfiglet"])
 
     def test_prefers_uv_pip_inside_uv_environment(self) -> None:
         installer = PythonDependencyInstaller(input_func=lambda prompt: "y")
@@ -85,7 +87,7 @@ class PythonDependencyInstallerTest(unittest.TestCase):
             result = installer.confirm_and_install_sync(["pyfiglet"])
 
         self.assertTrue(result.installed)
-        self.assertEqual(run.call_args.args[0], ["uv", "pip", "install", "pyfiglet"])
+        self.assertEqual(run.call_args.args[0], ["uv", "pip", "install", "--python", sys.executable, "pyfiglet"])
 
 
 class PythonDependencyInstallerSafetyTest(unittest.TestCase):
