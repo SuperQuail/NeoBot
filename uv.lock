@@ -1948,7 +1948,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20.0,<0.23" },
-    { name = "certifi", specifier = ">=2024.2.2" },
+    { name = "certifi", specifier = ">=2024.2.2,<2027" },
     { name = "httpx", specifier = ">=0.27.0,<0.29" },
     { name = "neobot-adapter", editable = "packages/adapter" },
     { name = "neobot-contracts", editable = "packages/contracts" },
