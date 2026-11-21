@@ -281,6 +281,33 @@ def test_verbose_logging_on_keeps_third_party_debug(tmp_path) -> None:
     assert "> PING keepalive" in content
 
 
+@pytest.mark.parametrize("name", ["httpx", "aiohttp.access"])
+def test_verbose_logging_off_drops_per_request_info(name, tmp_path) -> None:
+    """off 时逐请求 INFO 不落盘：过滤必须发生在其降级为 DEBUG 之前。"""
+    log_dir = tmp_path / "logs"
+    configure_loguru(log_dir)
+    try:
+        set_verbose_logging(False)
+        stdlib_logging.getLogger(name).info('HTTP Request: GET https://example.invalid "HTTP/1.1 200 OK"')
+    finally:
+        loguru.logger.remove()
+
+    assert "HTTP Request" not in (log_dir / "neobot.log").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("name", ["httpx", "aiohttp.access"])
+def test_verbose_logging_on_keeps_per_request_info(name, tmp_path) -> None:
+    log_dir = tmp_path / "logs"
+    configure_loguru(log_dir)
+    try:
+        set_verbose_logging(True)
+        stdlib_logging.getLogger(name).info('HTTP Request: GET https://example.invalid "HTTP/1.1 200 OK"')
+    finally:
+        loguru.logger.remove()
+
+    assert "HTTP Request" in (log_dir / "neobot.log").read_text(encoding="utf-8")
+
+
 def test_app_debug_not_filtered_when_verbose_off(tmp_path) -> None:
     """过滤只针对第三方库根名，NeoBot 自己的 DEBUG 不受影响。"""
     log_dir = tmp_path / "logs"
@@ -302,6 +329,11 @@ def test_app_debug_not_filtered_when_verbose_off(tmp_path) -> None:
         (SimpleNamespace(enabled=True, verbose_logging="off"), False),
         # 大小写与空白宽容；None 视为 auto。
         (SimpleNamespace(enabled=True, verbose_logging=" ON "), True),
+        # 布尔与 on/off 等价；配置加载器会把 TOML 布尔转成 "True"/"False"。
+        (SimpleNamespace(enabled=False, verbose_logging=True), True),
+        (SimpleNamespace(enabled=True, verbose_logging=False), False),
+        (SimpleNamespace(enabled=False, verbose_logging="True"), True),
+        (SimpleNamespace(enabled=True, verbose_logging="False"), False),
         (SimpleNamespace(enabled=True, verbose_logging=None), True),
         # 未知取值按 auto 处理（配置校验只查类型，不查枚举）。
         (SimpleNamespace(enabled=True, verbose_logging="nonsense"), True),
@@ -312,6 +344,20 @@ def test_app_debug_not_filtered_when_verbose_off(tmp_path) -> None:
 )
 def test_resolve_verbose_logging_modes(debug_cfg, expected) -> None:
     assert resolve_verbose_logging(debug_cfg) is expected
+
+
+def test_unknown_verbose_logging_warns_and_bool_does_not() -> None:
+    """未知取值按 auto 处理但必须告警；布尔是已知取值，不再落进未知分支。"""
+    messages: list[str] = []
+    sink_id = loguru.logger.add(lambda message: messages.append(message.record["message"]), level="WARNING")
+    try:
+        assert resolve_verbose_logging(SimpleNamespace(enabled=True, verbose_logging="nonsense")) is True
+        assert resolve_verbose_logging(SimpleNamespace(enabled=True, verbose_logging=False)) is False
+    finally:
+        loguru.logger.remove(sink_id)
+
+    unknown = [message for message in messages if "未知的 debug.verbose_logging" in message]
+    assert unknown == ["未知的 debug.verbose_logging 取值 'nonsense'，按 auto 处理"]
 
 
 @pytest.mark.parametrize(
@@ -372,3 +418,14 @@ def test_resolve_auto_follows_active_recorder() -> None:
     # 显式 on/off 优先于 recorder 状态。
     assert resolve_verbose_logging(force_on, recorder_active=False) is True
     assert resolve_verbose_logging(force_off, recorder_active=True) is False
+
+
+def test_bootstrap_wires_verbose_logging_to_active_recorder() -> None:
+    """装配接线：启动时 auto 必须按实际生效的 DebugRecorder 解析，而非只读配置。"""
+    import inspect
+
+    from neobot_app.bootstrap.parts.core_services import _build_core_services
+
+    source = inspect.getsource(_build_core_services)
+    assert "set_verbose_logging(resolve_verbose_logging(" in source
+    assert "recorder_active=debug_recorder is not None" in source
