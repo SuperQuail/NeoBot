@@ -11,7 +11,7 @@
   font-size: 13px;
   font-weight: 500;
   color: var(--text, #1f3a4d);
-  background: #f8fafc;
+  background: var(--panel-2, #f8fafc);
   cursor: pointer;
   white-space: nowrap;
   flex-shrink: 0;
@@ -19,8 +19,8 @@
 }
 
 .btn-subtle:hover:enabled {
-  background: #f1f5f9;
-  border-color: #94a3b8;
+  background: var(--panel-2, #f1f5f9);
+  border-color: var(--muted, #64748b);
 }
 
 .btn-sm {
@@ -52,7 +52,7 @@
 
 .btn-ghost:hover:enabled {
   color: var(--text, #1f3a4d);
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--panel-2, #f1f5f9);
 }
 
 .btn-primary {
@@ -63,7 +63,7 @@
   padding: 0 24px;
   font-size: 13px;
   font-weight: 650;
-  color: #ffffff;
+  color: var(--text-on-brand, #ffffff);
   background: var(--brand, #0369a1);
   border: 1px solid transparent;
   border-radius: var(--radius-control, 8px);
@@ -91,7 +91,7 @@
   font-size: 13px;
   font-weight: 500;
   color: var(--text, #1f3a4d);
-  background: #ffffff;
+  background: var(--panel, #ffffff);
   border: 1px solid var(--border, #d2e5f0);
   border-radius: var(--radius-control, 8px);
   cursor: pointer;
@@ -99,14 +99,14 @@
 }
 
 .btn-secondary:hover:enabled {
-  background: #f8fafc;
-  border-color: #94a3b8;
+  background: var(--panel-2, #f8fafc);
+  border-color: var(--muted, #64748b);
 }
 
 /* 本群通知设置：精致内嵌卡片 */
 .group-settings-card {
   margin-top: 18px;
-  background: #f8fafc;
+  background: var(--panel-2, #f8fafc);
   border: 1px solid var(--border-soft, #e6f0f7);
   border-radius: 10px;
   padding: 14px 16px;
@@ -138,8 +138,8 @@
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 12px;
-  background: #e2e8f0;
-  color: #475569;
+  background: var(--border-soft, #e2e8f0);
+  color: var(--text-secondary, #475569);
   font-weight: 500;
 }
 
@@ -176,7 +176,7 @@
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  background: #ffffff;
+  background: var(--panel, #ffffff);
   border: 1px solid var(--border-soft, #e6f0f7);
   border-radius: 6px;
   font-size: 12px;
@@ -188,7 +188,7 @@
 
 .toggle-card:hover {
   border-color: var(--border, #d2e5f0);
-  background: #fdfdfe;
+  background: var(--panel, #fdfdfe);
 }
 
 .toggle-card input[type="checkbox"] {
@@ -237,9 +237,9 @@
 .confirmation-banner {
   margin-top: 12px;
   padding: 8px 14px;
-  background: #f0fdf4;
-  color: #166534;
-  border: 1px solid #bbf7d0;
+  background: color-mix(in srgb, var(--ok, #2c7552) 12%, var(--panel, #fff));
+  color: var(--ok, #166534);
+  border: 1px solid color-mix(in srgb, var(--ok, #2c7552) 40%, var(--panel, #fff));
   border-radius: 6px;
   font-size: 12px;
   line-height: 1.4;

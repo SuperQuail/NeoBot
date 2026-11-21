@@ -454,6 +454,19 @@ describe('Plugins 页面', () => {
     expect(await screen.findByText('没有匹配的插件')).toBeInTheDocument();
   });
 
+  it('切换插件后忽略后台回填，仍允许手动搜索 admin', async () => {
+    const user = userEvent.setup();
+    render(<Plugins />);
+    const search = await screen.findByLabelText('搜索插件');
+    await user.click(await screen.findByRole('button', { name: /memo/ }));
+    await user.click(screen.getByRole('button', { name: /dashboard.*官方/ }));
+    fireEvent.input(search, { target: { value: 'admin' } });
+    expect(search).toHaveValue('');
+    await user.type(search, 'admin');
+    expect(search).toHaveValue('admin');
+    expect(await screen.findByText('没有匹配的插件')).toBeInTheDocument();
+  });
+
   it('配置未就绪时保存/重载按钮禁用，面板自身不允许热重载', async () => {
     render(<Plugins />);
 
