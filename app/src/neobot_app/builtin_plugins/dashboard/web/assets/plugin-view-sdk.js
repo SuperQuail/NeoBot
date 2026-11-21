@@ -7,7 +7,9 @@
   const observed = new Map();
   const contextListeners = new Set();
   const stepListeners = new Set();
-  const prefix = root.crypto.randomUUID();
+  // crypto.randomUUID 只在安全上下文提供；面板常用局域网 http 打开，退回普通随机串。
+  const prefix =
+    root.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   let counter = 0;
   let session = '';
   let context;

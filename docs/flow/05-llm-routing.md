@@ -9,7 +9,7 @@ covers:
   - packages/chat/src/neobot_chat/providers/
   - packages/chat/src/neobot_chat/schema/exceptions.py
 verified_against: aa2ae076
-verified_hash: 398d5a655f35
+verified_hash: c1140250b016
 ---
 
 # 05 模型路由与降级：角色/编号路由 · 原生视觉回退 · 计费与统计
@@ -493,8 +493,9 @@ flowchart TD
   `print(file=sys.stderr)`，不受影响。
 * 第三方库 DEBUG 默认在 `_InterceptHandler.emit` 入口过滤：`[debug].verbose_logging`
   为 `auto` 且进程启动时没有 DebugRecorder、或为 `off` 时，`aiosqlite` / `websockets` /
-  `PIL` / `httpcore` / `httpx` / `urllib3` 低于 INFO 的记录在进入 loguru 前丢弃；
-  这些库的 INFO 及以上、以及 `app.*` DEBUG 不受影响。`on` / `off` 可热重载，
+  `PIL` / `httpcore` / `httpx` / `urllib3` 低于 INFO 的记录，以及 `httpx` /
+  `aiohttp.access` 的逐请求 INFO（按 DEBUG 归类），都在进入 loguru 前丢弃；
+  这些库其余 INFO 及以上、以及 `app.*` DEBUG 不受影响。`on` / `off` 可热重载，
   `auto` 跟随实际生效的 DebugRecorder（详见 `04-功能文档/日志与诊断.md`「详细日志开关」）。
 * 日志脱敏（`logging.py:61` 的 `_redacting_filter`，`logging.py:51` 的 `redact_sensitive`）在
   **格式化前**改写共享 record：API Key、token、password、URL 内嵌凭据都被替换成 ***；

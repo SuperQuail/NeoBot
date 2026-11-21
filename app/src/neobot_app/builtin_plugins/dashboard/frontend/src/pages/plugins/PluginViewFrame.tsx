@@ -57,6 +57,11 @@ const COLORS = [
   '--control-height',
 ];
 
+// crypto.randomUUID 只在安全上下文提供；面板常用局域网 http 打开，退回普通随机串。
+const viewSession = () =>
+  globalThis.crypto?.randomUUID?.() ??
+  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
 export default function PluginViewFrame(props: FrameProps) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState<number>();
@@ -120,7 +125,7 @@ export default function PluginViewFrame(props: FrameProps) {
         if (value.step) instance.event('guide-step', { ...value.step, mode: value.mode ?? 'live' });
         if (value.locate) instance.event('locate', { target: value.locate });
       },
-      session: crypto.randomUUID(),
+      session: viewSession(),
     });
     bridge.current = instance;
     const receive = (event: MessageEvent) => {
