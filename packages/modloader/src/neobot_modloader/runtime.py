@@ -1819,8 +1819,11 @@ class PluginRuntime:
             if isinstance(result, DiscoveredPlugin) and result.enabled:
                 missing.extend(result.missing_python_dependencies)
         if missing:
-            # 启动装配期的同步入口：无交互终端时内部直接跳过，不再抛 EOFError
-            self.dependency_installer.confirm_and_install_sync(missing)
+            # 启动装配期的同步入口：确认/安装失败只记日志，不能中断后续装配
+            try:
+                self.dependency_installer.confirm_and_install_sync(missing)
+            except Exception as exc:
+                self.logger.warning(f"插件 PyPI 依赖确认失败，已跳过安装: {exc}")
 
     async def _activate_loaded_plugin(
         self,

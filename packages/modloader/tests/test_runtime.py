@@ -6,6 +6,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from neobot_modloader.dependencies import PythonDependencyInstaller
 from neobot_modloader.host import PluginHostFacade
 from neobot_modloader.loader import DiscoveredPlugin, LoadedPlugin
 from neobot_modloader.runtime import PluginRuntime
@@ -462,6 +463,42 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result.state, "error")
             self.assertIn("缺少 PyPI 依赖", result.error or "")
 
+    async def test_load_path_reports_missing_dependency_instead_of_raising_on_eof(self) -> None:
+        """面板安装走异步入口：stdin 读不到时回结构化错误（面板转 400），不抛异常（#326）。"""
+
+        def explode(prompt: str) -> str:
+            raise EOFError("EOF when reading a line")
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            plugin_dir = root / "plugins"
+            plugin_dir.mkdir()
+            package = plugin_dir / "dep"
+            package.mkdir()
+            (package / "plugin.toml").write_text(
+                "name = \"dep\"\npython_dependencies = [\"package-that-should-not-exist-xyz\"]\n",
+                encoding="utf-8",
+            )
+            (package / "__init__.py").write_text(
+                "from neobot_modloader import Plugin\nplugin = Plugin('dep')\n", encoding="utf-8"
+            )
+            installer = PythonDependencyInstaller(input_func=explode)
+            # 模拟 Windows NUL：isatty() 为 True，但读不到任何一行
+            installer._interactive = lambda: True  # type: ignore[method-assign]
+            runtime = PluginRuntime(
+                plugin_dir=plugin_dir,
+                data_dir=root / "data",
+                adapter=object(),
+                logger_factory=FakeLoggerFactory(),
+                dependency_installer=installer,
+            )
+
+            result = await runtime.control.load_path(package, auto_install_dependencies=True)
+
+            self.assertFalse(result.ok)
+            self.assertEqual(result.state, "error")
+            self.assertIn("缺少 PyPI 依赖", result.error or "")
+
     async def test_register_failure_clears_module_cache_for_reload(self) -> None:
         """注册失败（manager 层面同名单冲突）后，失败插件的模块必须从 sys.modules 清除。
 
@@ -803,6 +840,51 @@ class PluginRuntimeTest(unittest.IsolatedAsyncioTestCase):
             runtime.load_all(auto_install_dependencies=True)
 
             self.assertEqual(installer.requirements, ["package-that-should-not-exist-xyz"])
+
+    async def test_load_all_keeps_assembling_when_dependency_confirm_fails(self) -> None:
+        """依赖确认抛异常时启动装配继续，只记日志（issue #326）。"""
+        warnings: list[str] = []
+
+        class RecordingLogger(FakeLogger):
+            def warning(self, *args: Any, **kwargs: Any) -> None:
+                warnings.append(" ".join(str(arg) for arg in args))
+
+        class RecordingLoggerFactory:
+            def get_logger(self, name: str) -> Any:
+                return RecordingLogger()
+
+        class ExplodingInstaller:
+            def confirm_and_install_sync(self, requirements: list[str]) -> object:
+                raise EOFError("EOF when reading a line")
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            plugin_dir = root / "plugins"
+            plugin_dir.mkdir()
+            package = plugin_dir / "dep"
+            package.mkdir()
+            (package / "plugin.toml").write_text(
+                "name = \"dep\"\npython_dependencies = [\"package-that-should-not-exist-xyz\"]\n",
+                encoding="utf-8",
+            )
+            (package / "__init__.py").write_text(
+                "from neobot_modloader import Plugin\nplugin = Plugin('dep')\n", encoding="utf-8"
+            )
+            solo = plugin_dir / "solo.py"
+            solo.write_text("from neobot_modloader import Plugin\nplugin = Plugin('solo')\n", encoding="utf-8")
+            runtime = PluginRuntime(
+                plugin_dir=plugin_dir,
+                data_dir=root / "data",
+                adapter=object(),
+                logger_factory=RecordingLoggerFactory(),
+                dependency_installer=ExplodingInstaller(),
+            )
+
+            runtime.load_all(auto_install_dependencies=True)
+
+            # 装配继续进行：不依赖缺失包的那个插件照常注册
+            self.assertIsNotNone(runtime.manager.get_record("solo"))
+            self.assertTrue(any("依赖确认失败" in item for item in warnings))
 
     async def test_cancelled_load_leaves_terminal_state_and_runs_teardown(self) -> None:
         import sys
