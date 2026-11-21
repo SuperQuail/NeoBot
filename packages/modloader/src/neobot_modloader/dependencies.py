@@ -167,12 +167,14 @@ class PythonDependencyInstaller:
         )
 
     def _install_command(self, requirements: tuple[str, ...]) -> list[str]:
+        # uv 只按 VIRTUAL_ENV 或 cwd 下的 .venv 找环境，而宿主 cwd 是数据目录、venv 里
+        # 未必有 pip；必须显式 --python 指向当前解释器，否则安装一定失败（issue #327）。
         if self._running_under_uv() and shutil.which("uv") is not None:
-            return ["uv", "pip", "install", *requirements]
+            return ["uv", "pip", "install", "--python", sys.executable, *requirements]
         if self._python_has_pip():
             return [sys.executable, "-m", "pip", "install", *requirements]
         if shutil.which("uv") is not None:
-            return ["uv", "pip", "install", *requirements]
+            return ["uv", "pip", "install", "--python", sys.executable, *requirements]
         return [sys.executable, "-m", "pip", "install", *requirements]
 
     def _running_under_uv(self) -> bool:
