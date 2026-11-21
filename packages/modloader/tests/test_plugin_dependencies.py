@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from neobot_contracts.ports.plugin import PluginState
 from neobot_modloader.dependency import (
@@ -418,6 +421,56 @@ class DependencyRuntimeTest(unittest.IsolatedAsyncioTestCase):
             report = runtime.control.dependencies("base")
             self.assertEqual(report["dependents"], ["app"])
             await runtime.stop_all()
+
+
+class InstallBeforeImportTest(unittest.IsolatedAsyncioTestCase):
+    """回归 #327：依赖安装必须早于导入，顶层 import 第三方库的插件才装得上。"""
+
+    async def test_python_dependencies_are_installed_before_import(self) -> None:
+        order: list[str] = []
+        installed: set[str] = set()
+
+        class FakeInstaller:
+            async def confirm_and_install(self, requirements: list[str]) -> object:
+                order.append("install")
+                installed.update(requirements)
+                sys.modules["issue327_dependency"] = types.ModuleType("issue327_dependency")
+                return object()
+
+        def dependency_installed(requirement: str) -> bool:
+            return requirement in installed
+
+        probe = types.ModuleType("issue327_probe")
+        probe.order = order  # type: ignore[attr-defined]
+        sys.modules["issue327_probe"] = probe
+        try:
+            with tempfile.TemporaryDirectory() as temp, patch(
+                "neobot_modloader.loader.is_python_dependency_installed", side_effect=dependency_installed
+            ):
+                root = Path(temp)
+                package = root / "plugins" / "needs-dep"
+                package.mkdir(parents=True)
+                (package / "plugin.toml").write_text(
+                    'name = "needs-dep"\npython_dependencies = ["issue327-dependency"]\n', encoding="utf-8"
+                )
+                (package / "__init__.py").write_text(
+                    "import issue327_dependency\n"
+                    "import issue327_probe\n"
+                    "issue327_probe.order.append('import')\n"
+                    "from neobot_modloader import Plugin\n"
+                    "plugin = Plugin('needs-dep')\n",
+                    encoding="utf-8",
+                )
+                runtime = make_runtime(root, dependency_installer=FakeInstaller())
+
+                result = await runtime.load_plugin_path(package, auto_install_dependencies=True)
+
+                self.assertTrue(result.ok, result.error)
+                self.assertEqual(order, ["install", "import"])
+                await runtime.stop_all()
+        finally:
+            sys.modules.pop("issue327_probe", None)
+            sys.modules.pop("issue327_dependency", None)
 
 
 if __name__ == "__main__":
