@@ -4,6 +4,7 @@ import asyncio
 import os
 import re
 import shutil
+import ssl
 import tempfile
 import time
 import urllib.error
@@ -44,6 +45,21 @@ _REPO_SPEC_RE = re.compile(
     r"(?:@(?P<branch>[^/\s]+))?/?$"
 )
 _VERSION_PART_RE = re.compile(r"\d+|[A-Za-z]+")
+
+
+def _download_ssl_context() -> ssl.SSLContext:
+    """下载用的 TLS 上下文：系统证书库之外叠加 certifi 根证书。
+
+    宿主其它网络请求走 httpx（只信 certifi），本下载器原只信系统证书库；
+    缺根证书的机器上就会出现 CERTIFICATE_VERIFY_FAILED，而其它功能一切正常。
+    """
+    context = ssl.create_default_context()
+    try:
+        import certifi
+    except ImportError:  # 精简环境没有 certifi 时退回系统证书库
+        return context
+    context.load_verify_locations(cafile=certifi.where())
+    return context
 
 
 class PluginInstallError(RuntimeError):
@@ -237,11 +253,13 @@ class PluginInstaller:
 
     def _build_opener(self) -> urllib.request.OpenerDirector:
         proxy = self._proxy
+        handlers: list[urllib.request.BaseHandler] = []
         if proxy.mode == "none":
-            return urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        if proxy.mode == "custom":
-            return urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy.url, "https": proxy.url}))
-        return urllib.request.build_opener()
+            handlers.append(urllib.request.ProxyHandler({}))
+        elif proxy.mode == "custom":
+            handlers.append(urllib.request.ProxyHandler({"http": proxy.url, "https": proxy.url}))
+        handlers.append(urllib.request.HTTPSHandler(context=_download_ssl_context()))
+        return urllib.request.build_opener(*handlers)
 
     @property
     def backup_dir(self) -> Path:
@@ -321,7 +339,13 @@ class PluginInstaller:
         except urllib.error.HTTPError as exc:
             raise PluginInstallError(f"下载失败 HTTP {exc.code}: {url}") from exc
         except urllib.error.URLError as exc:
-            raise PluginInstallError(f"下载失败: {exc.reason}") from exc
+            reason = exc.reason
+            if isinstance(reason, ssl.SSLError):
+                raise PluginInstallError(
+                    f"下载失败: {reason}（TLS 证书校验未通过：本机缺该域名的根证书时，"
+                    "可用 SSL_CERT_FILE 指定 CA 包，或在插件下载代理里改用跟随系统代理 / 自定义代理）"
+                ) from exc
+            raise PluginInstallError(f"下载失败: {reason}") from exc
 
     # ------------------------------------------------------------------
     # 安装 / 更新 / 卸载
