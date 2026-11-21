@@ -40,7 +40,7 @@ def test_explicit_empty_code_conflicts_with_manifest():
         read_services({"required": ["clock"]}, Plugin("consumer", required=[]))
 
 
-async def test_priority_matches_actual_provider_and_disabled_does_not_fall_through(tmp_path):
+async def test_disabled_winner_falls_back_to_next_provider(tmp_path):
     body = "@plugin.on_load\nasync def load(ctx):\n    ctx.services.provide('clock', ctx.plugin_name)\n"
     package(tmp_path, "a_low", provides=["clock"], body=body, priority=1)
     package(tmp_path, "z_high", provides=["clock"], body=body, priority=10)
@@ -52,9 +52,13 @@ async def test_priority_matches_actual_provider_and_disabled_does_not_fall_throu
         assert rt.dependency_report("consumer")["services"][0]["provider"] == "z_high"
         assert "consumer" in rt.control.get("z_high").dependents
         assert (await rt.set_enabled("z_high", False)).ok
-        assert rt.host.services.get("clock") is None
-        assert rt.control.get("consumer").auto_disabled
+        # 停用的声明赢家不再占位：使用方落到次选提供者并保持运行
+        assert rt.host.services.require("clock") == "a_low"
+        assert rt.dependency_report("consumer")["services"][0]["provider"] == "a_low"
+        assert rt.control.get("consumer").state == "running"
+        assert not rt.control.get("consumer").auto_disabled
         assert (await rt.set_enabled("z_high", True)).ok
+        assert rt.host.services.require("clock") == "z_high"
         assert rt.control.get("consumer").state == "running"
     finally:
         await rt.stop_all()
@@ -159,6 +163,89 @@ async def test_import_failure_keeps_declared_winner_visible(tmp_path):
         assert rt.control.get("consumer").services[0]["provider"] == "high"
         assert rt.control.get("consumer").auto_disabled
         assert not rt.host.services.has("clock")
+    finally:
+        await rt.stop_all()
+
+
+async def test_registration_failure_leaves_no_provider_declaration(tmp_path, monkeypatch):
+    body = "@plugin.on_load\nasync def load(ctx):\n    ctx.services.provide('clock', ctx.plugin_name)\n"
+    package(tmp_path, "a_low", provides=["clock"], body=body, priority=1)
+    package(tmp_path, "consumer", required=["clock"])
+    rt = make_runtime(tmp_path)
+    await start_runtime(rt)
+    ghost = package(tmp_path, "z_ghost", provides=["clock"], body=body, priority=10)
+    register = rt.manager.register
+    attempts: list[str] = []
+
+    def flaky(plugin, context):
+        attempts.append(context.plugin_name)
+        if len(attempts) == 1:
+            raise RuntimeError("register boom")
+        register(plugin, context)
+
+    monkeypatch.setattr(rt.manager, "register", flaky)
+    try:
+        assert not (await rt.load_plugin_path(ghost)).ok
+        # 注册失败不得留下幽灵提供者：使用方继续用次选，下一轮复查可重试
+        assert rt.dependency_report("consumer")["services"][0]["provider"] == "a_low"
+        assert rt.host.services.require("clock") == "a_low"
+        assert rt.control.get("consumer").state == "running"
+        assert (await rt.load_plugin_path(ghost)).ok
+        assert rt.host.services.require("clock") == "z_ghost"
+    finally:
+        await rt.stop_all()
+
+
+async def test_startup_registration_failure_falls_back_to_next_provider(tmp_path, monkeypatch):
+    body = "@plugin.on_load\nasync def load(ctx):\n    ctx.services.provide('clock', ctx.plugin_name)\n"
+    package(tmp_path, "a_low", provides=["clock"], body=body, priority=1)
+    package(tmp_path, "z_ghost", provides=["clock"], body=body, priority=10)
+    package(tmp_path, "consumer", required=["clock"])
+    rt = make_runtime(tmp_path)
+    register = rt.manager.register
+
+    def flaky(plugin, context):
+        if context.plugin_name == "z_ghost":
+            raise RuntimeError("register boom")
+        register(plugin, context)
+
+    monkeypatch.setattr(rt.manager, "register", flaky)
+    await start_runtime(rt)
+    try:
+        # 启动扫描期注册失败也不能占住服务名
+        assert rt.dependency_report("consumer")["services"][0]["provider"] == "a_low"
+        assert rt.host.services.require("clock") == "a_low"
+        assert rt.control.get("consumer").state == "running"
+    finally:
+        await rt.stop_all()
+
+
+async def test_auto_disabled_provider_falls_back_immediately(tmp_path):
+    body = "@plugin.on_load\nasync def load(ctx):\n    ctx.services.provide('clock', ctx.plugin_name)\n"
+    package(tmp_path, "a_low", provides=["clock"], body=body, priority=1)
+    package(tmp_path, "z_high", provides=["clock"], required=["dbapi"], body=body, priority=10)
+    package(tmp_path, "consumer", required=["clock"])
+    rt = make_runtime(tmp_path)
+    await start_runtime(rt)
+    try:
+        # 自动禁用的高优先级提供者不能继续占位，使用方应立刻落到次选
+        assert rt.dependency_report("consumer")["services"][0]["provider"] == "a_low"
+        assert rt.host.services.require("clock") == "a_low"
+        assert rt.control.get("consumer").state == "running"
+    finally:
+        await rt.stop_all()
+
+
+async def test_only_disabled_provider_reports_disabled_not_missing(tmp_path):
+    package(tmp_path, "only", provides=["clock"], enabled=False)
+    package(tmp_path, "consumer", required=["clock"])
+    rt = make_runtime(tmp_path)
+    await start_runtime(rt)
+    try:
+        slot = rt.dependency_report("consumer")["services"][0]
+        assert slot["provider"] == "only"
+        assert slot["status"] == "disabled"
+        assert rt.control.get("consumer").auto_disabled
     finally:
         await rt.stop_all()
 
@@ -295,14 +382,20 @@ async def test_optional_version_mismatch_is_unavailable_only_to_constrained_cons
         await rt.stop_all()
 
 
-async def test_disabled_winner_is_used_by_static_order(tmp_path):
+async def test_disabled_declared_winner_falls_back_to_enabled_provider(tmp_path):
+    body = "@plugin.on_load\nasync def load(ctx):\n    ctx.services.provide('clock', ctx.plugin_name)\n"
     package(tmp_path, "winner", provides=["clock"], priority=10, enabled=False)
-    package(tmp_path, "loser", provides=["clock"], priority=1)
+    package(tmp_path, "loser", provides=["clock"], priority=1, body=body)
     package(tmp_path, "consumer", required=["clock"])
     rt = make_runtime(tmp_path)
-    rt.load_all()
-    assert rt.manager.get_record("consumer") is None
-    assert rt.control.get("consumer").dependency_status == "blocked"
+    await start_runtime(rt)
+    try:
+        assert rt.manager.get_record("winner") is None
+        assert rt.control.get("consumer").state == "running"
+        assert rt.control.get("consumer").dependency_status == "ok"
+        assert rt.host.services.require("clock") == "loser"
+    finally:
+        await rt.stop_all()
 
 
 async def test_code_only_required_recovers_after_provider_install(tmp_path):
