@@ -16,7 +16,7 @@ covers:
   - app/src/neobot_app/runtime/hot_reload_registry.py
   - app/src/neobot_app/runtime/plugin_config_reload.py
   - app/src/neobot_app/bootstrap/_skills.py
-verified_against: 8d0561a0
+verified_against: 34ad0d91
 verified_hash: c2af78b9e2b4
 ---
 

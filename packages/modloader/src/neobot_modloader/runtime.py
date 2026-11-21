@@ -619,6 +619,9 @@ class PluginRuntime:
         previous_providers = self._service_providers
         try:
             async with self._path_operation(plugin_path) as operation:
+                install = self.auto_install_dependencies if auto_install_dependencies is None else auto_install_dependencies
+                # 先装后导：插件顶层 import 第三方依赖时，导入失败就走不到依赖安装。
+                attempted = install and await self._install_path_dependencies(plugin_path)
                 result = self.loader.load_one(plugin_path)
                 if isinstance(result, LoadedPlugin):
                     await operation.bind(result.name)
@@ -626,7 +629,8 @@ class PluginRuntime:
                     plugin_path,
                     result,
                     start=start,
-                    auto_install_dependencies=auto_install_dependencies,
+                    # 已经问过一次（无论装没装上），不再让激活阶段重复提问。
+                    auto_install_dependencies=False if attempted else auto_install_dependencies,
                 )
                 if outcome.ok:
                     operation.commit()
@@ -1033,6 +1037,25 @@ class PluginRuntime:
             return
         # 运行期确认与安装必须 await，不能阻塞事件循环等待输入或 pip 子进程。
         await self.dependency_installer.confirm_and_install(missing)
+
+    async def _install_path_dependencies(self, plugin_path: Path) -> bool:
+        """导入前装好 manifest 声明的依赖（#327），返回是否已经问过安装。
+
+        只覆盖 plugin.toml；只写在 Plugin(python_dependencies=...) 里的依赖仍在导入后安装。
+        """
+        manifest = plugin_path / "plugin.toml"
+        if not manifest.is_file():
+            return False
+        try:
+            requirements = read_python_dependencies(read_manifest(manifest))
+            missing = missing_python_dependencies(requirements)
+        except Exception:
+            # 清单或依赖串有问题时交给加载器报错，这里不抢先失败。
+            return False
+        if not missing:
+            return False
+        await self.dependency_installer.confirm_and_install(list(missing))
+        return True
 
     async def _reload_plugin_result_locked(
         self,
