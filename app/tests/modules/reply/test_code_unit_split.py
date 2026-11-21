@@ -141,6 +141,13 @@ def test_single_line_triple_backtick_fence_drops_markers() -> None:
     assert _split("```git status```") == ["git status"]
 
 
-def test_block_fence_is_still_left_to_send_long_reply() -> None:
-    """行首三反引号是真围栏，分句层不动它，原样交给 send_long_reply。"""
+def test_block_fence_is_kept_verbatim() -> None:
+    """行首三反引号是围栏，分句层不动它（长回复走 clean_text，不经过这里）。"""
     assert _split("```text\ncancel\n```") == ["```text", "cancel", "```"]
+
+
+def test_indented_fence_inside_list_is_kept() -> None:
+    """列表里的代码块靠缩进围栏，缩进不影响围栏判定。"""
+    text = "看这个：\n  ```python\nprint(1)\n  ```"
+
+    assert _split(text) == ["看这个：", "```python", "print(1)", "```"]

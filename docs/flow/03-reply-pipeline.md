@@ -10,7 +10,7 @@ covers:
   - app/src/neobot_app/reply/vision_context.py
   - app/src/neobot_app/reply/flow_registry.py
 verified_against: b0c12261
-verified_hash: 7589e6887dc9
+verified_hash: 2faff8be01fd
 ---
 
 # 03 回复管线：状态机 / 冷却 / 静默看门狗 / 发送与后处理
@@ -304,5 +304,5 @@ flowchart LR
   是否保留反引号不能只看「注记清洗后为空」—— 清洗会把 `[ -f config.toml ]`、
   `(cd /tmp && make)` 这类方括号/圆括号命令整段当注记清空。判据是「控制词，或清空后
   仍含 CJK / `*` `_` `~` 记号」。占位符编号跳过正文里已有的 U+E000/U+E001；
-  保护之后残留的裸反引号（未闭合、跨行、单行三反引号）会清掉，行首三个以上的真围栏
-  留给 `send_long_reply`。
+  保护之后残留的裸反引号（未闭合、跨行、单行三反引号）会清掉；行首（允许缩进，
+  列表里的代码块也是合法 Markdown）三个以上是围栏，原样保留。

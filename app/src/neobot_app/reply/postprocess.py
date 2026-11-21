@@ -178,13 +178,13 @@ def _normalize_cjk_latin_spaces(text: str) -> str:
 #: 反引号包住的命令/代码在分句前替换成私有区占位符。
 #: 分句器只把「，,。;空格」当句子边界，占位符里不含任何分隔符，所以命令里的空格
 #: 不会被当成断句点；分完再还原，并把两侧的反引号去掉，只发字面内容。
-#: 只处理行内反引号片段，代码围栏仍由 send_long_reply 负责，不在这里动。
+#: 只处理行内反引号片段；完整围栏原样保留，这里只清掉写坏后残留的裸反引号。
 _CODE_PLACEHOLDER_OPEN = "\ue000"
 _CODE_PLACEHOLDER_CLOSE = "\ue001"
 _INLINE_CODE_UNIT_RE = re.compile(r"`[^`\n]+`")
 #: 保护之后仍然残留的反引号：反引号没闭合、跨行、或单行三反引号写坏时留下的裸记号。
-#: 行首 3 个以上是真正的 Markdown 围栏，原样留给 send_long_reply；剩下的成不了对，
-#: 发出去就是漏给用户的裸反引号。
+#: 行首（允许缩进 —— 列表里的代码块是合法 Markdown）3 个以上是围栏，原样保留；
+#: 剩下的成不了对，发出去就是漏给用户的裸反引号。
 _BACKTICK_RUN_RE = re.compile(r"`+")
 #: 注记包裹记号：`*(note)*` / `_note_` / `~~note~~`。
 _NOTE_MARKERS = ("*", "_", "~")
@@ -237,7 +237,9 @@ def _protect_code_units(text: str) -> tuple[str, dict[str, str]]:
 
     def drop_stray(match: re.Match[str]) -> str:
         run = match.group(0)
-        at_line_start = match.start() == 0 or protected[match.start() - 1] == "\n"
+        line_start = protected.rfind("\n", 0, match.start()) + 1
+        # 围栏只要求本行前面是空白：output_guard.fence_after_segment 同样认缩进围栏。
+        at_line_start = not protected[line_start:match.start()].strip()
         return run if at_line_start and len(run) >= 3 else ""
 
     return _BACKTICK_RUN_RE.sub(drop_stray, protected), placeholder_to_code
