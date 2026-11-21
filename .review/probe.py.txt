@@ -1,0 +1,97 @@
+"""PR325 review probes (not committed)."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date, datetime, time
+from typing import Optional
+
+import tomlkit
+
+from neobot_app.builtin_plugins.dashboard.config_parts.schema import (
+    _coerce_payload,
+    _validate_payload,
+    _validate_type,
+)
+from neobot_app.builtin_plugins.dashboard.config_parts.toml import (
+    _diff_document,
+    _managed_tree,
+    _merge_into_document,
+)
+
+print("== P1: merge real temporal objects into TOML ==")
+doc = tomlkit.parse("[task]\nrun_at = 2026-11-16T23:39:55\nrun_on = 2026-11-16\nwindow = 23:39:55\n")
+try:
+    _merge_into_document(doc["task"], {
+        "run_at": datetime(2026, 11, 16, 23, 39, 55),
+        "run_on": date(2026, 11, 16),
+        "window": time(23, 39, 55),
+    })
+    print("dumps ->", repr(tomlkit.dumps(doc)))
+    print("reparsed types ->", {k: type(v).__name__ for k, v in doc["task"].items()})
+except Exception as exc:
+    print("EXC", type(exc).__name__, exc)
+
+print()
+print("== P2: no-op save keeps diff empty (no needless rewrite) ==")
+doc2 = tomlkit.parse("[task]\nrun_at = 2026-11-16T23:39:55  # keep me\nother = 1\n")
+cur = doc2.unwrap()["task"]
+new = _coerce_payload(_BotLike := type("S", (), {}), {}) if False else {"run_at": datetime(2026, 11, 16, 23, 39, 55)}
+print("current unwrapped:", cur, {k: type(v).__name__ for k, v in cur.items()})
+print("equal?:", cur["run_at"] == new["run_at"])
+
+@dataclass
+class _Opt:
+    run_at: Optional[datetime] = None
+
+print()
+print("== P3: optional temporal cleared through the REAL chain ==")
+doc3 = tomlkit.parse('[task]\nrun_at = 2026-11-16T23:39:55  # keep me\nother = 1\nhand_written = "x"\n')
+current = doc3.unwrap()
+payload = _coerce_payload(_Opt, {"run_at": ""})
+print("coerced:", payload)
+errors: list[dict[str, str]] = []
+_validate_payload(_Opt, payload, "", errors)
+print("errors:", errors)
+diff = _diff_document(current, payload, _Opt)
+print("diff:", diff)
+_merge_into_document(doc3, diff)
+print("after dumps ->", repr(tomlkit.dumps(doc3)))
+
+print()
+print("== P4: required temporal cleared, and never-set optional ==")
+
+@dataclass
+class _Req:
+    run_at: datetime = datetime(2026, 11, 16, 23, 39, 55)
+
+errors = []
+p = _coerce_payload(_Req, {"run_at": ""})
+_validate_payload(_Req, p, "", errors)
+print("required cleared ->", errors)
+errors = []
+_validate_payload(_Req, {"run_at": None}, "", errors)
+print("required None ->", errors)
+errors = []
+_validate_payload(_Req, {"run_at": "not-a-time"}, "", errors)
+print("required garbage ->", errors)
+
+print()
+print("== P5: _validate_type edges ==")
+for raw, target in [("2026-11-16T23:39:55", date), ("2026-11-16T23:39:55Z", datetime),
+                    ("2026-11-16T23:39:55+08:00", time), ("23:39", time), ("2026-11-16", datetime)]:
+    print(f"  {raw!r} -> {getattr(target, '__name__', target)}:", _validate_type(raw, target))
+
+print()
+print("== P6: managed tree of BotConfig (unknown-key protection) ==")
+from neobot_app.config.models import BotConfig  # noqa: E402
+tree = _managed_tree(BotConfig)
+from dataclasses import fields as dc_fields  # noqa: E402
+from dataclasses import is_dataclass  # noqa: E402
+from typing import get_args, get_origin  # noqa: E402
+bad = []
+for f in dc_fields(BotConfig):
+    target = tree.get(f.name)
+    ann = f.type
+    if target is None and (is_dataclass(ann) or get_origin(ann) in (list, dict)):
+        bad.append((f.name, str(ann), target))
+print("tree entries:", len(tree), "suspicious:", bad)

@@ -162,6 +162,18 @@ describe('defaultsFromFields：新行的时间初值', () => {
     expect(defaultsFromFields(fields, ['rows'])).toEqual({ datetime: null, date: null, time: null });
   });
 
+  it('声明了默认值的时间字段沿用默认值，不被 null 覆盖', () => {
+    const descriptor = temporalDescriptor('datetime', null, {
+      name: 'run_at',
+      path: ['rows', 'run_at'],
+      default: '2026-01-01T00:00:00',
+    });
+
+    expect(defaultsFromFields([descriptor], ['rows'])).toEqual({
+      run_at: '2026-01-01T00:00:00',
+    });
+  });
+
   it('新行未填 / 清空后提交的都是 null', () => {
     const descriptor = temporalDescriptor('datetime', null, {
       name: 'run_at',
