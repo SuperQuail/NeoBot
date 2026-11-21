@@ -91,8 +91,9 @@ def _jsonable(value: Any, *, for_toml: bool = False) -> Any:
         return {str(key): _jsonable(item, for_toml=for_toml) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_jsonable(item, for_toml=for_toml) for item in value]
-    if for_toml and isinstance(value, (datetime, date, time)):
-        return value
+    if isinstance(value, (datetime, date, time)):
+        # 写 TOML 保留原生 datetime；读给面板一律 ISO 8601（str() 的 datetime 用空格分隔）
+        return value if for_toml else value.isoformat()
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return str(value)
@@ -407,7 +408,8 @@ class PluginConfigEditor:
     def prepare_values(self, config: dict[str, Any]) -> dict[str, Any]:
         """在模型校验之前恢复只写字段，避免占位符被当作新凭据校验或保存。"""
         effective = merge_plugin_config(self._defaults, self._stored())
-        return self._secrets.restore(_jsonable(config), effective)
+        # 落盘一侧保留原生 datetime：否则每次面板保存都把文件里的时间降级成字符串
+        return self._secrets.restore(_jsonable(config, for_toml=True), effective)
 
     def save(
         self,

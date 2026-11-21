@@ -65,6 +65,9 @@ export function isScalarKind(kind: string | undefined): boolean {
   return !!kind && SCALAR_KINDS.includes(kind);
 }
 
+/** 时间类 kind：新行初值是 null（= 未设置）；空串会被后端当成非法时间拒绝 */
+const TEMPORAL_KINDS: readonly string[] = ['date', 'time', 'datetime'];
+
 export function defaultsFromFields(
   fields: FieldDescriptor[] = [],
   parentPath: FieldDescriptor['path'] = [],
@@ -75,6 +78,7 @@ export function defaultsFromFields(
     if (field.kind === 'group') initial = defaultsFromFields(field.fields, field.path);
     else if (field.kind === 'model_list' || field.kind === 'list') initial = [];
     else if (field.kind === 'dict') initial = {};
+    else if (TEMPORAL_KINDS.includes(field.kind)) initial = null;
     else {
       const fallback =
         field.type === 'bool' ? false : field.type === 'int' || field.type === 'float' ? 0 : '';

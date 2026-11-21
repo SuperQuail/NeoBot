@@ -284,7 +284,8 @@ async def test_source_validates_native_toml_defaults_without_json_coercion(runti
     response = await api.plugin_config_save(request)
     assert response.status == 200, response.text
     assert control.plugin_config_path("strict_defaults").read_text(encoding="utf-8") == "interval = 15\n"
-    assert json.loads(response.text)["config"]["deadline"] == str(defaults["deadline"])
+    # 读给面板的时间值一律 ISO 8601（date / time 的 str() 相同，datetime 用 T 分隔）
+    assert json.loads(response.text)["config"]["deadline"] == defaults["deadline"].isoformat()
 
 
 @pytest.mark.parametrize(("loaded", "declared_model"), [(False, False), (True, False), (False, True)])
