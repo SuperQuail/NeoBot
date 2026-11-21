@@ -5,9 +5,9 @@
 或命令用反引号包起来，发送前在分句阶段换成占位符（整段不可切），还原时再把
 两侧的反引号去掉，只发字面内容。
 
-范围：只处理行内的 `` `...` `` 片段；三反引号围栏仍交给 send_long_reply，
-引用型内容（`` `cancel` ``、`` `*(note)*` ``）保留反引号，因为那是它们免于被
-当成控制词/注记清洗的保护壳。
+范围：只处理行内的 `` `...` `` 片段；行首三反引号围栏仍交给 send_long_reply，
+没成对/写坏的反引号会被清掉，不再作为裸记号发出去。引用型内容（`` `cancel` ``、
+`` `*(note)*` ``）保留反引号，因为那是它们免于被当成控制词/注记清洗的保护壳。
 
 同时必须保住普通文本的切分能力：这条规则只认反引号包住的部分，反引号外面
 的空格、标点仍按原规则断句。
@@ -92,3 +92,62 @@ def test_process_reply_text_strips_backticks() -> None:
     assert result.fallback_used is False
     assert result.messages == ["先跑 git fetch --all"]
     assert "`" not in "".join(result.messages)
+
+
+# ── 方括号 / 圆括号写法的命令：注记清洗会整段清空，不能据此判定注记 ──
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("跑 `[ -f config.toml ]` 判断", ["跑 [ -f config.toml ] 判断"]),
+        ("然后 `(cd /tmp && make)` 编译", ["然后 (cd /tmp && make) 编译"]),
+        ("`[ $# -gt 0 ]`", ["[ $# -gt 0 ]"]),
+    ],
+)
+def test_bracketed_commands_lose_backticks_and_stay_whole(text: str, expected: list[str]) -> None:
+    messages = _split(text)
+
+    assert messages == expected
+    assert all("`" not in message for message in messages)
+
+
+def test_cjk_note_inside_backticks_keeps_its_shell() -> None:
+    """判据收紧后，含 CJK 的真注记仍然保留反引号。"""
+    assert _split("`（待确认）`") == ["`（待确认）`"]
+
+
+# ── 正文自带的私有区字符不能和占位符撞号 ──────────────────────────
+
+
+def test_body_private_use_chars_do_not_collide_with_placeholders() -> None:
+    literal = "\ue0000\ue001"
+
+    assert _split(f"原文含 {literal} 和 `ls -la`") == [f"原文含 {literal} 和 ls -la"]
+
+
+# ── 没成对 / 写坏的围栏不能把裸反引号发给用户 ──────────────────────
+
+
+@pytest.mark.parametrize("text", ["跑 `git status 看看", "先 `git\nstatus` 再", "版本 `` 标记"])
+def test_unpaired_backticks_are_not_sent(text: str) -> None:
+    messages = _split(text)
+
+    assert messages
+    assert all("`" not in message for message in messages)
+
+
+def test_single_line_triple_backtick_fence_drops_markers() -> None:
+    assert _split("```git status```") == ["git status"]
+
+
+def test_block_fence_is_kept_verbatim() -> None:
+    """行首三反引号是围栏，分句层不动它（长回复走 clean_text，不经过这里）。"""
+    assert _split("```text\ncancel\n```") == ["```text", "cancel", "```"]
+
+
+def test_indented_fence_inside_list_is_kept() -> None:
+    """列表里的代码块靠缩进围栏，缩进不影响围栏判定。"""
+    text = "看这个：\n  ```python\nprint(1)\n  ```"
+
+    assert _split(text) == ["看这个：", "```python", "print(1)", "```"]
