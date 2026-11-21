@@ -8,7 +8,7 @@
 - 脚本只做**纯计算**：框架只注入纯数据 ``ctx``（``MappingProxyType`` + 顶层深拷贝），
   不注入 provider / DB session / 服务对象（R7）；
 - 默认关闭（``[billing].enabled=false``）：此时不加载任何脚本、不建线程池，
-  全部模型走内建线性公式（``builtin_cost``，与改造前逐字相同）；
+  全部模型走内建线性公式（``builtin_cost``）；
 - 任何失败都**不抛异常、不中断落库**：脚本缺失/加载失败/抛异常/超时/返回值非法
   一律回落内建公式，并把来源写成 ``builtin`` / ``fallback:*``（R3/R6）。
 

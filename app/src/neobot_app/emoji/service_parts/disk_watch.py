@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import time
 
+from pathlib import Path
+
 from neobot_app.emoji.service_parts.models import EmojiEntry, _file_hash_sync, _read_sidecar_text
 
 
@@ -25,13 +27,22 @@ class _DiskWatchMixin:
         now = time.monotonic()
         fingerprint = self._dir_fingerprint()
         full_scan_due = now - self._last_full_scan_at >= self._FULL_SCAN_INTERVAL_SECONDS
+        if full_scan_due:
+            # 强制全扫顺便重试「已知不可读」：锁被解开时签名不变，只有这里能重试到。
+            self._unreadable_files.clear()
         if not full_scan_due and fingerprint is not None and fingerprint == self._last_dir_fingerprint:
             self._logger.debug(
                 "表情包目录未变化，跳过定时扫描",
                 file_count=len(fingerprint),
             )
             return False
-        await self._scan_safe()
+        try:
+            await self._scan_safe()
+        finally:
+            if full_scan_due:
+                # 强制周期按「跑过」算，不按「成功」算：失败后若仍算到期，下一轮又会
+                # 清空名单重试同一个坏文件，于是每轮都是强制全扫、永远不盖章。
+                self._last_full_scan_at = time.monotonic()
         return True
 
     async def _scan_safe(self) -> None:
@@ -60,14 +71,21 @@ class _DiskWatchMixin:
             for path in sorted(self._emoji_dir.iterdir()):
                 if not path.is_file():
                     continue
-                try:
-                    stat = path.stat()
-                except OSError:
+                stamp = self._file_stamp(path)
+                if stamp is None:
                     return None
-                entries.append((path.name, stat.st_size, stat.st_mtime_ns))
+                entries.append((path.name, *stamp))
             return tuple(entries)
         except OSError:
             return None
+
+    def _file_stamp(self, path: Path) -> tuple[int, int] | None:
+        """文件的 (大小, mtime_ns)：判断它是否被替换过；连 stat 都失败返回 None（按有变化处理）。"""
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        return (stat.st_size, stat.st_mtime_ns)
 
     def _mark_scan_failed(self) -> None:
         """清掉指纹，让下一轮定时检查重新扫描（失败路径专用）。"""

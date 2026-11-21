@@ -55,7 +55,7 @@ def upgrade_host_plan(runtime: PluginRuntime, target: Path, name: str):
 
     try:
         visit(target, runtime.loader, name)
-        ordered = resolve_load_order(list(loaded.values()))
+        ordered = resolve_load_order(list(loaded.values()), hosts=runtime._host_services())
         if ordered.blocked:
             raise ToolingError("; ".join(issue.reason for issue in ordered.blocked.values()))
         for entry in loaded.values():

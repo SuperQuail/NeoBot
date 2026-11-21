@@ -84,7 +84,11 @@ def resolve_load_order(
 
     specs: dict[str, tuple[PluginDependency, ...]] = {}
     blocked: dict[str, DependencyIssue] = {}
-    providers = providers_for(service_candidates if service_candidates is not None else entries)
+    candidates = service_candidates if service_candidates is not None else entries
+    # 停用 / 自动禁用的声明不能继续占住服务名，否则依赖方会被一并禁用，即使还有可用提供者。
+    providers = providers_for(
+        entry for entry in candidates if getattr(entry, "enabled", True) and entry.name not in unavailable
+    )
     for name, entry in by_name.items():
         try:
             edges, issue = service_edges(entry, providers, hosts or {})

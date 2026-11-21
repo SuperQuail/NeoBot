@@ -9,7 +9,7 @@ covers:
   - packages/chat/src/neobot_chat/providers/
   - packages/chat/src/neobot_chat/schema/exceptions.py
 verified_against: aa2ae076
-verified_hash: c1140250b016
+verified_hash: 00057feeaeb5
 ---
 
 # 05 模型路由与降级：角色/编号路由 · 原生视觉回退 · 计费与统计
@@ -76,7 +76,7 @@ flowchart TD
     Q -.->|"无 usage"| S["本轮不计费"]
     Q -- "有" --> R["UsageTracker.record:115<br/>module / model_name / registered_key"]
     R --> T{"entry.billing_script 且 [billing].enabled?"}
-    T -- "否" --> V["builtin_cost:87 线性公式"]
+    T -- "否" --> V["builtin_cost:90 线性公式"]
     T -- "是" --> U["BillingService.compute_cost:711<br/>script:name 或 fallback:*"]
     U --> W["ModelUsageRecord 落库 retry_on_lock"]
     V --> W
@@ -353,7 +353,7 @@ flowchart TD
     B -.->|"否"| B1["debug 日志后 return：不落库"]
     B -- "是" --> C{"_lookup 找到 ModelEntry?"}
     C -.->|"否"| C1["debug 日志后 return：不落库"]
-    C -- "是" --> D["fallback = builtin_cost:87"]
+    C -- "是" --> D["fallback = builtin_cost:90"]
     D --> E{"billing 服务存在<br/>且 entry.billing_script 非空<br/>且 settings.enabled?"}
     E -.->|"否"| E1["cost = fallback<br/>source = builtin"]
     E -- "是" --> F["build_billing_context:237 组装只读 ctx"]
@@ -375,14 +375,19 @@ flowchart TD
     I --> J
 ```
 
-**builtin_cost（`:87`，逐字保留改造前实现）**：
+**builtin_cost（`core.py:90`）**：输入按 `_split_cache_tokens()`（`core.py:24`）拆成命中 / 未命中再计价：
 
 ```
-effective_cache_miss = cache_miss_tokens if cache_miss_tokens > 0 else input_tokens
-cost = (cache_hit * cache_hit_price_per_mtokens
-        + effective_cache_miss * input_price_per_mtokens
+# miss > 0                                  -> 用供应商报的未命中数
+# miss == 0 且 hit > 0（整段命中）           -> miss = max(input_tokens - hit, 0)
+# hit == miss == 0（供应商不给缓存字段）      -> 整段输入按未命中
+cost = (hit * cache_hit_price_per_mtokens
+        + miss * input_price_per_mtokens
         + output * output_price_per_mtokens) / 1_000_000
 ```
+
+`prompt_tokens` 已含命中部分，整段命中时 `prompt_cache_miss_tokens` 报 0 —— 不能把它当成
+「没报缓存字段」而把整段输入再按未命中价计一遍。内置峰谷脚本用同一套拆分。
 
 **触发判据（`tracker.py:158`）**：`billing` 实例存在、该模型 `billing_script` 非空、
 `[billing].enabled=true` 三者同时成立才进脚本路径；否则连 ctx 都不组装（零额外开销，A9）。

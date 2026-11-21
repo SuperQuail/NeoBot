@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import time
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 from PIL import Image
 
+import neobot_app.emoji.service_parts.scanning as scanning_module
 from neobot_app.emoji.service import EmojiService
 from neobot_storage import create_engine, make_uow_factory
 from neobot_storage.models import Base
@@ -155,6 +157,8 @@ async def test_failed_scan_does_not_stamp_and_is_retried(tmp_path, monkeypatch) 
         emoji_dir.mkdir()
         (emoji_dir / "a.png").write_bytes(_png_bytes())  # 没有 txt，会走视觉解析
 
+        stamped_at = service._last_full_scan_at
+
         async def boom(items):
             raise RuntimeError("parse failed")
 
@@ -164,7 +168,7 @@ async def test_failed_scan_does_not_stamp_and_is_retried(tmp_path, monkeypatch) 
             await service._scan_folder()
 
         assert service._last_dir_fingerprint is None
-        assert service._last_full_scan_at == 0.0
+        assert service._last_full_scan_at == stamped_at
 
         calls = 0
 
@@ -293,6 +297,127 @@ async def test_unreadable_file_does_not_stamp(tmp_path) -> None:
         await service._scan_folder()
 
         assert service._last_dir_fingerprint is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_permanently_unreadable_file_is_not_retried_every_round(
+    tmp_path, monkeypatch
+) -> None:
+    """永久不可读文件按签名记住：同签名不再重试，第二轮即盖章，不再每轮全扫。"""
+    engine, service = await _make_service(tmp_path)
+    try:
+        emoji_dir = tmp_path / "emoji"
+        emoji_dir.mkdir()
+        (emoji_dir / "good.png").write_bytes(_png_bytes())
+        (emoji_dir / "good.txt").write_text("好的", encoding="utf-8")
+        bad = emoji_dir / "bad.png"
+        bad.write_bytes(b"not-an-image")
+
+        attempts: list[str] = []
+        real_prepare = scanning_module.prepare_local_image_async
+
+        async def counting_prepare(path, **kwargs):
+            attempts.append(Path(path).name)
+            return await real_prepare(path, **kwargs)
+
+        monkeypatch.setattr(
+            scanning_module, "prepare_local_image_async", counting_prepare
+        )
+
+        # 第一轮：新发现的坏文件照旧不盖章（保持「下一轮重试」语义），但要记住它的签名。
+        assert await service._refresh_once() is True
+        assert attempts.count("bad.png") == 1
+        assert service._last_dir_fingerprint is None
+
+        # 第二轮：坏文件签名没变，直接跳过，扫描成功盖章。
+        assert await service._refresh_once() is True
+        assert attempts.count("bad.png") == 1
+        assert service._last_dir_fingerprint == service._dir_fingerprint()
+
+        # 第三轮：指纹没变，连扫描都不做——不再是每 15 分钟全扫一次、每文件解码两遍。
+        attempts.clear()
+        assert await service._refresh_once() is False
+        assert attempts == []
+
+        # 8 小时强制全扫仍给「已知不可读」一次重试机会（锁被解开时签名不会变）。
+        service._last_full_scan_at = (
+            time.monotonic() - service._FULL_SCAN_INTERVAL_SECONDS - 1
+        )
+        assert await service._refresh_once() is True
+        assert attempts.count("bad.png") == 1
+        assert service._last_dir_fingerprint is None
+
+        # 强制重试又失败：强制周期按「跑过」算，下一轮不能再次清空名单重试同一个文件，
+        # 否则每轮都是强制全扫（评审实测的 1/2/3/4 次解码）。
+        assert await service._refresh_once() is True
+        assert attempts.count("bad.png") == 1
+        assert service._last_dir_fingerprint == service._dir_fingerprint()
+
+        # 文件被替换（签名变化）：重新尝试并读成功。
+        attempts.clear()
+        bad.write_bytes(_png_bytes(color="blue"))
+        (emoji_dir / "bad.txt").write_text("替换后", encoding="utf-8")
+        assert await service._refresh_once() is True
+        assert "bad.png" in attempts
+        assert "bad.png" not in service._unreadable_files
+        assert service._last_dir_fingerprint == service._dir_fingerprint()
+        assert await service._refresh_once() is False
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_long_uptime_start_does_not_force_full_scan(tmp_path, monkeypatch) -> None:
+    """monotonic 是开机时长：开机已 9 小时再启动的进程，第一轮不能算「强制全扫到期」。"""
+    monkeypatch.setattr(time, "monotonic", lambda: 9 * 60 * 60)
+    service = EmojiService(data_dir=tmp_path, uow_factory=lambda: None)  # type: ignore[arg-type]
+    assert service._last_full_scan_at == 9 * 60 * 60
+
+    emoji_dir = tmp_path / "emoji"
+    emoji_dir.mkdir()
+    (emoji_dir / "a.png").write_bytes(_png_bytes())
+    service._last_dir_fingerprint = service._dir_fingerprint()
+
+    calls = 0
+
+    async def fake_scan_safe() -> None:
+        nonlocal calls
+        calls += 1
+
+    monkeypatch.setattr(service, "_scan_safe", fake_scan_safe)
+
+    assert await service._refresh_once() is False
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_empty_directory_cleanup_failure_does_not_stamp(tmp_path, monkeypatch) -> None:
+    """空目录分支同样要「清理失败不盖章」，否则陈旧记录要等目录变化或 8 小时才重试。"""
+    engine, service = await _make_service(tmp_path)
+    try:
+        emoji_dir = tmp_path / "emoji"
+        emoji_dir.mkdir()
+
+        async def failing_cleanup(disk_files):
+            return False
+
+        monkeypatch.setattr(service, "_cleanup_stale_emoji_records", failing_cleanup)
+
+        await service._scan_folder()
+
+        assert service._last_dir_fingerprint is None
+
+        calls = 0
+
+        async def fake_scan_safe() -> None:
+            nonlocal calls
+            calls += 1
+
+        monkeypatch.setattr(service, "_scan_safe", fake_scan_safe)
+        assert await service._refresh_once() is True
+        assert calls == 1
     finally:
         await engine.dispose()
 
