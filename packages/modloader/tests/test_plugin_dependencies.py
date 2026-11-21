@@ -426,6 +426,11 @@ class DependencyRuntimeTest(unittest.IsolatedAsyncioTestCase):
 class InstallBeforeImportTest(unittest.IsolatedAsyncioTestCase):
     """回归 #327：依赖安装必须早于导入，顶层 import 第三方库的插件才装得上。"""
 
+    def _cleanup(self, baseline: set[str]) -> None:
+        for name in set(sys.modules) - baseline:
+            if name.startswith(("issue327", "neobot_user_plugins")):
+                sys.modules.pop(name, None)
+
     async def test_python_dependencies_are_installed_before_import(self) -> None:
         order: list[str] = []
         installed: set[str] = set()
@@ -440,6 +445,7 @@ class InstallBeforeImportTest(unittest.IsolatedAsyncioTestCase):
         def dependency_installed(requirement: str) -> bool:
             return requirement in installed
 
+        baseline = set(sys.modules)
         probe = types.ModuleType("issue327_probe")
         probe.order = order  # type: ignore[attr-defined]
         sys.modules["issue327_probe"] = probe
@@ -469,8 +475,42 @@ class InstallBeforeImportTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(order, ["install", "import"])
                 await runtime.stop_all()
         finally:
-            sys.modules.pop("issue327_probe", None)
-            sys.modules.pop("issue327_dependency", None)
+            self._cleanup(baseline)
+
+    async def test_install_prompt_is_not_repeated_by_activation(self) -> None:
+        """预装被拒后不再二次提问：同一次加载只问一遍。"""
+        calls: list[list[str]] = []
+
+        class FakeInstaller:
+            async def confirm_and_install(self, requirements: list[str]) -> object:
+                calls.append(list(requirements))
+                return object()
+
+        baseline = set(sys.modules)
+        try:
+            with tempfile.TemporaryDirectory() as temp, patch(
+                "neobot_modloader.loader.is_python_dependency_installed", return_value=False
+            ):
+                root = Path(temp)
+                package = root / "plugins" / "lazy-dep"
+                package.mkdir(parents=True)
+                (package / "plugin.toml").write_text(
+                    'name = "lazy-dep"\npython_dependencies = ["issue327-lazy-dep"]\n', encoding="utf-8"
+                )
+                # 顶层不 import 依赖：导入能成功，缺依赖由 _activate_loaded_plugin 判定
+                (package / "__init__.py").write_text(
+                    "from neobot_modloader import Plugin\nplugin = Plugin('lazy-dep')\n", encoding="utf-8"
+                )
+                runtime = make_runtime(root, dependency_installer=FakeInstaller())
+
+                result = await runtime.load_plugin_path(package, auto_install_dependencies=True)
+
+                self.assertFalse(result.ok)
+                self.assertEqual(calls, [["issue327-lazy-dep"]])
+                self.assertIn("缺少 PyPI 依赖", result.error or "")
+                await runtime.stop_all()
+        finally:
+            self._cleanup(baseline)
 
 
 if __name__ == "__main__":
