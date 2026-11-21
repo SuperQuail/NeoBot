@@ -97,8 +97,16 @@ def declarations(runtime: PluginRuntime, name: str) -> Any:
 
 
 def runtime_providers(runtime: PluginRuntime) -> dict[str, Any]:
-    entries = dict(runtime._service_declarations)
+    # 停用 / 自动禁用的插件不能继续占住声明：赢家不可用时回落到下一个可用提供者。
+    entries = {
+        name: entry
+        for name, entry in runtime._service_declarations.items()
+        if name not in runtime._auto_disabled and runtime._resolve_enabled_state(name, entry.enabled)
+    }
     for name in runtime.manager.names():
+        if name in runtime._auto_disabled:
+            # 已登记自动禁用的插件即使还留有记录也不能占住服务名
+            continue
         entries[name] = runtime.manager.get_record(name).plugin
     return providers_for(entries.values())
 
@@ -131,13 +139,24 @@ def service_report(runtime: PluginRuntime, entry: Any) -> dict[str, Any]:
         for declaration in parse_dependencies(getattr(entry, kind, ())):
             target = providers.get(declaration.name)
             metadata = registry.metadata(declaration.name)
+            if target is None and metadata is None:
+                # 停用 / 自动禁用的声明已让出选择，面板仍要解释「已停用」而不是「缺失」
+                target = next(
+                    (
+                        item
+                        for item in runtime._service_declarations.values()
+                        if declaration.name in getattr(item, "provides", ())
+                    ),
+                    None,
+                )
             provider = metadata["provider"] if metadata else target.name if target else None
             version = metadata["version"] if metadata else target.version if target else None
             status = "missing"
             if target or metadata:
                 status = "unloaded"
-                if provider != "__host__" and not runtime._resolve_enabled_state(
-                    provider, getattr(target, "enabled", True)
+                if provider != "__host__" and (
+                    provider in runtime._auto_disabled
+                    or not runtime._resolve_enabled_state(provider, getattr(target, "enabled", True))
                 ):
                     status = "disabled"
                 elif registry.has(declaration.name):
