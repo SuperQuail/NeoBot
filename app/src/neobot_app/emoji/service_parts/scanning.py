@@ -53,8 +53,13 @@ class _ScanningMixin:
         duplicates_removed = 0
         unreadable_files = 0
         for file_path in image_files:
+            stamp = self._file_stamp(file_path)
+            if stamp is not None and self._unreadable_files.get(file_path.name) == stamp:
+                # 已知不可读且签名没变：同一进程内不再重试，重试也是白解码一遍。
+                continue
             try:
                 prepared = await prepare_local_image_async(file_path)
+                self._unreadable_files.pop(file_path.name, None)
                 if prepared.file_hash in hash_to_path:
                     existing = hash_to_path[prepared.file_hash]
                     # 保留较旧的文件
@@ -73,13 +78,17 @@ class _ScanningMixin:
                     path_to_hash[file_path] = prepared.file_hash
             except Exception as exc:
                 unreadable_files += 1
+                if stamp is not None:
+                    self._unreadable_files[file_path.name] = stamp
                 self._logger.warning(f"无法读取表情包文件 {file_path.name}: {exc}")
 
         if not hash_to_path:
             # 所有文件都读不出来：不盖章，下一轮重试。
             self._mark_scan_failed()
             return
-        # 有文件读不出来也不盖章：下一轮再试，避免一次瞬时 IO 错误让它 8 小时不再重试。
+        # 本轮新读不出来的文件不盖章。但已知不可读、签名又没变的文件上面就跳过了，不会
+        # 算进来，所以它下一轮就盖章：真正重试要等签名变化或下一次 8 小时强制全扫
+        # （瞬时失败也一并等这么久，换来的是坏文件不再把每轮扫描拖成全扫）。
         scan_ok = unreadable_files == 0
 
         existing: dict[str, str] = {}
