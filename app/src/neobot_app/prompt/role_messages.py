@@ -10,9 +10,15 @@
 保证工具参数(如 reply_to)引用的编号一致;每条消息行首的 [msg_id=xxx]
 即真实 OneBot message_id,工具参数需要 message_id 时直接使用。
 
-**assistant 历史统一改写为 send_reply 工具调用**(见 _as_send_reply_tool_history):
+**self-sent 消息优先按工具元数据重建**(见 _render_self_sent_tool_history):
+发送层在真实发出后给队列条目挂了 tool_call(name/arguments/result)，重置后据此还原成
+assistant.tool_calls + tool 成功回执，模型能看到「自己发过哪张图/语音/长回复」以及
+当时的参数与产物索引；元数据随队列条目一起裁剪，不会留下没有聊天记录的孤儿工具上下文。
+
+**没有元数据的 assistant 正文统一改写为 send_reply 工具调用**(见 _as_send_reply_tool_history):
 历史里 assistant 只带正文，等于用例子教模型不用工具也能说话；现在每条历史发言换成
 assistant.tool_calls(send_reply) + 同 id 的 tool 回执，正文仍在 arguments 里。
+（软重启后从数据库补回的自身发言只有文本，走这条兜底。）
 
 **每条 user 消息带粗粒度年龄**(fix(14)):旧消息不再「永远不会过期」。年龄由
 occurred_at 相对**本次快照里最新一条消息**计算,不读墙钟——同一队列快照在任意
@@ -24,18 +30,35 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from neobot_app.message.queue import QueueEntryType
+from neobot_app.message.queue import QueueEntryType, is_bot_message
+from neobot_app.prompt.assets import text
 
 if TYPE_CHECKING:
     from neobot_app.message.numbering import MessageNumbering
+
+
+def _label(key: str, *, prompt_store: Any = None, **values: Any) -> str:
+    """读取内部标签：custom 覆盖 / enabled / 内置模板统一走 assets。"""
+    return text("label_message_meta", key, store=prompt_store, values=values)
+
+
+def _replied_prefix(prompt_store: Any = None) -> str:
+    """引用前缀 + 一个分隔空格。
+
+    assets 渲染会裁掉模板尾随空白（``replied_prefix`` 在 TOML 里带空格），
+    这里统一补回，保证默认输出与自定义覆盖都只有一个分隔空格。
+    """
+    value = _label("replied_prefix", prompt_store=prompt_store)
+    return f"{value.rstrip()} " if value.strip() else ""
 
 
 def _user_message(content: str) -> dict[str, Any]:
     return {"role": "user", "content": content}
 
 
-def _role_for_message(message: Any, bot_account: int) -> str:
-    if bot_account and getattr(message, "user_id", None) == bot_account:
+def _role_for_message(message: Any, bot_accounts: set[int]) -> str:
+    # 双通道下两个 bot 的发言都算助手；消息级 self_id（自身回显）优先
+    if is_bot_message(message, bot_accounts):
         return "assistant"
     return "user"
 
@@ -50,18 +73,20 @@ def _latest_message_epoch(entries: list) -> int | None:
     return max(times) if times else None
 
 
-def _format_message_age(occurred_at: int | None, reference: int | None) -> str:
+def _format_message_age(
+    occurred_at: int | None, reference: int | None, *, prompt_store: Any = None
+) -> str:
     """粗粒度年龄（刚刚 / N分钟前 / N小时前 / N天前）；无时间信息时返回空串。"""
     if occurred_at is None or reference is None:
         return ""
     age = max(0, int(reference) - int(occurred_at))
     if age < 60:
-        return "刚刚"
+        return _label("age_just_now", prompt_store=prompt_store)
     if age < 3600:
-        return f"{age // 60}分钟前"
+        return _label("age_minutes", prompt_store=prompt_store, minutes=age // 60)
     if age < 86400:
-        return f"{age // 3600}小时前"
-    return f"{age // 86400}天前"
+        return _label("age_hours", prompt_store=prompt_store, hours=age // 3600)
+    return _label("age_days", prompt_store=prompt_store, days=age // 86400)
 
 
 def _render_role_message(
@@ -73,6 +98,7 @@ def _render_role_message(
     content: str,
     replied: bool = False,
     age: str = "",
+    prompt_store: Any = None,
 ) -> dict[str, Any]:
     """按角色渲染一条聊天记录。
 
@@ -93,14 +119,23 @@ def _render_role_message(
         # 共用同一个签名，这里刻意不用它。
         body = content
         if replied:
-            body = f"[被回复消息] {content}"
+            body = _replied_prefix(prompt_store) + content
         return {"role": role, "content": body, "_history_msg_id": msg_id}
     prefix = f"{number}: " if number is not None else ""
-    marker = "[被回复消息] " if replied else ""
+    marker = _replied_prefix(prompt_store) if replied else ""
     age_label = f"[{age}] " if age else ""
     return {
         "role": role,
-        "content": f"[msg_id={msg_id}] {prefix}{marker}{age_label}{sender}: {content}",
+        "content": _label(
+            "line",
+            prompt_store=prompt_store,
+            msg_id=msg_id,
+            prefix=prefix,
+            marker=marker,
+            age=age_label,
+            sender=sender,
+            content=content,
+        ),
     }
 
 
@@ -150,6 +185,74 @@ def _as_send_reply_tool_history(messages: list[dict[str, Any]]) -> list[dict[str
     return converted
 
 
+def _render_self_sent_tool_history(tool_call: Any, *, msg_id: int | None, index: int) -> list[dict[str, Any]]:
+    """把带工具元数据的 self-sent 消息重建为 assistant.tool_calls + tool 回执。
+
+    这些条目由发送层在真实发出后写入（send_reply 的图片/文字、speak、
+    send_long_reply、send_official_markdown），重置后的历史因此能看到「自己
+    发过什么、用什么工具发的、参数与产物索引是什么」，而不是一段无法归因的文本。
+
+    call_id 用消息 id（负数合成 id，天然唯一且稳定）：同一队列快照在任意时刻
+    重建都得到同样的字节，不破坏前缀缓存。
+    """
+    name = str(getattr(tool_call, "name", "") or "send_reply")
+    arguments = dict(getattr(tool_call, "arguments", None) or {})
+    result = dict(getattr(tool_call, "result", None) or {"ok": True})
+    call_id = str(getattr(tool_call, "call_id", "") or "") or f"history_{msg_id if msg_id is not None else index}"
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": json.dumps(arguments, ensure_ascii=False),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "name": name,
+            "content": json.dumps(result, ensure_ascii=False),
+        },
+    ]
+
+
+def _render_compact_tool_history(tool_call: Any, *, index: int) -> list[dict[str, Any]]:
+    """非发送工具调用的 compact 重建：只留工具名与成败，不回放参数/结果。
+
+    参数/结果完整保存在队列条目与存储里，供调试面板/审计使用；聊天管线里回放
+    它们既占上下文也容易把模型带偏（搜索结果、文件内容与当前对话无关）。
+    """
+    name = str(getattr(tool_call, "name", "") or "tool")
+    ok = bool(getattr(tool_call, "ok", True))
+    call_id = str(getattr(tool_call, "call_id", "") or "") or f"history_tool_{index}"
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "name": name,
+            "content": json.dumps({"ok": ok}, ensure_ascii=False),
+        },
+    ]
+
+
 def build_role_messages(
     queue: Any,
     queue_key: str,
@@ -159,6 +262,7 @@ def build_role_messages(
     include_boundary_markers: bool = False,
     last_reply_message_id: int | None = None,
     all_new: bool = False,
+    prompt_store: Any = None,
 ) -> list[dict[str, Any]]:
     """为一个队列的所有条目构建角色消息列表(全量)。"""
     return _build_from_entries(
@@ -169,6 +273,7 @@ def build_role_messages(
         include_boundary_markers=include_boundary_markers,
         last_reply_message_id=last_reply_message_id,
         all_new=all_new,
+        prompt_store=prompt_store,
     )
 
 
@@ -181,6 +286,7 @@ def build_role_messages_from_entries(
     bot_account: int = 0,
     include_boundary_markers: bool = False,
     context_entries: list | None = None,
+    prompt_store: Any = None,
 ) -> list[dict[str, Any]]:
     """为新增的队列条目构建角色消息列表(增量,用于挂起恢复等场景)。
 
@@ -202,6 +308,7 @@ def build_role_messages_from_entries(
         last_reply_message_id=None,
         all_new=False,
         label_context_entries=context_entries,
+        prompt_store=prompt_store,
     )
 
 
@@ -215,8 +322,13 @@ def _build_from_entries(
     last_reply_message_id: int | None,
     all_new: bool,
     label_context_entries: list | None = None,
+    prompt_store: Any = None,
 ) -> list[dict[str, Any]]:
     messages: list[dict[str, str]] = []
+    # bot 账号来源：队列登记的全部通道账号 + 调用方传入的当前账号
+    bot_accounts = {int(account) for account in (getattr(queue, "bot_accounts", None) or ())}
+    if bot_account:
+        bot_accounts.add(int(bot_account))
     # 发送者标签基于全量上下文计算,保证同一发送者在同一对话中身份恒定
     label_context = entries if label_context_entries is None else label_context_entries
     sender_labels, sender_labels_by_user = queue._build_sender_labels(label_context)
@@ -234,7 +346,7 @@ def _build_from_entries(
         )
     if all_new or (last_reply_message_id is not None and not found_last_reply):
         if include_boundary_markers:
-            messages.append(_user_message("<当前均为新消息，没有上次回复过的内容>"))
+            messages.append(_user_message(_label("all_new", prompt_store=prompt_store)))
 
     new_section_opened = False
     new_section_content_emitted = False
@@ -248,7 +360,7 @@ def _build_from_entries(
                 and prev_entry.message.message_id == last_reply_message_id
             ):
                 if include_boundary_markers:
-                    messages.append(_user_message("<这是新的可能要回答的内容>"))
+                    messages.append(_user_message(_label("new_content_open", prompt_store=prompt_store)))
                     new_section_content_emitted = True
 
         if entry.kind == QueueEntryType.MESSAGE and entry.message is not None:
@@ -267,13 +379,18 @@ def _build_from_entries(
                 content = queue._render_message_content(replied)
                 messages.append(
                     _render_role_message(
-                        role=_role_for_message(replied, bot_account),
+                        role=_role_for_message(replied, bot_accounts),
                         msg_id=replied_id,
                         number=number,
                         sender=sender,
                         content=content,
                         replied=True,
-                        age=_format_message_age(getattr(replied, "time", None), reference_epoch),
+                        age=_format_message_age(
+                            getattr(replied, "time", None),
+                            reference_epoch,
+                            prompt_store=prompt_store,
+                        ),
+                        prompt_store=prompt_store,
                     )
                 )
 
@@ -286,23 +403,33 @@ def _build_from_entries(
             number = None
             if numbering is not None:
                 number = numbering._assign_number(msg_id)
-            sender = queue._message_sender_label(msg, sender_labels=sender_labels, sender_labels_by_user=sender_labels_by_user)
-            content = queue._render_message_content(
-                msg,
-                replied_messages=entry.replied_messages,
-                reply_number_resolver=numbering._assign_number if numbering else None,
-                wrap_at_mention=False,
-            )
-            messages.append(
-                _render_role_message(
-                    role=_role_for_message(msg, bot_account),
-                    msg_id=msg_id,
-                    number=number,
-                    sender=sender,
-                    content=content,
-                    age=_format_message_age(entry.occurred_at, reference_epoch),
+            tool_call = getattr(entry, "tool_call", None)
+            if tool_call is not None:
+                # Bot 自己真实发出去的消息：按工具元数据重建工具调用 + 回执。
+                # 不能退回「assistant 正文」路径：那会把图片/语音索引当成模型说过
+                # 的一段话，模型看不出自己已经发过，于是反复重发。
+                messages.extend(_render_self_sent_tool_history(tool_call, msg_id=msg_id, index=i))
+            else:
+                sender = queue._message_sender_label(
+                    msg, sender_labels=sender_labels, sender_labels_by_user=sender_labels_by_user
                 )
-            )
+                content = queue._render_message_content(
+                    msg,
+                    replied_messages=entry.replied_messages,
+                    reply_number_resolver=numbering._assign_number if numbering else None,
+                    wrap_at_mention=False,
+                )
+                messages.append(
+                    _render_role_message(
+                        role=_role_for_message(msg, bot_accounts),
+                        msg_id=msg_id,
+                        number=number,
+                        sender=sender,
+                        content=content,
+                        age=_format_message_age(entry.occurred_at, reference_epoch, prompt_store=prompt_store),
+                        prompt_store=prompt_store,
+                    )
+                )
         elif entry.kind == QueueEntryType.TIMESTAMP:
             text = queue._entry_to_text(entry, sender_labels=sender_labels)
             if text:
@@ -329,6 +456,9 @@ def _build_from_entries(
             text = queue._entry_to_text(entry, sender_labels=sender_labels)
             if text:
                 messages.append(_user_message(text))
+        elif entry.kind == QueueEntryType.TOOL_CALL and entry.tool_call is not None:
+            # 非发送工具调用：compact 的 assistant.tool_calls + tool 回执
+            messages.extend(_render_compact_tool_history(entry.tool_call, index=i))
 
         if (
             last_reply_message_id is not None
@@ -337,12 +467,18 @@ def _build_from_entries(
             and entry.message.message_id == last_reply_message_id
         ):
             if include_boundary_markers:
-                messages.append(_user_message("<以上是上次对话回复过的内容>"))
+                messages.append(_user_message(_label("previous_content", prompt_store=prompt_store)))
             new_section_opened = True
             continue
     # 仅在确实输出过新区段内容/开标记时才追加闭合标记,避免残缺的
     # "</这是新的可能要回答的内容>" 单独出现(last_reply 位于队尾时)
     if new_section_opened and new_section_content_emitted:
         if include_boundary_markers:
-            messages.append(_user_message("</这是新的可能要回答的内容>"))
-    return _as_send_reply_tool_history(messages)
+            messages.append(_user_message(_label("new_content_close", prompt_store=prompt_store)))
+    return _as_send_reply_tool_history(
+        [
+            message
+            for message in messages
+            if message.get("role") != "user" or message.get("content")
+        ]
+    )

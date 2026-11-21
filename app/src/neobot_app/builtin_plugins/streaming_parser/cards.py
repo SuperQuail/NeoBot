@@ -43,7 +43,7 @@ def rows_card(
     note: str = "",
     footer: str = "",
 ) -> dict[str, Any]:
-    """表格卡片：适合「监听列表」。"""
+    """表格卡片：适合「直播监听列表」。"""
     blocks: list[dict[str, Any]] = [
         {"kind": "rows", "columns": [str(c) for c in columns], "rows": rows},
     ]

@@ -16,7 +16,12 @@ from .subscriptions import SubscriptionService
 
 
 def register_chat_guide(plugin: Plugin, state: Any) -> None:
-    @plugin.command("监听向导", permission=1, description="分步填写直播间并确认订阅")
+    @plugin.command(
+        "直播监听向导",
+        aliases=("监听向导",),
+        permission=1,
+        description="分步填写直播间并确认订阅",
+    )
     async def start(
         incoming: IncomingEvent,
         reply: Reply,
@@ -24,7 +29,7 @@ def register_chat_guide(plugin: Plugin, state: Any) -> None:
         command_context,
     ) -> None:
         if incoming.scope[1] != "group" or incoming.group_id is None:
-            await reply.send("请在需要接收通知的群中使用 /监听向导。")
+            await reply.send("请在需要接收通知的群中使用 /直播监听向导。")
             return
         ctx.create_task(
             run_guide(state, ctx, incoming, reply, command_context),
@@ -41,7 +46,7 @@ async def run_guide(state, ctx, origin, reply, command_context) -> None:
     except TimeoutError:
         await reply.send("订阅向导已超时，未添加订阅。")
     except ValueError:
-        await reply.send("无法识别直播间，请检查链接后重新使用 /监听向导。")
+        await reply.send("无法识别直播间，请检查链接后重新使用 /直播监听向导。")
     except (BilibiliAPIError, BilibiliTransportError):
         await reply.send("直播间服务暂不可用，未添加订阅，请稍后重试。")
 

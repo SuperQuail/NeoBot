@@ -1,5 +1,6 @@
 """常量定义"""
 
+import uuid
 from importlib.metadata import version, PackageNotFoundError
 from pathlib import Path
 
@@ -13,6 +14,10 @@ def _get_version() -> str:
     except PackageNotFoundError:
         return "0.0.0"
 
+
+# 本次进程的启动标识：跨聊天 session 等「只在本次运行内可见」的记录按它过滤，
+# 重启后旧记录不再显示（数据保留，等后续清理策略）。
+BOOT_ID = uuid.uuid4().hex[:12]
 
 # 应用信息
 APP_NAME = "NeoBot"

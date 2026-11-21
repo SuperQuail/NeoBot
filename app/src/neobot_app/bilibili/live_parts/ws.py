@@ -204,6 +204,8 @@ class _WebSocketMixin:
         if event.kind == "danmaku":
             await self._handle_danmu(room_id, {"uid": event.uid, "name": event.name, "text": event.text})
             return
+        if event.kind == "live_start":
+            self._note_live_session(room_id, str(event.text or ""))
         key = event_key(event)
         if key and not self._event_keys.add(f"{room_id}:{key}"):
             return

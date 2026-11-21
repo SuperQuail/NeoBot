@@ -470,3 +470,130 @@ def migrate_v8_to_v9(old: dict) -> dict:
     new_models["registry"] = migrated
     new["models"] = new_models
     return new
+
+
+#: 旧配置里的布尔写法（手写配置可能是 bool / 0/1 / "false" 等）。
+_LEGACY_TRUE_TEXTS = frozenset({"true", "1", "yes", "on", "enabled", "enable", "是", "开启"})
+_LEGACY_FALSE_TEXTS = frozenset({"false", "0", "no", "off", "disabled", "disable", "unable", "否", "关闭"})
+
+
+def _legacy_bool(value: Any, default: bool = True) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value or "").strip().casefold()
+    if text in _LEGACY_FALSE_TEXTS:
+        return False
+    if text in _LEGACY_TRUE_TEXTS:
+        return True
+    return default
+
+
+@Config.migration(from_version="0.9.0", to_version="0.10.0")
+def migrate_v9_to_v10(old: dict) -> dict:
+    """迁移 0.9.0 -> 0.10.0：chat.gentle_language_enabled 搬到 [prompt_optimizations]。
+
+    旧字段在升级后删除；true/false 原样搬进新分区的 gentle_language（其余子块
+    由 schema 默认值 true 补齐），带旧配置的部署升级后行为保持一致。
+    """
+    new: dict[str, Any] = {"version": "0.10.0"}
+    for key, value in old.items():
+        if key in ("version", "chat", "prompt_optimizations"):
+            continue
+        new[key] = value
+
+    legacy_section = old.get("prompt_optimizations")
+    section = dict(legacy_section) if isinstance(legacy_section, dict) else None
+
+    chat = old.get("chat")
+    if isinstance(chat, dict):
+        migrated_chat = dict(chat)
+        legacy = migrated_chat.pop("gentle_language_enabled", None)
+        if legacy is not None:
+            if section is None:
+                section = {}
+            section.setdefault("gentle_language", _legacy_bool(legacy))
+    else:
+        migrated_chat = chat
+    if migrated_chat is not None:
+        new["chat"] = migrated_chat
+    if section is not None:
+        new["prompt_optimizations"] = section
+    return new
+
+@Config.migration(from_version="0.10.0", to_version="0.11.0")
+def migrate_v10_to_v11(old: dict) -> dict:
+    """迁移 0.10.0 -> 0.11.0：通道模式默认值语义变化。
+
+    老配置升级上来默认保持 onebot（历史只支持 onebot/local）；新部署由 schema
+    默认值 official 决定。显式选择过 official/dual/local 的配置原样保留。
+    """
+    new: dict[str, Any] = dict(old)
+    new["version"] = "0.11.0"
+    adapter = old.get("adapter")
+    migrated = dict(adapter) if isinstance(adapter, dict) else {}
+    if not migrated.get("mode"):
+        migrated["mode"] = "onebot"
+    new["adapter"] = migrated
+    return new
+
+
+@Config.migration(from_version="0.11.0", to_version="0.11.1")
+def migrate_v110_to_v111(old: dict) -> dict:
+    """迁移 0.11.0 -> 0.11.1：官方开放平台默认开发者写入超管配置默认值。
+
+    第一个真实用户就是创建机器人时的号主；不再把 9000000000001 硬编码在权限
+    判定里，而是作为 chat.admin_accounts 的默认值写进配置，便于部署者查看/修改。
+    """
+    new: dict[str, Any] = dict(old)
+    new["version"] = "0.11.1"
+    chat = old.get("chat")
+    migrated = dict(chat) if isinstance(chat, dict) else {}
+    admins = migrated.get("admin_accounts")
+    admins = [str(item) for item in admins] if isinstance(admins, list) else []
+    if "9000000000001" not in admins:
+        admins.insert(0, "9000000000001")
+    migrated["admin_accounts"] = admins
+    new["chat"] = migrated
+    return new
+
+
+@Config.migration(from_version="0.11.1", to_version="0.11.2")
+def migrate_v111_to_v112(old: dict) -> dict:
+    """迁移 0.11.1 -> 0.11.2：移除 qq_markdown（普通文本固定纯文本，Markdown 走显式工具）。"""
+    new: dict[str, Any] = dict(old)
+    new["version"] = "0.11.2"
+    adapter = old.get("adapter")
+    migrated = dict(adapter) if isinstance(adapter, dict) else {}
+    migrated.pop("qq_markdown", None)
+    new["adapter"] = migrated
+    return new
+
+
+@Config.migration(from_version="0.11.2", to_version="0.11.3")
+def migrate_v112_to_v113(old: dict) -> dict:
+    """迁移 0.11.2 -> 0.11.3：移除自动写入的开发者默认管理员。
+
+    超管必须由部署者显式配置；之前 0.11.1 迁移自动加的 9000000000001 一并移除。
+    """
+    new: dict[str, Any] = dict(old)
+    new["version"] = "0.11.3"
+    chat = old.get("chat")
+    migrated = dict(chat) if isinstance(chat, dict) else {}
+    admins = migrated.get("admin_accounts")
+    if isinstance(admins, list):
+        migrated["admin_accounts"] = [
+            str(item) for item in admins if str(item) != "9000000000001"
+        ]
+    new["chat"] = migrated
+    return new
+
+
+def ensure_legacy_adapter_mode(data: dict) -> None:
+    """没有 version 字段的更老配置：按「老配置升级」语义补 onebot mode（就地修改）。"""
+    adapter = data.get("adapter")
+    migrated = dict(adapter) if isinstance(adapter, dict) else {}
+    if not migrated.get("mode"):
+        migrated["mode"] = "onebot"
+    data["adapter"] = migrated

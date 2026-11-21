@@ -1,5 +1,5 @@
 from neobot_adapter.model.gengeral import General
-from neobot_adapter.model.basic import PostNoticeType
+from neobot_adapter.model.basic import LocalId, PostNoticeType
 from enum import Enum
 from pydantic import BaseModel
 from typing import Optional
@@ -11,14 +11,14 @@ class Notice(General):
 
 class PrivateMessageDelete(Notice):
     """私聊消息撤回"""
-    user_id : Optional[int] = None #好友 QQ 号
+    user_id : Optional[LocalId] = None #好友 QQ 号
     message_id : Optional[int] = None #被撤回的消息 ID
 
 class GroupMessageDelete(Notice):
     """群消息撤回"""
-    group_id : Optional[int] = None #群号
-    user_id : Optional[int] = None #消息发送者的 QQ 号
-    operator_id : Optional[int] = None #操作者 QQ 号
+    group_id : Optional[LocalId] = None #群号
+    user_id : Optional[LocalId] = None #消息发送者的 QQ 号
+    operator_id : Optional[LocalId] = None #操作者 QQ 号
     message_id : Optional[int] = None #被撤回的消息 ID
 
 class GroupIncreaseSubType(Enum):
@@ -28,9 +28,9 @@ class GroupIncreaseSubType(Enum):
 
 class GroupIncrease(Notice):
     """群成员增加"""
-    group_id : Optional[int] = None #群号
-    user_id : Optional[int] = None #被邀请/同意的 QQ 号
-    operator_id : Optional[int] = None #操作者 QQ 号
+    group_id : Optional[LocalId] = None #群号
+    user_id : Optional[LocalId] = None #被邀请/同意的 QQ 号
+    operator_id : Optional[LocalId] = None #操作者 QQ 号
     sub_type : Optional[GroupIncreaseSubType] = None #增加类型
 
 class GroupDecreaseSubType(Enum):
@@ -41,9 +41,9 @@ class GroupDecreaseSubType(Enum):
 
 class GroupDecrease(Notice):
     """群成员减少"""
-    group_id : Optional[int] = None #群号
-    user_id : Optional[int] = None #被踢/退群的 QQ 号
-    operator_id : Optional[int] = None #操作者 QQ 号
+    group_id : Optional[LocalId] = None #群号
+    user_id : Optional[LocalId] = None #被踢/退群的 QQ 号
+    operator_id : Optional[LocalId] = None #操作者 QQ 号
     sub_type : Optional[GroupDecreaseSubType] = None #减少类型
 
 class GroupAdminChangeSubType(Enum):
@@ -53,8 +53,8 @@ class GroupAdminChangeSubType(Enum):
 
 class GroupAdminChange(Notice):
     """群管理员变动"""
-    group_id : Optional[int] = None #群号
-    user_id : Optional[int] = None #被操作的 QQ 号
+    group_id : Optional[LocalId] = None #群号
+    user_id : Optional[LocalId] = None #被操作的 QQ 号
     sub_type : Optional[GroupAdminChangeSubType] = None #变动类型
 
 class File(BaseModel):
@@ -66,8 +66,8 @@ class File(BaseModel):
 
 class GroupUpload(Notice):
     """群文件上传"""
-    group_id : Optional[int] = None #群号
-    user_id : Optional[int] = None #上传者 QQ 号
+    group_id : Optional[LocalId] = None #群号
+    user_id : Optional[LocalId] = None #上传者 QQ 号
     file : Optional[File] = None #上传的文件信息
 
 class GroupBanSubType(Enum):
@@ -77,15 +77,15 @@ class GroupBanSubType(Enum):
 
 class GroupBan(Notice):
     """群禁言"""
-    group_id : Optional[int] = None #群号
-    user_id : Optional[int] = None #被禁言的 QQ 号，如果是全员禁言，则为 0
-    operator_id : Optional[int] = None #操作者 QQ 号
+    group_id : Optional[LocalId] = None #群号
+    user_id : Optional[LocalId] = None #被禁言的 QQ 号，如果是全员禁言，则为 0
+    operator_id : Optional[LocalId] = None #操作者 QQ 号
     duration : Optional[int] = None #禁言时长，-1 表示全员禁言
     sub_type : Optional[GroupBanSubType] = None #禁言类型
 
 class FriendAdd(Notice):
     """好友添加"""
-    user_id : Optional[int] = None #添加者 QQ 号
+    user_id : Optional[LocalId] = None #添加者 QQ 号
 
 class PokeSubType(Enum):
     """戳一戳类型枚举类"""
@@ -104,16 +104,16 @@ class PokeSubType(Enum):
 
 class PrivatePoke(Notice):
     """私聊戳一戳"""
-    sender_id : Optional[int] = None #发送者 QQ 号
-    user_id : Optional[int] = None #戳一戳的 QQ 号
-    target_id : Optional[int] = None #被戳的 QQ 号
+    sender_id : Optional[LocalId] = None #发送者 QQ 号
+    user_id : Optional[LocalId] = None #戳一戳的 QQ 号
+    target_id : Optional[LocalId] = None #被戳的 QQ 号
     sub_type : Optional[PokeSubType] = None #戳一戳类型
 
 class GroupPoke(Notice):
     """群戳一戳"""
-    group_id : Optional[int] = None #群号
-    user_id : Optional[int] = None #戳一戳的 QQ 号
-    target_id : Optional[int] = None #被戳的 QQ 号
+    group_id : Optional[LocalId] = None #群号
+    user_id : Optional[LocalId] = None #戳一戳的 QQ 号
+    target_id : Optional[LocalId] = None #被戳的 QQ 号
     sub_type : Optional[PokeSubType] = None #戳一戳类型
 
 class LuckyKingSubType(Enum):
@@ -122,9 +122,9 @@ class LuckyKingSubType(Enum):
 
 class GroupLuckyKing(Notice):
     """群红包运气王"""
-    group_id : Optional[int] = None #群号
-    user_id : Optional[int] = None #运气王的 QQ 号
-    target_id : Optional[int] = None #红包发送者 QQ 号
+    group_id : Optional[LocalId] = None #群号
+    user_id : Optional[LocalId] = None #运气王的 QQ 号
+    target_id : Optional[LocalId] = None #红包发送者 QQ 号
     sub_type : Optional[LuckyKingSubType] = None #运气王类型
 
 class GroupMemberHonorChangeSubType(Enum):
@@ -139,8 +139,8 @@ class HonorType(Enum):
 
 class GroupMemberHonorChange(Notice):
     """群成员荣誉变更"""
-    group_id : Optional[int] = None #群号
-    user_id : Optional[int] = None #被操作的 QQ 号
+    group_id : Optional[LocalId] = None #群号
+    user_id : Optional[LocalId] = None #被操作的 QQ 号
     sub_type : Optional[GroupMemberHonorChangeSubType] = None #荣誉类型
     honor_type : Optional[HonorType] = None
 
@@ -150,15 +150,15 @@ class GroupTitleChangeSubType(Enum):
 
 class GroupTitleChange(Notice):
     """群成员头衔变更"""
-    group_id : Optional[int] = None #群号
-    user_id : Optional[int] = None #被操作的 QQ 号
+    group_id : Optional[LocalId] = None #群号
+    user_id : Optional[LocalId] = None #被操作的 QQ 号
     sub_type : Optional[GroupTitleChangeSubType] = None #头衔类型
     title : Optional[str] = None #新头衔
 
 class GroupCardUpdate(Notice):
     """群成员名片变更"""
-    group_id : Optional[int] = None #群号
-    user_id : Optional[int] = None #成员的 QQ 号
+    group_id : Optional[LocalId] = None #群号
+    user_id : Optional[LocalId] = None #成员的 QQ 号
     card_new : Optional[str] = None #新名片
     card_old : Optional[str] = None #旧名片 当名片为空，两个值都是空字符串而不是昵称
 
@@ -170,7 +170,7 @@ class OfflineFile(BaseModel):
 
 class ReceiveOfflineFile(Notice):
     """接收离线文件"""
-    user_id : Optional[int] = None #发送者 QQ 号
+    user_id : Optional[LocalId] = None #发送者 QQ 号
     file : Optional[OfflineFile] = None #发送的文件信息
 
 class ClientStatusChange(Notice):
@@ -185,9 +185,9 @@ class EssentialMessageType(Enum):
 
 class EssenceMessage(Notice):
     """精华消息变更"""
-    group_id : Optional[int] = None #群号
-    sender_id : Optional[int] = None #发送者 QQ 号
-    operator_id : Optional[int] = None #操作者 QQ 号
+    group_id : Optional[LocalId] = None #群号
+    sender_id : Optional[LocalId] = None #发送者 QQ 号
+    operator_id : Optional[LocalId] = None #操作者 QQ 号
     message_id : Optional[int] = None #消息 ID
     sub_type : Optional[EssentialMessageType] = None #消息类型
 
@@ -195,5 +195,5 @@ class EmojiReaction(Notice):
     """消息表情回应"""
     message_id : Optional[int] = None #被回应的消息 ID
     emoji_id : Optional[int] = None #表情 ID
-    user_id : Optional[int] = None #操作者 QQ 号
-    group_id : Optional[int] = None #群号（群聊场景）
+    user_id : Optional[LocalId] = None #操作者 QQ 号
+    group_id : Optional[LocalId] = None #群号（群聊场景）

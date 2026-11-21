@@ -292,6 +292,7 @@ class LocalAdapter:
         message: str | list[dict[str, Any]],
         timeout: float = 5.0,
         wait_response: bool = True,
+        proactive: bool = False,
     ) -> response.SendMsgResponse:
         # 本地适配器直接落库，天然没有 echo 等待。
         stored = await self._core.send(conversation, message)

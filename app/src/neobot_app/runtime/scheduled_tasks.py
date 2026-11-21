@@ -124,6 +124,8 @@ class ScheduledTaskManager:
         self._runner: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
         self._failure_logs: dict[tuple[str, str, str], tuple[str, float, int]] = {}
+        self._legacy_migration_started = False
+        self._legacy_migration_task: asyncio.Task[None] | None = None
 
     def _log_poll_failure(
         self,
@@ -175,6 +177,89 @@ class ScheduledTaskManager:
         self._orchestrator = orchestrator
         if self._notification_hub is not None:
             self._notification_hub.set_orchestrator(orchestrator)
+        self._start_legacy_binding_migration()
+
+    def _start_legacy_binding_migration(self) -> None:
+        if self._legacy_migration_started or self._uow_factory is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._legacy_migration_started = True
+        self._legacy_migration_task = loop.create_task(self.migrate_legacy_bindings())
+        # 没人 await 的后台 Task 异常只会变成 "Task exception was never retrieved"：
+        # 迁移是最佳努力，异常必须在这里收口（shutdown 也会取消并等待它退出）。
+        self._legacy_migration_task.add_done_callback(self._on_legacy_migration_done)
+
+    def _on_legacy_migration_done(self, task: asyncio.Task[None]) -> None:
+        """迁移任务的终态回调：取消不算异常，意外异常记 WARNING 并完成异常回收。"""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            self._logger.warning(
+                "旧定时任务绑定迁移任务异常",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+
+    async def migrate_legacy_bindings(self) -> None:
+        """only-official 下把旧定时任务的真实 QQ/群号/旧合成号迁移成官方 openid。"""
+        from neobot_app.runtime.legacy_bindings import resolve_legacy_official_target
+
+        adapter = getattr(self._orchestrator, "_adapter", None) if self._orchestrator else None
+        active = getattr(adapter, "active_channels", None)
+        if active is None or tuple(str(item) for item in active) != ("official",):
+            return
+        try:
+            tasks = await self._list_active_tasks()
+        except Exception as exc:
+            self._logger.warning("旧定时任务绑定迁移读取失败", error=str(exc))
+            return
+        migrated = 0
+        # 缺真实 QQ/群号映射的目标：逐条只记 DEBUG（见 legacy_bindings），结束时汇总一条 INFO。
+        unresolved: set[tuple[str, str]] = set()
+        for task in tasks:
+            bindings = []
+            changed = False
+            for binding in task.bindings:
+                resolved = resolve_legacy_official_target(
+                    binding.kind,
+                    binding.id,
+                    adapter=adapter,
+                    logger=self._logger,
+                )
+                if resolved is None:
+                    unresolved.add((str(binding.kind), str(binding.id)))
+                    bindings.append(binding)
+                    continue
+                new_id, _forced = resolved
+                if str(binding.id) != new_id:
+                    bindings.append(ConversationRef(binding.kind, new_id))
+                    changed = True
+                else:
+                    bindings.append(binding)
+            if not changed:
+                continue
+            try:
+                async with self._uow_factory() as uow:
+                    await uow.scheduled_tasks.update(task.task_uuid, bindings=tuple(bindings))
+                migrated += 1
+            except Exception as exc:
+                self._logger.warning(
+                    "旧定时任务绑定迁移写回失败",
+                    task_id=task.task_uuid,
+                    error=str(exc),
+                )
+        if migrated:
+            self._logger.info("旧定时任务绑定已迁移到官方 openid", tasks=migrated)
+        if unresolved:
+            self._logger.info(
+                "旧定时任务绑定存在缺映射目标，未迁移（保持原样）",
+                targets=len(unresolved),
+                hint="用 /linkqq、/linkgroup 建立映射，或把任务目标改成官方会话 ID（openid）",
+            )
 
     def set_notification_hub(self, hub: Any) -> None:
         self._notification_hub = hub
@@ -309,10 +394,18 @@ class ScheduledTaskManager:
 
     async def shutdown(self) -> None:
         self._stopping.set()
-        if self._runner is not None:
-            self._runner.cancel()
-            await asyncio.gather(self._runner, return_exceptions=True)
-            self._runner = None
+        pending = [
+            task
+            for task in (self._runner, self._legacy_migration_task)
+            if task is not None
+        ]
+        for task in pending:
+            task.cancel()
+        if pending:
+            # 迁移可能正在写库：关闭流程必须等它真正退出，不能留下跑到关闭之后的任务。
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._runner = None
+        self._legacy_migration_task = None
         self._notification_queues.clear()
         self._last_reminder_at.clear()
         self._reminder_attempts.clear()

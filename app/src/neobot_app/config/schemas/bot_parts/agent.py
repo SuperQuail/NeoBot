@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from .core import ID_CONFIG_NOTE
 from .media import ImageCreationConfig, VisionDetect
 from .memory import AgentMemory
 
@@ -201,8 +202,8 @@ class AgentSelfHeal:
         default="",
         metadata={
             "description": (
-                "接收自修复通知的管理员 QQ；留空时回退到 chat.admin_accounts[0]。"
-                "若两者都未配置则不会触发自修复任务"
+                f"接收自修复通知的管理员（QQ号或 openid）；留空时回退到 chat.admin_accounts[0]。"
+                f"若两者都未配置则不会触发自修复任务。{ID_CONFIG_NOTE}"
             )
         },
     )
@@ -227,8 +228,13 @@ class AgentSelfHeal:
         metadata={"description": "异常环形缓冲区大小"},
     )
     timeout_seconds: float = field(
-        default=300.0,
-        metadata={"description": "自修复 Agent 单次诊断超时（秒）"},
+        default=7200.0,
+        metadata={
+            "description": (
+                "自修复 Agent 单次诊断超时（秒），默认 7200（2 小时）；"
+                "轮次不设上限，靠总超时与 compact 控制成本"
+            )
+        },
     )
     max_tokens: int = field(
         default=8192,

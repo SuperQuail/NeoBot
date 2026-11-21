@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""PR 分支流向：dev 是默认开发分支；main 只接收 dev；release 只接收 main。
+"""PR 分支流向：main 是默认分支；release 由 QuailEgg 生成和维护。
 
-新的分支设计（2026-10-26 起）：
-- 日常 PR → dev（仓库默认分支）；
-- 发布前 dev → main（main 只允许来自 dev 的 PR）；
-- 正式发布 main → release：这条 PR 必须提升版本号，合并后由 release 分支触发 PyPI 发布。
+分支模型（2026-11-07 起）：
+- 日常功能/修复 PR → main（仓库默认分支）；dev 保留为普通分支，可继续接收 PR；
+- release 每次发布由 QuailEgg 从 main 重建并强制推送，发布 PR 为 release → main；
+- release 不接受人工 PR，也不能作为其它分支的源分支。
+
+注意：本脚本只拿到 base/head 的分支名。fork PR 的 head 只会是分支名（例如 main），
+与同仓库同名分支无法区分，因此不判断 base == head；同仓库自提 PR 由 GitHub 平台拦截。
 
 GitHub 分支保护不能限制「源分支」，所以用本脚本在 PR 上做强制检查。
 """
@@ -15,48 +18,26 @@ import argparse
 import os
 import sys
 
-DEV = "dev"
 MAIN = "main"
+DEV = "dev"
 RELEASE = "release"
 
 
-def evaluate(
-    base: str,
-    head: str,
-    head_repo: str = "",
-    base_repo: str = "",
-) -> tuple[bool, str]:
-    """纯判定：返回 (是否允许, 说明)。
-
-    head_repo/base_repo 用于拦 fork 里的同名 dev/main 分支：
-    往 main/release 提 PR 时，源分支必须来自本仓库。
-    """
+def evaluate(base: str, head: str) -> tuple[bool, str]:
+    """纯判定：返回 (是否允许, 说明)。"""
     base = str(base or "").strip()
     head = str(head or "").strip()
-    head_repo = str(head_repo or "").strip()
-    base_repo = str(base_repo or "").strip()
     if not base or not head:
         return False, "无法读取 PR 的 base/head 分支名。"
-    if (
-        base in (MAIN, RELEASE)
-        and head_repo
-        and base_repo
-        and head_repo.casefold() != base_repo.casefold()
-    ):
-        return False, f"{base} 只接收本仓库的分支，当前源仓库是 {head_repo}。"
-    if base == MAIN:
-        if head != DEV:
-            return False, f"main 只接收来自 {DEV} 的 PR，当前源分支是 {head}。"
-        return True, f"分支流向正确：{head} → {base}。"
     if base == RELEASE:
-        if head != MAIN:
-            return False, (
-                f"release 只接收来自 {MAIN} 的 PR，当前源分支是 {head}；"
-                "发布走 main → release，并在该 PR 内提升版本号。"
-            )
-        return True, f"分支流向正确：{head} → {base}（记得提升版本号）。"
-    if base == DEV and head in (MAIN, RELEASE):
-        return False, f"{DEV} 只接收功能分支，不能从 {head} 反向 PR 到 {DEV}。"
+        return False, (
+            "release 由 QuailEgg 生成和维护，不接受人工 PR；"
+            "发布走 release → main 的 QuailEgg 发布 PR。"
+        )
+    if base not in (MAIN, DEV):
+        return False, f"PR 目标分支只能是 {MAIN}（或普通分支 {DEV}），当前是 {base}。"
+    if head == RELEASE and base != MAIN:
+        return False, "release 只能作为 QuailEgg 发布 PR 的来源进入 main。"
     return True, f"分支流向允许：{head} → {base}。"
 
 
@@ -64,11 +45,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", default=os.environ.get("GITHUB_BASE_REF", ""))
     parser.add_argument("--head", default=os.environ.get("GITHUB_HEAD_REF", ""))
-    parser.add_argument("--head-repo", default=os.environ.get("PR_HEAD_REPO", ""))
-    parser.add_argument("--base-repo", default=os.environ.get("PR_BASE_REPO", ""))
     args = parser.parse_args(argv)
 
-    ok, message = evaluate(args.base, args.head, args.head_repo, args.base_repo)
+    ok, message = evaluate(args.base, args.head)
     if ok:
         print(message)
         return 0

@@ -128,6 +128,7 @@ NeoBot 的核心是一个多 Agent 系统：主回复 Agent 负责对话与任�
 通过 loguru ERROR sink 累积异常，触发后自动唤起 Agent 诊断、尝试安全修复并写 debug 报告，通过通知系统向管理员私聊推送。关键参数：
 
 - 触发阈值：`traceback_threshold`（默认 3 个带 traceback 的异常）或 `rate_threshold`（默认 60 秒内 10 个错误）
+- 运行预算：`timeout_seconds` 默认 7200s（2 小时）；工具轮次不设上限（靠总超时兜底），上下文超过约 12 万字符时自动调用 `runtime/compact` 压缩较早消息，避免上下文膨胀导致诊断失败
 - 节流：`min_interval_seconds`（默认 300s）、`daily_limit`（默认每日 5 次，防止费用失控）
 - 接收人：`admin_account`，留空回退到 `chat.admin_accounts[0]`
 

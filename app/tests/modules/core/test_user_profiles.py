@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
+from neobot_app.user_identity import bind_user_identity, link_user_qq
 from neobot_app.user_profiles import UserProfileService
 
 
@@ -147,7 +148,7 @@ async def test_ensure_user_profile_refreshes_when_stale_periodic_enabled() -> No
 
     record = await service.ensure_user_profile("123456")
 
-    assert adapter.calls == [("get_stranger_info", (123456,))]
+    assert adapter.calls == [("get_stranger_info", ("123456",))]
     assert record.nick_name == "小明"
 
 
@@ -222,6 +223,27 @@ def test_format_group_member_line_includes_profile_segments() -> None:
     assert line.endswith("</群友_1>")
 
 
+def test_format_mapped_member_shows_qq_and_qq_id(tmp_path) -> None:
+    """官方合成 ID 映射真实 QQ 后，档案同时显示 QQ 号和 QQ ID。"""
+    synthetic = 9000000000011
+    bind_user_identity(tmp_path)
+    try:
+        assert link_user_qq(synthetic, 123456789, trusted=True)[0]
+        member = SimpleNamespace(
+            user_id=synthetic,
+            nickname="枫",
+            card="",
+            sex=None,
+            role="member",
+        )
+
+        line = UserProfileService._format_group_member_line(1, member, None)
+
+        assert "QQ:123456789（openid:9000000000011）" in line
+    finally:
+        bind_user_identity(None)
+
+
 async def test_collect_group_members_from_queue_full_scan_dedupes() -> None:
     """Arrange: 队列含同一用户多条消息且后续补充昵称；Act: 全量扫描；Assert: 去重且信息最全。"""
     class _Sender:
@@ -266,7 +288,7 @@ async def test_is_bot_group_admin_uses_member_info_then_list_fallback() -> None:
     result = await service.is_bot_group_admin("100", "888")
 
     assert result is True
-    assert adapter.calls == [("get_group_member_info", (100, 888))]
+    assert adapter.calls == [("get_group_member_info", ("100", "888"))]
 
 
 async def test_get_group_name_falls_back_to_placeholder() -> None:

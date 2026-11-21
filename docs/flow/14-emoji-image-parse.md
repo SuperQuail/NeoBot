@@ -64,7 +64,7 @@ flowchart TD
     subgraph EMO["表情包库"]
         R["回复前随机触发 _maybe_trigger_sticker / orchestrator.py:1912"] --> R1{"random 小于 random_sticker_probability 默认 0.1"}
         R1 -- 命中 --> R2["send_image + record_usage 失败只 debug / orchestrator.py:1952"]
-        T["工具 send_emoji / list_emojis / emoji_add"] --> T1["EmojiService 编号映射与 emoji 目录 发送走 prepare_image_segment 再 adapter.send / service.py:199"]
+        T["工具 send_reply.emoji_numbers / list_emojis / emoji_add"] --> T1["EmojiService 编号映射与 emoji 目录 发送走 prepare_image_segment 再 adapter.send / service.py:199"]
     end
     subgraph VIS["本地视觉检测"]
         V["工具 vision_detect__detect 模型必须显式指定"] --> V1["detect_bytes_async 线程池执行 / service.py:413"]
@@ -347,7 +347,7 @@ flowchart TD
     K -. 解析回写 .-> K1["image_source 被硬编码成部署者提供 skill_import 丢失 / :621"]
     J --> L["_scan_folder 重建编号 返回 EmojiImportResult"]
     K1 --> L
-    M["send_sticker（只发图片，带 text 拒绝）/ service.py:199 或回复内 send_emoji_handler（只发图片）"] --> N["prepare_image_segment file_server 开启注册 HTTP URL 否则 file 本地路径"]
+    M["send_sticker（只发图片，带 text 拒绝）/ service.py:199 或回复内 send_reply.emoji_numbers（只发图片）"] --> N["prepare_image_segment file_server 开启注册 HTTP URL 否则 file 本地路径"]
     N --> O["adapter.send 成功后 record_usage / send_sticker 里两者成对"]
     O --> P["record_usage 重算 sha256 后 uow.emojis.increment_usage / :241"]
     P -. 异常 .-> P1["warning 记录使用次数失败 内存计数也不加"]
@@ -358,7 +358,7 @@ flowchart TD
 * `increment_usage` 是一条 `UPDATE ... SET use_count = use_count + 1`，**记录不存在时静默无效果**（`repositories/emoji.py:186-192`）：没有 `.txt` 描述、视觉解析又失败的表情包可能根本不在库里，`use_count` 永远是 0。
 * 重复加入是**幂等成功**而不是错误：`EmojiDuplicateError` 继承 `ValueError`，工具层转成 `ok=true, duplicate=true`（`emoji_management.py:215-225`）。这是 `fix(1)` 的产物——当时同一张图跨 4 个事件反复失败，占工具失败率 35.5%。
 * `send_sticker` 的前置校验是三道：能力未注入抛 `RuntimeError`、编号不存在抛 `LookupError`、文件不在磁盘抛 `FileNotFoundError`；工具层统一转成 `ok=false, error`。
-* 回复内发的表情包（`send_emoji_handler`）与随机触发的都走 `record_usage`，但**随机触发那条把异常吞成 debug 日志**（`orchestrator.py:1967-1972`），排查「使用次数没涨」时两条路径分开看。
+* 回复内发的表情包（`send_reply.emoji_numbers`）与随机触发的都走 `record_usage`，但**随机触发那条把异常吞成 debug 日志**（`orchestrator.py:1967-1972`），排查「使用次数没涨」时两条路径分开看。
 * `update_entry_description` 与 `rename_entry` 都以文件名为主键重建索引；`delete_entry` 先删库再删文件，因此库删失败会留下「文件已删、记录还在」的状态，由下次 `_scan_folder` 的幽灵清理收尾。
 </details>
 

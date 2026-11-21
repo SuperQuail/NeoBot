@@ -17,6 +17,7 @@ export function useDeployEditor(readOnly: boolean, onInvalidChance: () => void) 
   const [draft, setDraft] = useState<DeployDraft>(EMPTY_DRAFT);
   const [savedDraft, setSavedDraft] = useState<DeployDraft>(EMPTY_DRAFT);
   const [apiKey, setApiKey] = useState('');
+  const [qqSecret, setQqSecret] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [loadError, setLoadError] = useState('');
@@ -27,7 +28,8 @@ export function useDeployEditor(readOnly: boolean, onInvalidChance: () => void) 
   const changed = (field: keyof DeployDraft) => draft[field] !== savedDraft[field];
   const configDirty = !!doc && (Object.keys(draft) as (keyof DeployDraft)[]).some(changed);
   const keyDirty = !!apiKey.trim();
-  const dirty = configDirty || keyDirty;
+  const secretDirty = !!qqSecret.trim();
+  const dirty = configDirty || keyDirty || secretDirty;
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
   const inputRevision = useRef(0);
@@ -104,7 +106,7 @@ export function useDeployEditor(readOnly: boolean, onInvalidChance: () => void) 
     persona: changed('persona'),
     platform_key: keyDirty,
     admin: changed('adminQq') || changed('chance'),
-    onebot: false,
+    official: changed('qqAppId') || secretDirty,
   };
   useEditorGuard(dirty, !!busy);
 
@@ -116,6 +118,10 @@ export function useDeployEditor(readOnly: boolean, onInvalidChance: () => void) 
   const updateApiKey = (value: string) => {
     inputRevision.current++;
     setApiKey(value);
+  };
+  const updateQqSecret = (value: string) => {
+    inputRevision.current++;
+    setQqSecret(value);
   };
 
   const discardDraft = async () => {
@@ -159,25 +165,45 @@ export function useDeployEditor(readOnly: boolean, onInvalidChance: () => void) 
     let anySaved = false;
     const messages: string[] = [];
     try {
-      if (configDirty) {
+      if (configDirty || secretDirty) {
         setBusy('config');
         const current = await api.config();
         if (!current.ok || !current.data) throw new Error(current.error || '读取当前配置失败');
-        // 读取最新文档后深合并，保留 bot / chat 中不属于快捷部署的配置。
+        // 读取最新文档后深合并，保留 bot / chat / adapter 中不属于快捷部署的配置。
         const config = (current.data.config || {}) as Record<string, unknown>;
+        const merged = mergeDeployConfig(
+          config,
+          draft,
+          savedDraft,
+          parsedChance,
+        ) as Record<string, unknown>;
+        const officialDirty = changed('qqAppId') || secretDirty;
+        if (officialDirty) {
+          const adapter = { ...((config.adapter || {}) as Record<string, unknown>) };
+          if (changed('qqAppId')) adapter.qq_appid = draft.qqAppId.trim();
+          if (secretDirty) adapter.qq_client_secret = qqSecret.trim();
+          // 扫码/手填都是官方通道；已在双通道并行时保留 dual。
+          if (doc?.official?.mode !== 'dual') adapter.mode = 'official';
+          merged.adapter = adapter;
+        }
         const result = await api.configSave({
           revision: current.data.revision,
           mode: 'form',
           reload: true,
-          config: mergeDeployConfig(config, draft, savedDraft, parsedChance),
+          config: merged,
         });
         if (!result.ok) throw new Error(result.error || '保存配置失败');
         setSavedDraft({ ...draft });
         clearDeployDraft();
         setRestored(false);
+        if (secretDirty) setQqSecret('');
         configSaved = true;
         anySaved = true;
-        messages.push(result.data?.message || '配置已保存并重载');
+        messages.push(
+          officialDirty
+            ? '官方机器人信息已保存并重载'
+            : result.data?.message || '配置已保存并重载',
+        );
       }
       if (keyDirty) {
         setBusy('key');
@@ -205,19 +231,19 @@ export function useDeployEditor(readOnly: boolean, onInvalidChance: () => void) 
     }
   };
 
-  const generateToken = async () => {
+  const startOfficialBind = async () => {
     if (disabled || operation.current) return;
     operation.current = true;
     invalidateReads();
-    setBusy('token');
+    setBusy('bind');
     try {
-      const result = await api.deployOneBotToken({ revision: doc?.revision });
-      if (!result.ok) throw new Error(result.error || '生成 Access Token 失败');
-      const message = result.data?.message || '已生成并写入 Access Token，请同步更新 NapCat';
+      const result = await api.deployOfficialBind({ revision: doc?.revision });
+      if (!result.ok) throw new Error(result.error || '开始扫码绑定失败');
+      const message = result.data?.message || '已切换官方通道并开始扫码绑定';
       notify(message, 'ok');
-      await read();
+      await read('status');
     } catch (error) {
-      const message = error instanceof Error ? error.message : '生成 Access Token 失败';
+      const message = error instanceof Error ? error.message : '开始扫码绑定失败';
       notify(message, 'err');
     } finally {
       operation.current = false;
@@ -230,6 +256,8 @@ export function useDeployEditor(readOnly: boolean, onInvalidChance: () => void) 
     draft,
     apiKey,
     setApiKey: updateApiKey,
+    qqSecret,
+    setQqSecret: updateQqSecret,
     loading,
     busy,
     loadError,
@@ -241,7 +269,7 @@ export function useDeployEditor(readOnly: boolean, onInvalidChance: () => void) 
     updateDraft,
     read,
     saveAll,
-    generateToken,
+    startOfficialBind,
     discardDraft,
   };
 }

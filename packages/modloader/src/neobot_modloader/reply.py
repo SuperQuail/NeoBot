@@ -21,10 +21,10 @@ class Reply:
     async def text(self, value: str) -> Any:
         return await self.send(value)
 
-    async def private(self, user_id: int, message: Any) -> Any:
+    async def private(self, user_id: int | str, message: Any) -> Any:
         return await self._context.send_private(user_id, normalize_message_payload(message))
 
-    async def group(self, group_id: int, message: Any) -> Any:
+    async def group(self, group_id: int | str, message: Any) -> Any:
         return await self._context.send_group(group_id, normalize_message_payload(message))
 
     async def image(

@@ -6,6 +6,11 @@ import inspect
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+
+from neobot_contracts.models import ConversationRef
+
+from neobot_adapter.switchable import channel_context
+
 from ._runtime import asyncio
 
 
@@ -18,10 +23,19 @@ class LifecycleShutdownMixin:
         content: str,
         manager_name: str = "background_drawing",
         reasons: list[str] | None = None,
+        channel: str | None = None,
+        proactive: bool = True,
     ) -> Any | None:
         """程序化启动回复管线，用于后台绘图等系统通知。
 
         当绘图完成但对应聊天流无活跃管线时，由 BackgroundDrawingManager 调用。
+
+        channel 是合成事件的来源通道（onebot / official）：后台/定时/跨聊天任务
+        不经过事件分发、拿不到派发上下文，必须在这里钉住目标会话的通道，后续
+        提示词、官方能力限制与 API 查询才按同一条通道走。
+
+        proactive 默认 True：后台/定时/跨聊天任务没有被动回复窗口，官方通道按
+        主动消息发送；仅当调用方确认存在可用被动 msg_id 时才传 False。
         """
         if self._closed:
             return None
@@ -59,6 +73,21 @@ class LifecycleShutdownMixin:
             )
             return None
 
+        from neobot_app.runtime.legacy_bindings import resolve_legacy_official_target
+
+        resolved = resolve_legacy_official_target(
+            kind,
+            conversation_id,
+            adapter=getattr(self, "_adapter", None),
+            logger=self._logger,
+        )
+        if resolved is None:
+            return None
+        conversation_id, forced_channel = resolved
+        queue_key = str(conversation_id)
+        pipeline_key = f"{kind}:{queue_key}"
+        resolved_channel = forced_channel or self._background_reply_channel(kind, conversation_id, channel)
+
         # 将通知内容推入消息队列作为触发消息
         @dataclass
         class _SyntheticSender:
@@ -74,7 +103,8 @@ class LifecycleShutdownMixin:
             sub_type: str = "normal"
             message_id: int = 0
             user_id: int = 0
-            group_id: int = int(conversation_id) if kind == "group" and conversation_id.isdigit() else 0
+            # 群 ID 可能是官方 openid 字符串：原样放（不 int()、不按位数判断）
+            group_id: Any = str(conversation_id) if kind == "group" and conversation_id else 0
             message: list = field(default_factory=lambda: [{"type": "text", "data": {"text": content}}])
             raw_message: str = ""
             font: int = 0
@@ -82,8 +112,9 @@ class LifecycleShutdownMixin:
             message_seq: int = 0
             target_id: int = 0
             temp_source: int = 0
+            neobot_channel: str | None = None
 
-        synthetic_msg = _SyntheticMessage()
+        synthetic_msg = _SyntheticMessage(neobot_channel=resolved_channel)
 
         decision = WillingDecision(
             manager_name=manager_name,
@@ -92,14 +123,44 @@ class LifecycleShutdownMixin:
             reasons=tuple(reasons) if reasons else ("后台绘图任务完成通知",),
         )
 
-        return self.start_reply(
-            message=synthetic_msg,
-            queue=queue,
-            queue_key=queue_key,
-            decision=decision,
-            skip_cooldown=True,
-            background_content=content,
-        )
+        with channel_context(resolved_channel):
+            return self.start_reply(
+                message=synthetic_msg,
+                queue=queue,
+                queue_key=queue_key,
+                decision=decision,
+                skip_cooldown=True,
+                background_content=content,
+                proactive=proactive,
+            )
+
+    def _background_reply_channel(self, kind: str, conversation_id: str, channel: str | None) -> str | None:
+        """合成事件的来源通道：显式 > 目标会话历史 > 统一身份推断。
+
+        推断只在 QQ 会话（group / private）上做：真实 QQ 号/群号规模 → onebot，
+        其余（官方 openid 字符串或旧合成号）→ official。本地/插件等无通道适配器
+        没有 active_channels，返回 None 保持旧行为。
+        """
+        requested = str(channel or "").strip().casefold()
+        if requested in ("onebot", "official"):
+            return requested
+        adapter = getattr(self, "_adapter", None)
+        if getattr(adapter, "active_channels", None) is None:
+            return None
+        target = str(conversation_id or "").strip()
+        if kind not in ("group", "private") or not target:
+            return None
+        seen = getattr(adapter, "channels_for_conversation", None)
+        if callable(seen):
+            try:
+                channels = tuple(str(item) for item in seen(ConversationRef(kind, target)))
+            except Exception:
+                channels = ()
+            if len(channels) == 1:
+                return channels[0]
+        from neobot_app.bot_accounts import infer_channel
+
+        return infer_channel(target, kind=kind)
 
     async def shutdown(self) -> None:
         self._closed = True

@@ -54,6 +54,7 @@ class BilibiliDiaryService:
         max_material_chars: int = 6000,
         requirement: str = "",
         timeout_seconds: float = 60.0,
+        prompt_store: Any = None,
     ) -> None:
         # client 可以是 BilibiliClient（同步 publish_dynamic）或 BilibiliService（异步门面）。
         self._provider = provider
@@ -68,6 +69,7 @@ class BilibiliDiaryService:
         self._max_material_chars = max(0, int(max_material_chars or 0))
         self._requirement = str(requirement or "").strip()
         self._timeout_seconds = float(timeout_seconds)
+        self._prompt_store = prompt_store
         #: 定时任务与工具预览/发布互斥，避免两份生成共用同一份旧快照。
         self._lock = asyncio.Lock()
         #: 本轮素材快照，只在发布成功后落盘（预览/失败不消费今天的 diff）。
@@ -201,6 +203,7 @@ class BilibiliDiaryService:
             max_chars=self._max_chars,
             max_material_chars=self._max_material_chars,
             requirement=self._requirement,
+            prompt_store=self._prompt_store,
         )
         try:
             result = await run_diary_agent(

@@ -145,7 +145,8 @@ class _PipelinePrivateMixin:
             try:
                 result = await asyncio.wait_for(
                     self.adapter.get_friend_msg_history(
-                        user_id=int(user_id),
+                        # user_id 可能是官方 openid 字符串：原样交给适配器，绝不 int()
+                        user_id=user_id,
                         count=count,
                         reverse_order=False,
                     ),
@@ -196,9 +197,6 @@ class _PipelinePrivateMixin:
             self._logger.debug("私聊延迟回复等待中", queue_key=queue_key, delay_seconds=delay)
             await asyncio.sleep(delay)
 
-        if self._reply_orchestrator is None:
-            return
-
         from neobot_app.willing.models import WillingDecision
 
         decision = WillingDecision(
@@ -207,13 +205,15 @@ class _PipelinePrivateMixin:
             should_reply=True,
             reasons=("私聊直接回复（跳过意愿管理器）",),
         )
-        self._logger.debug(
-            "私聊消息准备触发回复",
-            event="reply.decided",
-            chat_flow_id=f"private:{queue_key}",
+        self._log_message_enqueued(
+            message=message,
             queue_key=queue_key,
+            decision=decision,
             delay_seconds=delay,
         )
+        if self._reply_orchestrator is None:
+            return
+
         self._reply_orchestrator.start_reply(
             message=message,
             queue=self._friend_queue,

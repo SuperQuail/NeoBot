@@ -21,6 +21,14 @@ class _LongReplyToolsMixin:
         sender_names = self._sender_names()
         markdown = clean_text(raw_markdown, known_sender_names=sender_names)
         pre_rendered = str(args.get("image_path") or "").strip()
+        # 双待模式：auto 跟随事件通道；显式值用于「这条改用另一边发」。
+        raw_channel = str(args.get("channel") or "auto").strip().casefold()
+        if raw_channel not in {"auto", "onebot", "official"}:
+            return json.dumps(
+                {"ok": False, "error": f"channel 必须为 auto/onebot/official 之一，收到 {args.get('channel')}"},
+                ensure_ascii=False,
+            )
+        channel = None if raw_channel == "auto" else raw_channel
 
         if raw_markdown and not markdown.strip() and not pre_rendered:
             return json.dumps(
@@ -33,23 +41,42 @@ class _LongReplyToolsMixin:
                 ensure_ascii=False,
             )
 
-        reply_to = args.get("reply_to")
+        reply_to = args.get("reply_to_number", args.get("reply_to"))
         if reply_to is not None:
             try:
                 reply_to = int(reply_to)
             except (ValueError, TypeError):
                 return json.dumps(
-                    {"ok": False, "error": f"reply_to 必须为整数，收到 {reply_to}"},
+                    {"ok": False, "error": f"reply_to_number 必须为整数，收到 {reply_to}"},
                     ensure_ascii=False,
                 )
-        raw_mention = args.get("mention")
+            mapping = getattr(self._numbering, "mapping", None) if self._numbering is not None else None
+            if isinstance(mapping, dict) and mapping and self._numbering.get_message_id(reply_to) is None:
+                return json.dumps(
+                    {"ok": False, "error": f"消息编号 {reply_to} 不存在于当前上下文中"},
+                    ensure_ascii=False,
+                )
+        raw_mention = args.get("mention_qqs", args.get("mention"))
         mention: list[int] | None = None
         if raw_mention:
+            if self._official_platform:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "error": "官方通道长回复图片不发送 @；需要真正的 @ 请使用 send_official_markdown",
+                    },
+                    ensure_ascii=False,
+                )
+            if not isinstance(raw_mention, list):
+                return json.dumps(
+                    {"ok": False, "error": "mention_qqs 必须为列表"}, ensure_ascii=False
+                )
             try:
-                mention = [int(qq) for qq in raw_mention]
+                # schema 接受字符串；@ 目标必须是真实 QQ 号（openid 请用官方 Markdown）
+                mention = [int(str(qq).strip()) for qq in raw_mention if str(qq).strip()]
             except (ValueError, TypeError):
                 return json.dumps(
-                    {"ok": False, "error": "mention 必须为整数列表"}, ensure_ascii=False
+                    {"ok": False, "error": "mention_qqs 必须为整数列表"}, ensure_ascii=False
                 )
         caption = clean_text(
             str(args.get("caption") or "").strip(), known_sender_names=sender_names
@@ -66,15 +93,28 @@ class _LongReplyToolsMixin:
                     {"ok": False, "error": "Markdown 转图片失败"}, ensure_ascii=False
                 )
 
-        # 调用 orchestrator 提供的 handler 实际发送图片
+        # 调用 orchestrator 提供的 handler 实际发送图片；未显式选路时不传
+        # channel，兼容旧 handler 与既有测试的精确调用断言。
         if self._send_long_reply is not None:
-            await self._send_long_reply(
-                image_path=image_path,
-                caption=caption,
-                reply_to=reply_to,
-                mention=mention,
-                markdown=markdown,
-            )
+            handler_kwargs = {
+                "image_path": image_path,
+                "caption": caption,
+                "reply_to": reply_to,
+                "mention": mention,
+                "markdown": markdown,
+            }
+            if channel:
+                handler_kwargs["channel"] = channel
+            result = await self._send_long_reply(**handler_kwargs)
+            from neobot_app.reply.sender import send_response_ok
+
+            if not send_response_ok(result):
+                message = getattr(result, "message", "") or getattr(result, "wording", "")
+                self._logger.info("长回复图片发送失败", error=str(message))
+                return json.dumps(
+                    {"ok": False, "error": f"发送失败：{message or '未知错误'}"},
+                    ensure_ascii=False,
+                )
             self._ai_check_pending = False
         return json.dumps(
             {
@@ -82,7 +122,7 @@ class _LongReplyToolsMixin:
                 "status": "sent",
                 "image_path": image_path,
                 "caption": caption or None,
-                "message": f"已发送Markdown图片{'(预渲染)' if pre_rendered else ''}，路径：{image_path}",
+                "message": f"已发送 Markdown 图片{'(预渲染)' if pre_rendered else ''}，路径：{image_path}",
             },
             ensure_ascii=False,
         )
@@ -92,7 +132,8 @@ class _LongReplyToolsMixin:
             tools.append(
                 _tool_def(
                     "send_long_reply",
-                    "发送 Markdown 格式的长回复。这是唯一允许使用 Markdown 格式的发送方式。"
+                    "发送 Markdown 图片：把 Markdown 内容渲染成图片后发送。"
+                    "这不是官方 Markdown 卡片（send_official_markdown），官方卡片才是可点击的原生 Markdown 消息。"
                     "提供 markdown 内容时，系统自动将其转为图片发送。"
                     "如果已有预渲染的图片文件，可提供 image_path 直接发送，"
                     "此时 markdown 仅用于日志记录（仍建议提供以便追溯）。"
@@ -102,6 +143,7 @@ class _LongReplyToolsMixin:
                     "注意：普通聊天回复请使用 send_reply 发送纯文本（不使用 Markdown）。"
                     "markdown/caption 会先做输出安全清洗，再用于渲染、发送和对话历史；仍必须只放正文本身："
                     "不要带消息编号、发送者名字、[msg_id=...] 这类系统标注，也不要把思考过程或草稿写进去。"
+                    "直接输出的正文不会发送；本工具是 agent 模式下对外发言的出口之一。"
                     "本工具只发送消息，不结束本轮；只有 cancel 会结束一轮回复。",
                     {
                         "properties": {
@@ -111,22 +153,31 @@ class _LongReplyToolsMixin:
                             },
                             "image_path": {
                                 "type": "string",
-                                "description": "可选，预渲染的图片文件路径。提供后直接发送该图片，不再重新渲染。解题任务完成通知中会包含此路径。",
+                                "description": "可选，预渲染的图片文件路径。提供后直接发送该图片，不再重新渲染。只填系统通知或工具返回的路径，不要自行编造路径。",
                             },
-                            "reply_to": {
+                            "reply_to_number": {
                                 "type": "integer",
-                                "description": "可选，要引用回复的消息编号。",
+                                "description": "可选，要引用回复的消息编号（消息行首编号）。不是 [msg_id=...]，也不是 QQ 号。",
                             },
-                            "mention": {
+                            "mention_qqs": {
                                 "type": "array",
-                                "items": {"type": "integer"},
-                                "description": "可选，要 @ 的 QQ 号列表。仅在群聊生效。正文里需要表达 @ 时，没有特殊情况应在 @ 后留一个空格；特殊需要可自行不加。",
+                                "items": {"type": ["string", "integer"]},
+                                "description": "可选，要 @ 的真实 QQ 号列表。QQ 号见群友列表里的「QQ号:...」。仅在群聊生效；openid 不能 @（官方通道请用 send_official_markdown）。系统会发送真正的 @；正文里不要再写「@昵称」或「@ QQ号」，否则会出现两个 @。",
                             },
                             "caption": {
                                 "type": "string",
-                                "description": "可选，随图片一起发送的简短说明文字。",
+                                "description": "可选，发送图片前单独发送的说明文字（不是图片说明；reply_to_number/mention_qqs 只作用于这段文字，未提供时二者不生效）。",
+                            },
+                            "channel": {
+                                "type": "string",
+                                "enum": ["auto", "onebot", "official"],
+                                "description": "可选，指定这条回复用哪个通道发送：auto（默认，跟随本事件通道）、onebot、official。仅在双通道同时运行时有意义。",
                             },
                         },
+                        "anyOf": [
+                            {"required": ["markdown"]},
+                            {"required": ["image_path"]},
+                        ],
                         "required": [],
                     },
                 ),

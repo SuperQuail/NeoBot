@@ -149,6 +149,8 @@ def _build_pipeline_services(state: _BuildState) -> None:
         config_update_callback=_make_chat_config_update_callback(config),
         sleep_service=sleep_service,
         standby_service=standby_service,
+        # 官方机器人身份（profile.kind）供提示词注入能力边界块
+        bot_profile=memory_svcs["bot_detector"],
     )
     notification_hub.set_orchestrator(reply_orchestrator)
     drawing_manager.set_orchestrator(reply_orchestrator)

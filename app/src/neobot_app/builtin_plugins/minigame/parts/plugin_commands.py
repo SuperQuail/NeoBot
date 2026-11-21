@@ -39,7 +39,7 @@ class _PluginCommandsMixin:
 
     async def handle_command(self, command_ctx: Any) -> str | None:
         raw = str(getattr(command_ctx, "raw_args", "") or "").strip()
-        user_id = int(getattr(command_ctx, "user_id", 0) or 0)
+        user_id = getattr(command_ctx, "user_id", 0) or ""
         kind = str(getattr(command_ctx, "kind", "") or "group")
         conv_id = str(getattr(command_ctx, "conv_id", "") or "")
         user_name = _sender_name(getattr(command_ctx, "message", None))
@@ -95,7 +95,7 @@ class _PluginCommandsMixin:
         self,
         command_ctx: Any,
         *,
-        user_id: int,
+        user_id: int | str,
         user_name: str,
         kind: str,
         conversation_id: str,
@@ -110,7 +110,7 @@ class _PluginCommandsMixin:
             command_ctx=command_ctx,
             args=raw_args.split() if raw_args else [],
             raw_args=raw_args,
-            user_id=int(user_id or 0),
+            user_id=user_id or "",
             user_name=user_name,
             kind=kind,
             conversation_id=str(conversation_id or ""),
@@ -143,7 +143,7 @@ class _PluginCommandsMixin:
             return "当前没有可结束的小游戏会话（成语接龙玩法未启用）。"
         request = self.command_request(
             command_ctx,
-            user_id=int(getattr(command_ctx, "user_id", 0) or 0),
+            user_id=getattr(command_ctx, "user_id", 0) or "",
             user_name=_sender_name(getattr(command_ctx, "message", None)),
             kind=str(getattr(command_ctx, "kind", "") or "group"),
             conversation_id=str(getattr(command_ctx, "conv_id", "") or ""),

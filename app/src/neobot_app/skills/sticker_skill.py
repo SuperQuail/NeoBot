@@ -78,6 +78,11 @@ async def _handle_send_sticker(self: StickerSkill, args: dict) -> str:
     user_id = args.get("user_id", "")
     try:
         result = await self._emoji_service.send_sticker(number, group_id=group_id, user_id=user_id)
+        from neobot_app.reply.sender import send_response_ok
+
+        if not send_response_ok(result):
+            message = getattr(result, "message", "") or getattr(result, "wording", "")
+            return _json({"ok": False, "error": f"表情包发送失败：{message or '未知错误'}"})
         return _json({"ok": True, "result": str(result)})
     except Exception as e:
         return _json({"ok": False, "error": str(e)})

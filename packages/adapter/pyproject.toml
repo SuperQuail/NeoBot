@@ -1,6 +1,6 @@
 [project]
 name = "neobot-adapter"
-version = "2.0.2-a14"
+version = "2.1.0-a14"
 description = "Add your description here"
 readme = "README.md"
 authors = [
@@ -11,6 +11,8 @@ requires-python = ">=3.13"
 dependencies = [
     "websockets<18",
     "aiohttp<4",
+    "cryptography>=46.0.0,<51",
+    "qrcode>=8,<9",
     "pydantic>=2.7.4,<3",
     "loguru>=0.7.2,<0.8",
     "neobot-contracts",

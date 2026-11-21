@@ -169,6 +169,8 @@ class BilibiliLiveInteractor(
         self._summary_tasks: set[asyncio.Task[None]] = set()
         self._last_auto_look = time.monotonic()
         self._live_cache: dict[str, tuple[float, bool]] = {}
+        #: 每个房间本场直播的开播时间（B站 live_time）；变化即新场次，旧弹幕清空。
+        self._live_started_at: dict[str, str] = {}
         self._schedule_task: asyncio.Task[None] | None = None
         self._auto_look_task: asyncio.Task[None] | None = None
         self._reply_locks: dict[str, asyncio.Lock] = {}

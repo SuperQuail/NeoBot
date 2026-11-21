@@ -16,6 +16,7 @@ from neobot_app.reply.tool_parts.session_tools import _SessionToolsMixin
 from neobot_app.reply.tool_parts.session_runtime import _SessionRuntimeMixin
 from neobot_app.reply.tool_parts.reply_tools import _ReplyToolsMixin
 from neobot_app.reply.tool_parts.long_reply_tools import _LongReplyToolsMixin
+from neobot_app.reply.tool_parts.official_tools import _OfficialToolsMixin
 from neobot_app.reply.tool_parts.misc_tools import _MiscToolsMixin
 from neobot_app.reply.tool_parts.willingness_tools import _WillingnessToolsMixin
 from neobot_app.reply.tool_parts.emoji_tools import _EmojiToolsMixin
@@ -32,6 +33,7 @@ class ReplyToolExecutor(
     _SessionRuntimeMixin,
     _ReplyToolsMixin,
     _LongReplyToolsMixin,
+    _OfficialToolsMixin,
     _MiscToolsMixin,
     _WillingnessToolsMixin,
     _EmojiToolsMixin,
@@ -55,7 +57,6 @@ def build_reply_toolset(
     send_reply_handler: Any = None,
     willing_service: Any = None,
     numbering: Any = None,
-    send_emoji_handler: Any = None,
     emoji_service: Any = None,
     wait_handler: Any = None,
     react_emoji_handler: Any = None,
@@ -70,9 +71,12 @@ def build_reply_toolset(
     notification_hub: Any = None,
     markdown_image_converter: Any = None,
     send_long_reply_handler: Any = None,
+    send_official_markdown_handler: Any = None,
+    official_group_manage_handler: Any = None,
     skill_manager: Any = None,
     skills_registry: Any = None,
     allowed_tools: set[str] | None = None,
+    official_platform: bool = False,
     chat_context: str | None = None,
     conv_kind: str = "",
     conv_id: str = "",
@@ -101,7 +105,6 @@ def build_reply_toolset(
         send_reply_handler=send_reply_handler,
         willing_service=willing_service,
         numbering=numbering,
-        send_emoji_handler=send_emoji_handler,
         emoji_service=emoji_service,
         wait_handler=wait_handler,
         react_emoji_handler=react_emoji_handler,
@@ -116,9 +119,12 @@ def build_reply_toolset(
         notification_hub=notification_hub,
         markdown_image_converter=markdown_image_converter,
         send_long_reply_handler=send_long_reply_handler,
+        send_official_markdown_handler=send_official_markdown_handler,
+        official_group_manage_handler=official_group_manage_handler,
         skill_manager=skill_manager,
         skills_registry=skills_registry,
         allowed_tools=allowed_tools,
+        official_platform=official_platform,
         chat_context=chat_context,
         conv_kind=conv_kind,
         conv_id=conv_id,

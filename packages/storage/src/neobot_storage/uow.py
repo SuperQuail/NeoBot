@@ -17,6 +17,7 @@ from neobot_storage.repositories.image import SqlAlchemyImageAnalysisAccess
 from neobot_storage.repositories.emoji import SqlAlchemyEmojiAccess
 from neobot_storage.repositories.scheduled_task import SqlAlchemyScheduledTaskAccess
 from neobot_storage.repositories.bilibili_link import SqlAlchemyBilibiliLinkAccess
+from neobot_storage.repositories.cross_chat_session import SqlAlchemyCrossChatSessionAccess
 
 
 class SqlAlchemyUnitOfWork:
@@ -37,6 +38,7 @@ class SqlAlchemyUnitOfWork:
         self.creator_images = SqlAlchemyCreatorImageAccess(self._session)
         self.scheduled_tasks = SqlAlchemyScheduledTaskAccess(self._session)
         self.bilibili_links = SqlAlchemyBilibiliLinkAccess(self._session)
+        self.cross_chat_sessions = SqlAlchemyCrossChatSessionAccess(self._session)
         return self
 
     async def __aexit__(self, *exc: object) -> None:

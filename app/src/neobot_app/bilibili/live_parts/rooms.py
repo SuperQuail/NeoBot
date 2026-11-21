@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from neobot_app.bilibili._compat import call_client, get_field
@@ -14,8 +14,9 @@ from neobot_app.bilibili.live_parts.constants import (
     _MAX_RECENT_EVENTS,
 )
 from neobot_app.bilibili.live_parts.helpers import _normalize_schedule, _to_int
+from neobot_app.prompt.role_messages import _as_send_reply_tool_history
 from neobot_app.bilibili.live_protocol import LiveEvent
-from neobot_app.bilibili.prompts import MAX_LIVE_DANMAKU_CHARS
+from neobot_app.bilibili.prompts import MAX_LIVE_DANMAKU_CHARS, _data
 from neobot_app.utils.atomic import atomic_write_text
 
 
@@ -177,7 +178,55 @@ class _RoomsMixin:
             return {"live": False, "error": "读取开播状态失败：接口未返回直播间信息"}
         live = _to_int(get_field(room_info, "live_status", 0)) == 1
         self._live_cache[key] = (now, live)
+        if live:
+            self._note_live_session(key, str(get_field(room_info, "live_time", "") or ""))
         return {"live": live, "error": ""}
+
+    @staticmethod
+    def _normalize_live_time(value: Any) -> str:
+        """把开播时间归一成 "YYYY-MM-DD HH:MM:SS"（东八区）。
+
+        B站接口给的字符串就是东八区本地时间；WS 可能给秒级时间戳，还原时必须
+        固定 +08:00，否则非东八区主机会把同一场直播判成两场、误清本场弹幕。
+        """
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        # 纯数字（含负号）按时间戳处理；其它原样当作接口给的字符串。
+        is_timestamp = text.lstrip("-").isdigit()
+        if not is_timestamp:
+            return text
+        seconds = int(text)
+        # 合理时间范围之外的数字（0、负数、毫秒）当无效值，宁可不判定场次。
+        if seconds < 1_000_000_000 or seconds > 4_000_000_000:
+            return ""
+        try:
+            moment = datetime.fromtimestamp(seconds, tz=timezone(timedelta(hours=8)))
+        except (OverflowError, OSError, ValueError):
+            return ""
+        return moment.strftime("%Y-%m-%d %H:%M:%S")
+
+    def _note_live_session(self, room_id: Any, live_time: Any) -> None:
+        """记录开播时间；第一次只记基线，之后时间变了才清上一场的弹幕。
+
+        首次观测（进程重启、房间中途启用）时历史里可能已有本场弹幕，不能清；
+        只有同一房间的开播时间从已知值变成另一个值，才是真的换了场次。
+        拿不到开播时间时什么都不做（绝不因为读不到就清历史）。
+        """
+        started = self._normalize_live_time(live_time)
+        if not started:
+            return
+        key = str(_to_int(room_id))
+        known = self._live_started_at.get(key)
+        if known == started:
+            return
+        self._live_started_at[key] = started
+        if known is None:
+            return
+        history = self._history.get(key)
+        if history:
+            history.clear()
+        self._logger.info(f"B站直播新场次：房间 {key}，开播时间 {started}")
 
     async def is_live(self, room_id: int, *, refresh: bool = False) -> bool:
         """兼容包装：接口不可用时按未开播处理；需要区分三态的调用方用 live_status。"""
@@ -214,13 +263,43 @@ class _RoomsMixin:
                 lines.append(f"--- {datetime.fromtimestamp(ts).strftime('%H:%M')} ---")
             name = str(item.get("name") or "观众")
             uid = _to_int(item.get("uid"))
+            # 只给 uid：@ 只在当前这条弹幕上标注（见 build_live_danmaku_prompt），
+            # 历史行挂永久 [@了我] 会让模型反复去回旧账。
             prefix = f"[uid={uid}] " if uid else ""
-            if item.get("at_me"):
-                prefix = "[@了我] " + prefix
             lines.append(f"[{clock}] {prefix}{name}: {text}")
             if ts:
                 last_ts = ts
         return "\n".join(lines)
+
+    def build_history_messages(
+        self, room_id: int, count: int = _MAX_HISTORY
+    ) -> list[dict[str, Any]]:
+        """把最近的弹幕渲染成角色消息：别人的是 user，自己发的是 assistant。
+
+        自己发过的弹幕改写成 send_reply 工具调用历史（与群聊同一套），模型看到的是
+        "用工具说话"；历史逐条追加，稳定前缀才能命中 provider 的缓存。
+        """
+        messages: list[dict[str, Any]] = []
+        for item in self.get_history(room_id, count):
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            uid = _to_int(item.get("uid"))
+            if item.get("self"):
+                messages.append({"role": "assistant", "content": _data(text)})
+                continue
+            name = _data(item.get("name") or "观众")
+            clock = str(item.get("time") or "")
+            prefix = f"[{clock}] " if clock else ""
+            if uid:
+                prefix += f"[uid={uid}] "
+            messages.append({"role": "user", "content": f"{prefix}{name}: {_data(text)}"})
+        converted = _as_send_reply_tool_history(messages)
+        # 窗口截断可能正好从自己的发言开始；多数 provider 要求首条不是 assistant，
+        # 于是把开头的自己发言（连同它的 tool 回执）一起丢掉。
+        while converted and converted[0].get("role") != "user":
+            converted.pop(0)
+        return converted
 
     def _load(self) -> None:
         if self._loaded:

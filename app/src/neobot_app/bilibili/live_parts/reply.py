@@ -22,6 +22,11 @@ class _ReplyMixin:
 
     async def _handle_danmu(self, room_id: str, danmu: dict[str, Any]) -> None:
         room_id = str(room_id)
+        # 自己发的弹幕会被服务器回显：发送时已经记过一条 self 历史，别再重复记一遍。
+        if self._my_uid and _to_int(danmu.get("uid")) == self._my_uid:
+            return
+        # 先确认场次（缓存 60s，命中不打网络），否则换场清历史会把刚记的这条一起清掉。
+        await self.is_live(_to_int(room_id))
         self._record_history(room_id, danmu)
         _uid = _to_int(danmu.get("uid"))
         if _uid and _uid not in self._user_archive_seen:
@@ -62,15 +67,15 @@ class _ReplyMixin:
             return
         if not await self.is_live(_to_int(room_id)):
             return
+        started = time.monotonic()
         result = await self._generate_reply(
             text, _to_int(room_id), str(danmu.get("name") or ""),
             _to_int(danmu.get("uid")),
+            at_me=self._is_at_me(danmu),
         )
         replies = result.segments or ([result.text] if result.text else [])
         if not replies:
             return
-        if self._screenshot_replies:
-            await self._save_reply_frame(room_id)
         target_uid = _to_int(result.reply_to)
         target_name = ""
         if target_uid:
@@ -85,28 +90,44 @@ class _ReplyMixin:
             ):
                 return
         self._record_reply(room_id)
+        # 延迟与用量归因：排队耗时（收包到开始处理）+ 生成发送耗时 + 模型轮次/token。
+        recv_at = float(danmu.get("recv_at") or 0.0)
+        queued = max(0.0, started - recv_at) if recv_at else 0.0
+        elapsed = max(0.0, time.monotonic() - started)
+        usage = result.usage if isinstance(result.usage, dict) else {}
         self._logger.info(
             f"B站直播已自动回复：房间 {room_id}，{len(replies)} 段，"
             f"共 {sum(len(item) for item in replies)} 字，"
-            f"回复给 {target_uid or '无'}"
+            f"回复给 {target_uid or '无'}，"
+            f"排队 {queued:.1f}s，耗时 {elapsed:.1f}s，"
+            f"模型 {result.iterations} 轮，"
+            f"tokens {usage.get('input_tokens', 0)}/{usage.get('output_tokens', 0)}，"
+            f"缓存命中 {usage.get('cache_hit_tokens', 0)}"
         )
+        # 发送完成后再落库：DB 写不能挡在弹幕前面。
+        await self._record_live_usage(_to_int(room_id), result.usage)
+        # 截图放最后：拉流截帧要起 ffmpeg（可能数十秒），别挡在发送、日志与记账前面。
+        if self._screenshot_replies:
+            await self._save_reply_frame(room_id)
 
     def _record_history(self, room_id: str, danmu: dict[str, Any]) -> None:
         text = str(danmu.get("text") or "").strip()
         if not text:
             return
-        my_uid = self._my_uid
         entry = {
             "uid": _to_int(danmu.get("uid")),
             "name": str(danmu.get("name") or ""),
             "text": text,
             "ts": time.time(),
             "time": datetime.now().astimezone().strftime("%H:%M:%S"),
-            "at_me": bool(my_uid and _to_int(danmu.get("reply_mid")) == my_uid),
         }
+        if danmu.get("self"):
+            # 自己发出的弹幕：历史里要渲染成 assistant，而不是别人的 user 行。
+            entry["self"] = True
         room_history = self._history.get(room_id)
         if room_history is None:
-            room_history = self._history[room_id] = deque(maxlen=_MAX_HISTORY)
+            # 存两倍窗口：按块淘汰，历史前缀不会每来一条弹幕就整体位移，缓存才能命中。
+            room_history = self._history[room_id] = deque(maxlen=_MAX_HISTORY * 2)
         room_history.append(entry)
         if self._summary_every:
             self._summary_counts[room_id] += 1
@@ -140,7 +161,8 @@ class _ReplyMixin:
             self._record_send_failure(room_id)
             return False
         self._record_history(
-            str(room_id), {"uid": 0, "name": self._bot_name or "你", "text": text}
+            str(room_id),
+            {"uid": 0, "name": self._bot_name or "你", "text": text, "self": True},
         )
         return True
 
@@ -174,9 +196,7 @@ class _ReplyMixin:
                 for item in history
                 if str(item.get("text") or "").strip()
             )
-            at_me = bool(
-                my_uid and _to_int(danmu.get("reply_mid")) == my_uid
-            )
+            at_me = self._is_at_me(danmu)
             decision = willing.evaluate_live(
                 room_id=_to_int(room_id),
                 uid=_to_int(danmu.get("uid")),
@@ -237,9 +257,10 @@ class _ReplyMixin:
         self._willing_service.remove_runtime_conversation_coefficient(f"live:{rid}")
         return {"ok": True, "room_id": rid}
 
-    def _mentions_bot(self, text: str) -> bool:
-        lowered = text.lower()
-        return any(name.lower() in lowered for name in self._known_bot_names())
+    def _is_at_me(self, danmu: dict[str, Any]) -> bool:
+        """这条弹幕是否点名了 bot（B站把被 @ 的人放在 reply_mid 里）。"""
+        my_uid = self._my_uid
+        return bool(my_uid and _to_int(danmu.get("reply_mid")) == my_uid)
 
     def _reply_allowed(self, room_id: str) -> bool:
         now = time.monotonic()

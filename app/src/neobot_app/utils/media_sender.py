@@ -18,6 +18,9 @@ def prepare_image_segment(file_server: FileServer, file_path: Path) -> Dict[str,
     根据 FileServer 是否启用，返回不同格式的消息段：
     - 启用：调用 register_file 获取 HTTP URL
     - 禁用：使用 file:/// 本地路径
+
+    data.local_path 始终附本地路径：官方适配器用它走分片上传，避免 QQ 去拉
+    127.0.0.1 的文件服务器 URL；OneBot 仍只读 file 字段。
     """
     if not file_path.exists():
         raise FileNotFoundError(f"文件不存在: {file_path}")
@@ -27,7 +30,7 @@ def prepare_image_segment(file_server: FileServer, file_path: Path) -> Dict[str,
     else:
         url = f"file:///{file_path.as_posix()}"
 
-    return {"type": "image", "data": {"file": url}}
+    return {"type": "image", "data": {"file": url, "local_path": str(file_path)}}
 
 
 def prepare_audio_segment(file_server: FileServer, file_path: Path) -> Dict[str, Any]:
@@ -36,6 +39,8 @@ def prepare_audio_segment(file_server: FileServer, file_path: Path) -> Dict[str,
     根据 FileServer 是否启用，返回不同格式的消息段：
     - 启用：调用 register_file 获取 HTTP URL
     - 禁用：使用 file:/// 本地路径
+
+    data.local_path 用途同 prepare_image_segment（官方走本地分片上传）。
     """
     if not file_path.exists():
         raise FileNotFoundError(f"文件不存在: {file_path}")
@@ -45,7 +50,7 @@ def prepare_audio_segment(file_server: FileServer, file_path: Path) -> Dict[str,
     else:
         url = f"file:///{file_path.as_posix()}"
 
-    return {"type": "record", "data": {"file": url}}
+    return {"type": "record", "data": {"file": url, "local_path": str(file_path)}}
 
 
 def prepare_file_segment(file_server: FileServer, file_path: Path) -> Dict[str, Any]:
@@ -54,6 +59,8 @@ def prepare_file_segment(file_server: FileServer, file_path: Path) -> Dict[str, 
     根据 FileServer 是否启用，返回不同格式的消息段：
     - 启用：调用 register_file 获取 HTTP URL
     - 禁用：使用 file:/// 本地路径
+
+    data.local_path 用途同 prepare_image_segment（官方走本地分片上传）。
     """
     if not file_path.exists():
         raise FileNotFoundError(f"文件不存在: {file_path}")
@@ -63,7 +70,7 @@ def prepare_file_segment(file_server: FileServer, file_path: Path) -> Dict[str, 
     else:
         url = f"file:///{file_path.as_posix()}"
 
-    return {"type": "file", "data": {"file": url, "name": file_path.name}}
+    return {"type": "file", "data": {"file": url, "name": file_path.name, "local_path": str(file_path)}}
 
 
 async def send_image(
@@ -73,10 +80,21 @@ async def send_image(
     file_path: Path,
     *,
     wait_response: bool = True,
+    channel: str | None = None,
+    proactive: bool = False,
 ) -> SendMsgResponse:
-    """发送图片消息；wait_response=False 时不等上游 echo 回执。"""
+    """发送图片消息；wait_response=False 时不等上游 echo 回执。
+
+    channel 为空时按适配器默认选路（双待下 OneBot 优先）；指定通道用于
+    「这条回复走官方/OneBot」的显式覆盖。
+    """
     segment = prepare_image_segment(file_server, file_path)
-    return await adapter.send(conversation, [segment], wait_response=wait_response)
+    channel_kwargs: Dict[str, Any] = {"channel": channel} if channel else {}
+    if proactive:
+        channel_kwargs["proactive"] = True
+    return await adapter.send(
+        conversation, [segment], wait_response=wait_response, **channel_kwargs
+    )
 
 
 async def send_audio(
@@ -86,7 +104,11 @@ async def send_audio(
     file_path: Path,
     *,
     wait_response: bool = True,
+    channel: str | None = None,
 ) -> SendMsgResponse:
     """发送语音消息；wait_response=False 时不等上游 echo 回执。"""
     segment = prepare_audio_segment(file_server, file_path)
-    return await adapter.send(conversation, [segment], wait_response=wait_response)
+    channel_kwargs: Dict[str, Any] = {"channel": channel} if channel else {}
+    return await adapter.send(
+        conversation, [segment], wait_response=wait_response, **channel_kwargs
+    )

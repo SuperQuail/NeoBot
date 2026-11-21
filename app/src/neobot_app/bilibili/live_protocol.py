@@ -272,7 +272,17 @@ def parse_event(payload: Any, room_id: int = 0) -> LiveEvent | None:
     if cmd == "INTERACT_WORD_V2":
         return _parse_interact_v2(payload, data, room_id)
     if cmd == "LIVE":
-        return LiveEvent("live_start", room_id, text=_get_str(data, "live_time"), raw=payload)
+        # live_time 在不同抓包里出现过顶层与 data 内两种位置（秒级时间戳或字符串），
+        # 这里都收，归一化交给 _note_live_session。
+        raw_time = payload.get("live_time")
+        if raw_time in (None, ""):
+            raw_time = data.get("live_time")
+        return LiveEvent(
+            "live_start",
+            room_id,
+            text=str(raw_time) if raw_time not in (None, "") else "",
+            raw=payload,
+        )
     if cmd == "PREPARING":
         return LiveEvent("live_end", room_id, raw=payload)
     if cmd == "WATCHED_CHANGE":

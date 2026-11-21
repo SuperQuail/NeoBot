@@ -43,6 +43,10 @@ class ReplyEvent:
     mode: str = "common"
     message: PrivateMessage | GroupMessage | None = None
     conversation_ref: ConversationRef | None = None
+    #: 产生该事件的后端通道（onebot / official）；None 表示旧路径或单通道未标注
+    neobot_channel: str | None = None
+    #: 产生该事件的机器人 QQ 号（双待模式下每个通道不同；0 表示未知，回退配置）
+    bot_account: int = 0
     willing_decision: WillingDecision | None = None
     generated_text: str = ""
     send_response: object | None = None
@@ -56,6 +60,8 @@ class ReplyEvent:
     error: str | None = None
     speech_blocked: SpeechBlocked | None = field(default=None, repr=False)
     background_content: str | None = None
+    #: 后台通知/定时任务等没有被动回复窗口的主动消息
+    proactive: bool = False
     human_request: bool = False
     #: 本轮要预先激活的技能包（插件消息意图入口用；在本轮工具表构建前生效）
     preactivate: tuple[str, ...] = ()

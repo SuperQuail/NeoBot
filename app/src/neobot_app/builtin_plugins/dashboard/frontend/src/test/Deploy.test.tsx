@@ -16,7 +16,7 @@ vi.mock('../api/endpoints', () => ({
     config: vi.fn(),
     configSave: vi.fn(),
     envSave: vi.fn(),
-    deployOneBotToken: vi.fn(),
+    deployOfficialBind: vi.fn(),
   },
 }));
 
@@ -32,18 +32,29 @@ const deployment: DeployStatus = {
     admin_accounts: ['100000002'],
     group_chat_chance: 0.3,
   },
-  onebot: {
-    url_local: 'ws://127.0.0.1:9980/onebot',
-    url_lan: 'ws://192.0.2.10:9980/onebot',
-    token: 'preview-token',
-    token_enabled: true,
+  official: {
+    mode: 'official',
+    app_id: '100000003',
+    secret_set: true,
+    account: 0,
+    nickname: '',
+    bound: false,
+    connected: false,
+    can_rebind: true,
+    done: true,
+    bind: {
+      phase: 'pending',
+      url: 'https://q.qq.com/qqbot/connect.html?task_id=abc',
+      svg: '<svg data-testid="qr-svg"></svg>',
+      error: '',
+    },
   },
   steps: [
     { key: 'bot_identity', done: true, required: true },
     { key: 'persona', done: true, required: true },
     { key: 'platform_key', done: true, required: true },
     { key: 'admin', done: true, required: false },
-    { key: 'onebot', done: true, required: true },
+    { key: 'official', done: true, required: true },
   ],
 };
 
@@ -96,7 +107,7 @@ beforeEach(() => {
   });
   vi.mocked(api.configSave).mockResolvedValue(success);
   vi.mocked(api.envSave).mockResolvedValue(success);
-  vi.mocked(api.deployOneBotToken).mockResolvedValue(success);
+  vi.mocked(api.deployOfficialBind).mockResolvedValue(success);
 });
 
 describe('Deploy 分步配置', () => {
@@ -204,7 +215,7 @@ describe('Deploy 分步配置', () => {
     expect(api.envSave).not.toHaveBeenCalled();
   });
 
-  it('只读会话禁用字段与写入，仍可查看和复制连接信息', async () => {
+  it('只读会话禁用字段与写入，仍可查看官方绑定信息', async () => {
     vi.mocked(useAuthGate).mockReturnValue({
       canManage: false,
       setupRequired: false,
@@ -222,19 +233,19 @@ describe('Deploy 分步配置', () => {
     expect(screen.getByDisplayValue('100000002')).toBeDisabled();
     expect(screen.getByRole('spinbutton')).toBeDisabled();
     expect(screen.getByRole('slider')).toBeDisabled();
-    goTo('连接');
+    goTo('官方');
     expect(screen.getByText(/^当前会话只读/)).toBeInTheDocument();
-    for (const name of ['保存并应用', '重新生成 token']) {
+    expect(screen.getByLabelText('官方机器人绑定二维码')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('100000003')).toBeDisabled();
+    expect(screen.getByPlaceholderText('已设置，留空保留')).toBeDisabled();
+    for (const name of ['保存并应用', '开始扫码绑定']) {
       const button = screen.getByRole('button', { name });
       expect(button).toBeDisabled();
       fireEvent.click(button);
     }
-    expect(screen.getAllByRole('button', { name: '复制' })).toHaveLength(3);
-    screen.getAllByRole('button', { name: '复制' }).forEach((button) => expect(button).toBeEnabled());
-    expect(screen.getByText('ws://127.0.0.1:9980/onebot')).toBeInTheDocument();
     expect(api.configSave).not.toHaveBeenCalled();
     expect(api.envSave).not.toHaveBeenCalled();
-    expect(api.deployOneBotToken).not.toHaveBeenCalled();
+    expect(api.deployOfficialBind).not.toHaveBeenCalled();
   });
 
   it('统一保存草稿与密钥，使用最新配置修订号并保留无关字段', async () => {
@@ -297,22 +308,24 @@ describe('Deploy 分步配置', () => {
     expect(api.envSave).toHaveBeenCalledTimes(2);
   });
 
-  it('生成连接令牌后的状态读取不会重置其他步骤的未保存输入', async () => {
+  it('开始扫码绑定后的状态读取不会重置其他步骤的未保存输入', async () => {
     render(<Deploy />);
     fireEvent.change(await screen.findByDisplayValue('演示机器人'), { target: { value: '待保存的昵称' } });
     goTo('供应商');
     fireEvent.change(screen.getByPlaceholderText('sk-…'), { target: { value: 'sk-pending' } });
-    goTo('连接');
-    expect(screen.getByRole('button', { name: '重新生成 token' })).toBeEnabled();
-    fireEvent.click(screen.getByRole('button', { name: '重新生成 token' }));
+    goTo('官方');
+    expect(screen.getByRole('button', { name: '开始扫码绑定' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: '开始扫码绑定' }));
     await waitFor(() => expect(api.deployStatus).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.getByRole('button', { name: '重新生成 token' })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: '开始扫码绑定' })).toBeEnabled());
     expect(screen.queryByRole('button', { name: '刷新' })).not.toBeInTheDocument();
     goTo('身份');
     expect(screen.getByDisplayValue('待保存的昵称')).toBeInTheDocument();
     goTo('供应商');
     expect(screen.getByPlaceholderText('sk-…')).toHaveValue('sk-pending');
-    expect(api.deployOneBotToken).toHaveBeenCalledWith({ revision: '00000000000000000000000000000001' });
+    expect(api.deployOfficialBind).toHaveBeenCalledWith({
+      revision: '00000000000000000000000000000001',
+    });
     expect(api.configSave).not.toHaveBeenCalled();
     expect(api.envSave).not.toHaveBeenCalled();
   });
@@ -405,15 +418,15 @@ describe('Deploy 分步配置', () => {
           ...deployment,
           revision: '00000000000000000000000000000099',
           values: { ...deployment.values, bot_nick_name: '迟到的服务器值' },
-          onebot: { ...deployment.onebot, url_local: 'ws://late.invalid/onebot' },
+          official: { ...deployment.official!, app_id: 'late-app-id' },
         },
       });
     });
     expect(screen.getByPlaceholderText('sk-…')).toHaveValue('sk-in-flight');
     fireEvent.change(screen.getByPlaceholderText('sk-…'), { target: { value: '' } });
-    goTo('连接');
-    expect(screen.getByText('ws://127.0.0.1:9980/onebot')).toBeInTheDocument();
-    expect(screen.queryByText('ws://late.invalid/onebot')).not.toBeInTheDocument();
+    goTo('官方');
+    expect(screen.getByDisplayValue('100000003')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('late-app-id')).not.toBeInTheDocument();
     goTo('身份');
     expect(screen.getByDisplayValue('请求途中输入')).toBeInTheDocument();
     fireEvent.change(screen.getByDisplayValue('请求途中输入'), { target: { value: '演示机器人' } });
@@ -421,35 +434,40 @@ describe('Deploy 分步配置', () => {
     expect(notify).not.toHaveBeenCalled();
   });
 
-  it('自动请求途中启动生成令牌时丢弃旧包，忙碌期间暂停轮询', async () => {
+  it('自动请求途中开始扫码绑定会丢弃旧包，忙碌期间暂停轮询', async () => {
     await renderWithPolling();
     const pendingStatus = deferred<Awaited<ReturnType<typeof api.deployStatus>>>();
-    const pendingToken = deferred<Awaited<ReturnType<typeof api.deployOneBotToken>>>();
+    const pendingBind = deferred<Awaited<ReturnType<typeof api.deployOfficialBind>>>();
     vi.mocked(api.deployStatus)
       .mockReturnValueOnce(pendingStatus.promise)
       .mockResolvedValueOnce({
         ...success,
-        data: { ...deployment, onebot: { ...deployment.onebot, token: 'newly-generated-token' } },
+        data: {
+          ...deployment,
+          official: { ...deployment.official!, app_id: 'new-app-id' },
+        },
       });
-    vi.mocked(api.deployOneBotToken).mockReturnValueOnce(pendingToken.promise);
+    vi.mocked(api.deployOfficialBind).mockReturnValueOnce(pendingBind.promise);
     await advancePolling();
-    goTo('连接');
-    fireEvent.click(screen.getByRole('button', { name: '重新生成 token' }));
+    goTo('官方');
+    fireEvent.click(screen.getByRole('button', { name: '开始扫码绑定' }));
     await act(async () => {
       pendingStatus.resolve({
         ...success,
-        data: { ...deployment, onebot: { ...deployment.onebot, token: 'stale-token' } },
+        data: {
+          ...deployment,
+          official: { ...deployment.official!, app_id: 'stale-app-id' },
+        },
       });
     });
-    expect(screen.queryByText('stale-token')).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue('stale-app-id')).not.toBeInTheDocument();
     await advancePolling(2);
     expect(api.deployStatus).toHaveBeenCalledTimes(2);
     await act(async () => {
-      pendingToken.resolve(success);
+      pendingBind.resolve({ ...success, data: {} });
     });
     expect(api.deployStatus).toHaveBeenCalledTimes(3);
-    expect(screen.getByText('newly-generated-token')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '重新生成 token' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '开始扫码绑定' })).toBeEnabled();
   });
 
   it('读取失败保留重试，出现草稿后移除重试并暂停自动更新', async () => {

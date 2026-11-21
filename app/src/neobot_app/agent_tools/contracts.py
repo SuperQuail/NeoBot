@@ -11,7 +11,8 @@ class ToolContext:
 
     owner: str
     chat_flow_id: str
-    user_id: int | None = None
+    #: 发起者本地 ID：OneBot 为 QQ 数字，官方通道为 openid 字符串
+    user_id: int | str | None = None
     agent_id: str = "main"
     parent_agent_id: str | None = None
     depth: int = 0

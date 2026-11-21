@@ -9,6 +9,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from neobot_app.bot_accounts import bot_account_for_message, identity_text, primary_bot_account
 from neobot_app.commands.builtin import build_builtin_commands
 from neobot_app.commands.model import (
     CommandContext,
@@ -17,9 +18,10 @@ from neobot_app.commands.model import (
 )
 from neobot_app.commands.permissions import PermissionManager
 from neobot_app.commands.registry import CommandRegistry
+from neobot_app.message.addressing import is_addressed_to_bot
 
-SendCallback = Callable[[str, str, str, int | None], Awaitable[Any]]
-ConfigSaveCallback = Callable[[list[int]], Awaitable[ConfigSaveResult]]
+SendCallback = Callable[[str, str, str, str | int | None], Awaitable[Any]]
+ConfigSaveCallback = Callable[[list[str]], Awaitable[ConfigSaveResult]]
 RestartCallback = Callable[[], Any]
 ConfigReloadCallback = Callable[[], Awaitable[Any]]
 
@@ -166,18 +168,18 @@ class CommandService:
         - 私聊:文本为命令形态即可
         - 非命令形态 / 未注册命令:返回 consumed=False(移交正常管线)
         """
-        bot_account = self._bot_account()
         at_qqs = self._collect_at_qqs(message)
         text = self._message_text(message)
 
-        # 触发条件:群聊需被 @bot
+        # 触发条件:群聊需被 @bot（官方通道取 mentioned_self 权威结论，
+        # 其余按显式 at 段；官方群全量消息没有 @ 时不能当命令触发）
         if kind == "group":
-            if bot_account not in at_qqs:
+            if not is_addressed_to_bot(message, self._config):
                 return CommandHandleResult(consumed=False)
         elif kind not in ("private", "friend"):
             return CommandHandleResult(consumed=False)
 
-        user_id = int(getattr(message, "user_id", 0) or 0)
+        user_id = identity_text(getattr(message, "user_id", None))
         parsed = self._registry.match(text)
         if parsed is None:
             # 非命令形态(如"大家 /help"):移交正常管线
@@ -186,8 +188,7 @@ class CommandService:
         if command is None:
             # / 开头但命令未注册:移交正常管线
             return CommandHandleResult(consumed=False)
-
-        # 权限检查
+        # 权限检查先于参数补全：未授权用户不应看到通配符的歧义提示。
         if not self._permissions.can(user_id, command.permission):
             await self._send_text(
                 kind, queue_key,
@@ -196,6 +197,37 @@ class CommandService:
                 at_user_id=user_id,
             )
             return CommandHandleResult(consumed=True)
+
+        resolved = []
+        at_slots = getattr(command, "at_args", ()) or ()
+        if at_slots:
+            at_targets = self._collect_at_targets(message)
+            self_tokens = {"self", "自己", "本人"}
+            # 只认 at 槽位上的 self，避免把普通文本参数里的「自己/本人」吞掉。
+            self_index = next(
+                (slot for slot in sorted(at_slots) if slot < len(args) and str(args[slot]).casefold() in self_tokens),
+                None,
+            )
+            if self_index is not None:
+                args.pop(self_index)
+                resolved = [user_id]
+            elif at_targets:
+                resolved = list(at_targets)
+            elif bool(getattr(message, "official_at_event", False)):
+                await self._send_text(
+                    kind,
+                    queue_key,
+                    "无法判断你是否 @ 了别人：本群官方 bot 只收到 @ 事件，平台不提供被 @ 用户信息。\n"
+                    f"操作自己请在参数中加入 self（用法：/{command.name} {command.usage}）；"
+                    "操作别人请让对方本人发送。",
+                    at_user_id=user_id,
+                )
+                return CommandHandleResult(consumed=True)
+            else:
+                resolved = []
+            for index, slot in enumerate(sorted(at_slots)):
+                if index < len(resolved):
+                    args.insert(min(slot, len(args)), resolved[index])
 
         context = CommandContext(
             service=self,
@@ -208,6 +240,8 @@ class CommandService:
             at_qqs=sorted(at_qqs),
             message=message,
         )
+        context.at_args_resolved = list(resolved)
+        context.at_args_slots = tuple(sorted(at_slots))
         try:
             result_text = await command.handler(context)
         except Exception as exc:
@@ -227,11 +261,11 @@ class CommandService:
 
     # ── 消息解析辅助 ──
 
-    def _bot_account(self) -> int:
-        try:
-            return int(getattr(getattr(self._config, "bot", None), "account", 0) or 0)
-        except (TypeError, ValueError):
-            return 0
+    def _bot_account(self, message: Any = None) -> int:
+        """当前消息对应的 bot 账号：统一由提供者解析（self_id/通道/config 细节不可见）。"""
+        if message is not None:
+            return bot_account_for_message(message, self._config)
+        return primary_bot_account(self._config)
 
     @staticmethod
     def _segment_type(segment: Any) -> str:
@@ -253,10 +287,23 @@ class CommandService:
             return data
         return {}
 
+    def _collect_at_targets(self, message: Any) -> list[str]:
+        """按出现顺序返回非 bot 的 @ 目标（openid/QQ 字符串），供 at_args 通配符。"""
+        bot_id = identity_text(self._bot_account(message))
+        targets: list[str] = []
+        for qq in message.message or ():
+            segment_type = self._segment_type(qq)
+            if segment_type not in ("at", "mention"):
+                continue
+            value = identity_text(self._segment_data(qq).get("qq") or self._segment_data(qq).get("user_id"))
+            if value and value not in {bot_id, "0", "all"}:
+                targets.append(value)
+        return targets
+
     @staticmethod
-    def _collect_at_qqs(message: Any) -> set[int]:
-        """收集消息中 at 段的 QQ 号。"""
-        result: set[int] = set()
+    def _collect_at_qqs(message: Any) -> set[str]:
+        """收集消息中 at 段的本地 ID（openid 或 QQ 号），统一按字符串返回。"""
+        result: set[str] = set()
         segments = getattr(message, "message", None)
         if not segments:
             return result
@@ -264,13 +311,9 @@ class CommandService:
             if CommandService._segment_type(segment) not in ("at", "mention"):
                 continue
             data = CommandService._segment_data(segment)
-            raw_qq = data.get("qq") or data.get("user_id")
-            try:
-                qq = int(str(raw_qq))
-            except (TypeError, ValueError):
-                continue
-            if qq > 0:
-                result.add(qq)
+            text = identity_text(data.get("qq") or data.get("user_id"))
+            if text and text != "0" and text != "all":
+                result.add(text)
         return result
 
     @staticmethod
@@ -281,7 +324,13 @@ class CommandService:
         if not segments:
             return ""
         for segment in segments:
-            if CommandService._segment_type(segment) != "text":
+            segment_type = CommandService._segment_type(segment)
+            if segment_type in ("at", "mention"):
+                # at 段在纯文本里取出后不能直接消失：否则「/linkqq@某人 123」
+                # 这种没有显式空格的输入会拼成「/linkqq123」，命令无法触发。
+                parts.append(" ")
+                continue
+            if segment_type != "text":
                 continue
             data = CommandService._segment_data(segment)
             text = data.get("text")
@@ -292,7 +341,7 @@ class CommandService:
     # ── 发送与日志 ──
 
     async def reply_to(
-        self, kind: str, conv_id: str, text: str, *, at_user_id: int | None
+        self, kind: str, conv_id: str, text: str, *, at_user_id: str | int | None
     ) -> None:
         await self._send_text(kind, conv_id, text, at_user_id=at_user_id)
 
@@ -302,7 +351,7 @@ class CommandService:
         conv_id: str,
         markdown: str,
         *,
-        at_user_id: int | None = None,
+        at_user_id: str | int | None = None,
     ) -> bool:
         """将 markdown 渲染为图片发送;成功返回 True,失败返回 False(调用方降级)。
 
@@ -332,7 +381,7 @@ class CommandService:
         conv_id: str,
         data: bytes,
         *,
-        at_user_id: int | None = None,
+        at_user_id: str | int | None = None,
         filename: str | None = None,
     ) -> bool:
         """把 PNG 字节落盘后作为图片发送;成功返回 True,失败返回 False(调用方降级)。
@@ -379,15 +428,16 @@ class CommandService:
         return target
 
     async def _send_image_path(
-        self, kind: str, conv_id: str, image_path: Any, *, at_user_id: int | None
+        self, kind: str, conv_id: str, image_path: Any, *, at_user_id: str | int | None
     ) -> bool:
         from neobot_app.utils.media_sender import prepare_image_segment
 
         from neobot_contracts.models import ConversationRef
 
         segments: list[dict[str, Any]] = []
-        if kind == "group" and at_user_id is not None:
-            segments.append({"type": "at", "data": {"qq": str(at_user_id)}})
+        at_id = identity_text(at_user_id)
+        if kind == "group" and at_id:
+            segments.append({"type": "at", "data": {"qq": at_id}})
         try:
             segments.append(prepare_image_segment(self._file_server, Path(image_path)))
         except Exception as exc:
@@ -397,14 +447,20 @@ class CommandService:
             kind="group" if kind == "group" else "private", id=str(conv_id)
         )
         try:
-            await self._adapter.send(conv_ref, segments)
+            from neobot_app.reply.sender import send_response_ok
+
+            result = await self._adapter.send(conv_ref, segments)
+            if not send_response_ok(result):
+                message = getattr(result, "message", "") or getattr(result, "wording", "")
+                self._log(f"命令图片发送失败: {message or '未知错误'}")
+                return False
             return True
         except Exception as exc:
             self._log(f"命令图片发送失败: {exc}")
             return False
 
     async def _send_text(
-        self, kind: str, conv_id: str, text: str, *, at_user_id: int | None
+        self, kind: str, conv_id: str, text: str, *, at_user_id: str | int | None
     ) -> None:
         if self._send_callback is not None:
             await self._send_callback(kind, conv_id, text, at_user_id)
@@ -414,8 +470,9 @@ class CommandService:
         from neobot_contracts.models import ConversationRef
 
         segments: list[dict[str, Any]] = []
-        if kind == "group" and at_user_id is not None:
-            segments.append({"type": "at", "data": {"qq": str(at_user_id)}})
+        at_id = identity_text(at_user_id)
+        if kind == "group" and at_id:
+            segments.append({"type": "at", "data": {"qq": at_id}})
         if text:
             segments.append({"type": "text", "data": {"text": text}})
         if not segments:
@@ -426,7 +483,7 @@ class CommandService:
         except Exception as exc:
             self._log(f"命令回复发送失败: {exc}")
 
-    async def save_sub_admins(self, new_list: list[int]) -> ConfigSaveResult:
+    async def save_sub_admins(self, new_list: list[str]) -> ConfigSaveResult:
         """保存次级管理员列表(经注入的回调,含配置写回与热重载)。
 
         回调返回 ConfigSaveResult：只有 ok=True 才代表磁盘上确实写成功了。

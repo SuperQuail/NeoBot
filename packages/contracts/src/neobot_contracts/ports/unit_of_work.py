@@ -6,6 +6,7 @@ from typing import Protocol, runtime_checkable
 
 from neobot_contracts.ports.archive_memory_access import ArchiveMemoryAccess
 from neobot_contracts.ports.creator_image_access import CreatorImageAccess
+from neobot_contracts.ports.cross_chat_session_access import CrossChatSessionAccess
 from neobot_contracts.ports.emoji_access import EmojiAccess
 from neobot_contracts.ports.image_analysis_access import ImageAnalysisAccess
 from neobot_contracts.ports.scheduled_task_access import ScheduledTaskAccess
@@ -24,6 +25,7 @@ class UnitOfWork(Protocol):
     emojis: EmojiAccess
     creator_images: CreatorImageAccess
     scheduled_tasks: ScheduledTaskAccess
+    cross_chat_sessions: CrossChatSessionAccess
 
     async def commit(self) -> None: ...
     async def rollback(self) -> None: ...

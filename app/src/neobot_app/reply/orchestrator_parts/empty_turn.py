@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import time
+
 from neobot_app.reply.event import ReplyEvent, ReplyState
 
 #: 空轮次成因：输出预算被思维链吃光（finish_reason=length）。
@@ -51,6 +53,55 @@ def _classify_empty_turn(response: object) -> str:
 
 
 class EmptyTurnMixin:
+    # 跨激活纠正标记：只放在实例内存，TTL + 有界；不写 MessageQueue。
+    _UNSENT_MARKER_TTL = 300.0
+    _UNSENT_MARKER_MAX = 256
+
+    @staticmethod
+    def _unsent_marker_key(event: ReplyEvent) -> str:
+        ref = event.conversation_ref
+        return f"{ref.kind}:{ref.id}" if ref is not None else ""
+
+    def _unsent_markers(self) -> dict[str, float]:
+        markers = getattr(self, "_unsent_prose_markers", None)
+        if markers is None:
+            markers = {}
+            self._unsent_prose_markers = markers
+        return markers
+
+    def _prune_unsent_markers(self, now: float) -> None:
+        markers = self._unsent_markers()
+        expired = [key for key, ts in markers.items() if now - ts > self._UNSENT_MARKER_TTL]
+        for key in expired:
+            markers.pop(key, None)
+        if len(markers) > self._UNSENT_MARKER_MAX:
+            for key in sorted(markers, key=markers.get)[: len(markers) - self._UNSENT_MARKER_MAX]:
+                markers.pop(key, None)
+
+    def _mark_unsent_marker(self, event: ReplyEvent) -> None:
+        key = self._unsent_marker_key(event)
+        if not key:
+            return
+        now = time.monotonic()
+        markers = self._unsent_markers()
+        markers[key] = now
+        self._prune_unsent_markers(now)
+
+    def _take_unsent_marker(self, event: ReplyEvent) -> bool:
+        """查看（不消费）跨轮标记；真正的清除只发生在成功 send/cancel 后。"""
+        key = self._unsent_marker_key(event)
+        if not key:
+            return False
+        markers = self._unsent_markers()
+        ts = markers.get(key)
+        self._prune_unsent_markers(time.monotonic())
+        return ts is not None and time.monotonic() - ts <= self._UNSENT_MARKER_TTL
+
+    def _clear_unsent_marker(self, event: ReplyEvent) -> None:
+        key = self._unsent_marker_key(event)
+        if key:
+            self._unsent_markers().pop(key, None)
+
     @staticmethod
     def _tool_failure_key(name: str, args: object) -> str:
         """同工具 + 同参数的失败指纹（参数不可序列化时退化为 repr）。"""
@@ -99,6 +150,8 @@ class EmptyTurnMixin:
             stage = "unsent_prose_detected"
         # 不把“没调工具”写成事件错误：它已经通过 reminder 发回给模型，
         # 再记 FAILED 只会污染观测，对下一次语言修复没有任何信息价值。
+        if text.strip():
+            self._mark_unsent_marker(event)
         if not event.is_terminal:
             try:
                 event.transition(ReplyState.CANCELLED)

@@ -9,11 +9,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from neobot_app.bot_accounts import identity_text
 from neobot_app.commands.model import (
     PERM_EVERYONE,
     PERM_SUB_ADMIN,
     PERM_SUPER_ADMIN,
 )
+from neobot_app.user_identity import trusted_qq_for_user
 
 
 class PermissionManager:
@@ -21,34 +23,52 @@ class PermissionManager:
         self._config = config  # ConfigProxy,动态读取
 
     @property
-    def super_admins(self) -> set[int]:
-        """超级管理员 QQ 号集合(配置不可被命令修改)。"""
+    def super_admins(self) -> set[str]:
+        """超级管理员本地 ID 集合（QQ号或 openid；配置不可被命令修改）。"""
         return self._admin_set("admin_accounts")
 
     @property
-    def sub_admins(self) -> set[int]:
-        """次级管理员 QQ 号集合(命令可增删)。"""
+    def sub_admins(self) -> set[str]:
+        """次级管理员本地 ID 集合（QQ号或 openid；命令可增删）。"""
         return self._admin_set("sub_admin_accounts")
 
-    def _admin_set(self, field: str) -> set[int]:
+    def _admin_set(self, field: str) -> set[str]:
         chat = getattr(self._config, "chat", None) if self._config is not None else None
         if chat is None:
             return set()
         values = getattr(chat, field, None) or []
-        result: set[int] = set()
+        result: set[str] = set()
         for value in values:
-            try:
-                result.add(int(value))
-            except (TypeError, ValueError):
-                continue
+            text = identity_text(value)
+            if text:
+                result.add(text)
         return result
 
+    @staticmethod
+    def _candidates(user_id: int | str) -> set[str]:
+        """管理员判定候选集合（字符串归一化）。
+
+        同时认通道本地 ID（QQ 号/openid 字符串）与管理员命令写入的 trusted 真实
+        QQ 号；agent 工具写的映射只用于展示，不参与权限判定——避免模型自封管理员。
+        """
+        uid = identity_text(user_id)
+        if not uid:
+            return set()
+        candidates = {uid}
+        mapped = trusted_qq_for_user(uid)
+        if mapped:
+            candidates.add(str(mapped))
+        return candidates
+
+    def _admin_keys(self, field: str) -> set[str]:
+        return self._admin_set(field)
+
     def is_super_admin(self, user_id: int | str) -> bool:
-        return int(user_id) in self.super_admins
+        return bool(self._candidates(user_id) & self._admin_keys("admin_accounts"))
 
     def is_sub_admin(self, user_id: int | str) -> bool:
-        uid = int(user_id)
-        return uid in self.sub_admins or uid in self.super_admins
+        keys = self._admin_keys("sub_admin_accounts") | self._admin_keys("admin_accounts")
+        return bool(self._candidates(user_id) & keys)
 
     def can(self, user_id: int | str, level: int) -> bool:
         """用户是否具备指定权限等级。"""
@@ -67,6 +87,6 @@ class PermissionManager:
         「内部状态 → 用户可见文本」的泄露面（issue #85）；需要号码时请看配置或面板。
         """
         return (
-            f"超级管理员 {len(self.super_admins)} 人 / "
+            f"超级管理员 {len(self._admin_set('admin_accounts'))} 人 / "
             f"次级管理员 {len(self.sub_admins)} 人"
         )

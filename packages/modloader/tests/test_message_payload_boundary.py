@@ -86,12 +86,20 @@ async def test_send_payloads_reach_json_adapter(
 ) -> None:
     adapter = JsonAdapter()
     sender = make_sender(surface, adapter, tmp_path)
-    target = ConversationRef(kind="group", id="42") if method == "send" else 42
+    if method == "send_private":
+        target: Any = 42
+        conversation = ConversationRef(kind="private", id="42")
+    elif method == "send_group":
+        target = 42
+        conversation = ConversationRef(kind="group", id="42")
+    else:
+        target = ConversationRef(kind="group", id="42")
+        conversation = target
 
     result = await getattr(sender, method)(target, make_payload())
 
-    action = "send" if method == "send" else f"{method}_msg"
-    assert adapter.calls == [(action, target, expected)]
+    # send_private/send_group 统一走 ConversationRef + 门面 send。
+    assert adapter.calls == [("send", conversation, expected)]
     assert result is adapter.result
 
 

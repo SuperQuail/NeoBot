@@ -129,7 +129,12 @@ class GenerateMixin:
                 event.message,
                 max_images=self._get_native_vision_default_image_count(),
             )
-            common_image_parts = labelled_tool_images(loaded, tool_call_id="当前消息默认图片", automatic=True)
+            common_image_parts = labelled_tool_images(
+                loaded,
+                tool_call_id="当前消息默认图片",
+                automatic=True,
+                prompt_store=self._prompt_store,
+            )
             if not json.loads(loaded).get("ok"):
                 self._logger.warning("原生视觉图片加载失败", result=str(loaded))
                 messages.append({"role": "user", "content": f"[图片未加载，不能声称看过图片] {loaded}"})
@@ -140,15 +145,12 @@ class GenerateMixin:
                 event,
                 notification=event.background_content[:200],
             )
-        # 回复前追加独立的 <当前时间> user 块
-        time_block = self._build_current_time_message()
-        if time_block is not None:
-            messages.append(time_block)
-        # 防重复提醒:common 路径只有一次模型调用,追加一次即可(独立于时间块开关)
-        avoid_repeat_message = self._build_avoid_repeat_message()
-        if avoid_repeat_message is not None:
-            messages.append(avoid_repeat_message)
-        append_image_context(messages, common_image_parts)
+        # 图片上下文是 RUNTIME_DATA：在提醒与时间块之前追加
+        append_image_context(
+            messages, common_image_parts, prompt_store=self._prompt_store
+        )
+        # 回复前注入：REMINDER（防重复）→ TIME（terminal，始终是最后一条消息）
+        self._inject_runtime_blocks(messages, dynamic={"time_variant": "full"})
         self._record_flow_request(event, self._flow_queue_key(event), messages)
         timeout = self._get_model_response_timeout_seconds(event)
         before_model = await self._emit_runtime_event(

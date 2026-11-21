@@ -77,8 +77,8 @@ class GroupManagementSkill(SkillModule):
                             ],
                             "description": "要执行的群管理动作。",
                         },
-                        "group_id": {"type": "integer", "description": "群号"},
-                        "user_id": {"type": "integer", "description": "目标 QQ 号"},
+                        "group_id": {"type": ["string", "integer"], "description": "群 ID（OneBot 为群号，官方通道为 openid）"},
+                        "user_id": {"type": ["string", "integer"], "description": "目标用户 ID（OneBot 为 QQ 号，官方通道为 openid）"},
                         "enable": {"type": "boolean", "description": "是否启用/设为管理员/全员禁言"},
                         "duration": {"type": "integer", "description": "禁言秒数"},
                         "reject_add_request": {"type": "boolean", "description": "踢人后是否拒绝再次加群"},
@@ -108,7 +108,7 @@ async def _handle_manage_group(self: GroupManagementSkill, args: dict) -> str:
     try:
         # 需要凭据的动作:执行前校验并消费凭据
         if action in _CREDENTIAL_ACTIONS:
-            group_id = _as_int(args.get("group_id"))
+            group_id = _as_id(args.get("group_id"))
             if group_id is None:
                 return _json({"ok": False, "error": "缺少参数 group_id"})
             chat_flow = f"group:{group_id}"
@@ -163,8 +163,8 @@ _CREDENTIAL_ACTIONS = frozenset({"kick", "quit_group"})
 
 
 def _group_action_params(action: str, args: dict) -> tuple[str, dict[str, Any]]:
-    group_id = _as_int(args.get("group_id"))
-    user_id = _as_int(args.get("user_id"))
+    group_id = _as_id(args.get("group_id"))
+    user_id = _as_id(args.get("user_id"))
     message_id = _as_int(args.get("message_id"))
     text = _as_str(args.get("text"))
 
@@ -230,6 +230,16 @@ def _group_action_params(action: str, args: dict) -> tuple[str, dict[str, Any]]:
     if action == "delete_msg":
         return "delete_msg", {"message_id": _require(message_id, "message_id")}
     raise ValueError(f"未知群管理动作: {action}")
+
+def _as_id(value: Any) -> int | str | None:
+    """群/用户本地 ID：纯数字保留 int（OneBot 协议原义），openid 原样透传。"""
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return int(text) if text.isdigit() else text
+
 
 def _as_int(value: Any) -> int | None:
     if value in (None, ""):

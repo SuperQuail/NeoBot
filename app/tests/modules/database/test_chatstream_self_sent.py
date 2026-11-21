@@ -1,8 +1,8 @@
 """ChatStreamManager 软重启补齐：合并本地 Bot 自身消息并去重（bugfixes/feat(2) §11）。
 
 覆盖：合并后 user/assistant 齐全且顺序正确、去重（不出现两条）、
-不误伤他人消息、无 bot_account 时跳过、读写失败不反噬启动流程，
-以及「回复落盘 -> 软重启 -> 灌入历史」的端到端场景。
+不误伤他人消息、双通道两个机器人号各自补齐/去重、提供者未绑定账号时跳过、
+读写失败不反噬启动流程，以及「回复落盘 -> 软重启 -> 灌入历史」的端到端场景。
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
 import pytest_asyncio
 
 from neobot_adapter.model.response import (
@@ -24,12 +25,14 @@ from neobot_storage.engine import create_engine, sqlite_url
 from neobot_storage.models import Base
 from neobot_storage.uow import make_uow_factory
 
+from neobot_app.bot_accounts import bind_bot_accounts
 from neobot_app.database.chatstream import ChatStreamManager
 from neobot_app.message.queue import MessageQueue
 from neobot_app.prompt.role_messages import build_role_messages
 from neobot_app.reply.sender import ReplySender
 
 BOT_QQ = 10001
+BOT_QQ_OFFICIAL = 10002
 USER_QQ = 20001
 GROUP_ID = 888888
 FRIEND_QQ = 30001
@@ -39,6 +42,25 @@ FRIEND_QQ = 30001
 _NO_TIMESTAMP_INTERVAL = 10_000_000
 
 _BASE = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+
+class _Detector:
+    """假身份服务：双通道各解析出一个机器人号。"""
+
+    def __init__(self, accounts: dict[str, int] | None = None, primary: int = BOT_QQ) -> None:
+        self.accounts = dict(accounts or {})
+        self.profile = SimpleNamespace(account=primary)
+
+    def account_for(self, channel: str) -> int:
+        return int(self.accounts.get(channel, 0) or 0)
+
+
+@pytest.fixture(autouse=True)
+def _reset_bot_accounts_provider():
+    """全局提供者是单例：每个用例前后都清掉绑定，避免互相污染。"""
+    bind_bot_accounts(None, None)
+    yield
+    bind_bot_accounts(None, None)
 
 
 def _at(offset_seconds: int) -> datetime:
@@ -70,8 +92,13 @@ class ExplodingUowFactory:
         raise RuntimeError("数据库不可用")
 
 
-def _backend_message(message_id, user_id, text, time_, *, group_id=GROUP_ID):
-    """构造一条后端历史消息（GetSignalMsgData，与真实适配器返回同型）。"""
+def _backend_message(
+    message_id, user_id, text, time_, *, group_id=GROUP_ID, self_id=None
+):
+    """构造一条后端历史消息（GetSignalMsgData，与真实适配器返回同型）。
+
+    self_id 是「收到该事件的机器人号」：双通道下两条通道自报账号不同。
+    """
     payload = {
         "message_id": message_id,
         "user_id": user_id,
@@ -80,6 +107,8 @@ def _backend_message(message_id, user_id, text, time_, *, group_id=GROUP_ID):
         "message": [{"type": "text", "data": {"text": text}}],
         "sender": {"user_id": user_id, "nickname": f"U{user_id}"},
     }
+    if self_id is not None:
+        payload["self_id"] = self_id
     if group_id is not None:
         payload["group_id"] = group_id
     return GetSignalMsgData(**payload)
@@ -110,6 +139,7 @@ async def _save_bot_record(
     occurred_at: datetime,
     *,
     event_id: str = "self:-1",
+    sender_id: int = BOT_QQ,
 ) -> None:
     """模拟 push_self_sent_message 的落库结果。"""
     async with uow_factory() as uow:
@@ -117,7 +147,7 @@ async def _save_bot_record(
             IncomingMessage(
                 event_id=event_id,
                 conversation=conversation,
-                sender_id=str(BOT_QQ),
+                sender_id=str(sender_id),
                 sender_name="测试机器人",
                 text=text,
                 occurred_at=occurred_at,
@@ -126,8 +156,12 @@ async def _save_bot_record(
         await uow.commit()
 
 
-def _make_manager(adapter, uow_factory, *, bot_account=BOT_QQ):
-    """构造只关心队列与 UoW 的 ChatStreamManager。"""
+def _make_manager(adapter, uow_factory, *, bot_account=BOT_QQ, detector=None):
+    """构造只关心队列与 UoW 的 ChatStreamManager，并绑定机器人号提供者。"""
+    bind_bot_accounts(
+        SimpleNamespace(bot=SimpleNamespace(account=bot_account or 0)),
+        detector,
+    )
     group_queue = MessageQueue(
         max_size=50,
         timestamp_interval_seconds=_NO_TIMESTAMP_INTERVAL,
@@ -336,6 +370,84 @@ class FakeQueueLike:
         pass
 
 
+async def test_dual_channel_merges_self_records_from_both_accounts(uow_factory):
+    """双通道：两条通道各自的 Bot 发言都要补齐，账号以 record.sender_id 还原。"""
+    conv = ConversationRef(kind="group", id=str(GROUP_ID))
+    detector = _Detector({"onebot": BOT_QQ, "official": BOT_QQ_OFFICIAL}, primary=BOT_QQ)
+    adapter = FakeAdapter(
+        group_history={
+            str(GROUP_ID): [
+                _backend_message(1, USER_QQ, "早", _epoch(0), self_id=BOT_QQ),
+                _backend_message(2, USER_QQ, "喂", _epoch(60), self_id=BOT_QQ),
+            ]
+        }
+    )
+    await _save_bot_record(uow_factory, conv, "OneBot 回复", _at(20), event_id="self:-7001", sender_id=BOT_QQ)
+    await _save_bot_record(
+        uow_factory,
+        conv,
+        "官方 回复",
+        _at(40),
+        event_id="self:-7002",
+        sender_id=BOT_QQ_OFFICIAL,
+    )
+    manager, group_queue, _ = _make_manager(adapter, uow_factory, bot_account=0, detector=detector)
+
+    await manager._process_group_history(GroupData(group_id=GROUP_ID), max_observations=20)
+
+    assert _texts(group_queue, str(GROUP_ID)) == ["早", "OneBot 回复", "官方 回复", "喂"]
+    by_text = {message.raw_message: message.user_id for message in group_queue.iterate_from_oldest(str(GROUP_ID))}
+    assert by_text["OneBot 回复"] == BOT_QQ
+    assert by_text["官方 回复"] == BOT_QQ_OFFICIAL
+
+
+async def test_dual_channel_dedup_uses_message_self_id(uow_factory):
+    """后端历史里消息自带 self_id：另一通道的 Bot 发言也能被判重，用户消息不受影响。"""
+    conv = ConversationRef(kind="group", id=str(GROUP_ID))
+    detector = _Detector({"onebot": BOT_QQ, "official": BOT_QQ_OFFICIAL}, primary=BOT_QQ)
+    adapter = FakeAdapter(
+        group_history={
+            str(GROUP_ID): [
+                _backend_message(1, USER_QQ, "在吗", _epoch(0), self_id=BOT_QQ),
+                _backend_message(
+                    2,
+                    BOT_QQ_OFFICIAL,
+                    "官方 回复",
+                    _epoch(40),
+                    self_id=BOT_QQ_OFFICIAL,
+                ),
+            ]
+        }
+    )
+    await _save_bot_record(
+        uow_factory,
+        conv,
+        "官方 回复",
+        _at(41),
+        event_id="self:-7003",
+        sender_id=BOT_QQ_OFFICIAL,
+    )
+    manager, group_queue, _ = _make_manager(adapter, uow_factory, bot_account=0, detector=detector)
+
+    await manager._process_group_history(GroupData(group_id=GROUP_ID), max_observations=20)
+
+    assert _texts(group_queue, str(GROUP_ID)) == ["在吗", "官方 回复"]
+    assert _roles(group_queue, str(GROUP_ID)) == ["user", "assistant", "tool"]
+
+
+async def test_merge_ignores_legacy_queue_bot_account(uow_factory):
+    """补齐的账号来源是统一提供者；队列上的 bot_account 单值不再单独触发补齐。"""
+    conv = ConversationRef(kind="group", id=str(GROUP_ID))
+    adapter = FakeAdapter(group_history={str(GROUP_ID): [_backend_message(1, USER_QQ, "在吗", _epoch(0))]})
+    await _save_bot_record(uow_factory, conv, "在的", _at(20), event_id="self:-7004")
+    manager, group_queue, _ = _make_manager(adapter, uow_factory, bot_account=BOT_QQ)
+    bind_bot_accounts(None, None)  # 未绑定提供者 = 无法识别任何机器人号
+
+    await manager._process_group_history(GroupData(group_id=GROUP_ID), max_observations=20)
+
+    assert _texts(group_queue, str(GROUP_ID)) == ["在吗"]
+
+
 async def test_local_self_history_is_not_capped_at_twenty(uow_factory):
     """F15：本地自身发言 > 20 条时不再被独立上限截断，与后端历史同窗口补齐。
 
@@ -353,7 +465,7 @@ async def test_local_self_history_is_not_capped_at_twenty(uow_factory):
         )
 
     manager, group_queue, _ = _make_manager(FakeAdapter(), uow_factory)
-    records = await manager._load_recent_self_messages(conv, str(BOT_QQ), None)
+    records = await manager._load_recent_self_messages(conv, {str(BOT_QQ)}, None)
     assert len(records) == 30
 
     # 未传 limit 时必须与后端历史同窗口：全部补齐，不再只补 20 条。
@@ -362,11 +474,9 @@ async def test_local_self_history_is_not_capped_at_twenty(uow_factory):
         queue_key=str(GROUP_ID),
         conversation=conv,
         backend_messages=[],
-        bot_account=BOT_QQ,
         limit=50,
     )
     texts = _texts(group_queue, str(GROUP_ID))
     assert len(texts) == 30
     assert texts[0] == "自身发言0"
     assert texts[-1] == "自身发言29"
-

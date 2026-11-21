@@ -20,7 +20,7 @@ class _PluginHelpMixin:
             # 格式错误 / 页码非法 -> agent 交互路径（不回固定错误文案）
             request = self.command_request(
                 command_ctx,
-                user_id=int(getattr(command_ctx, "user_id", 0) or 0),
+                user_id=getattr(command_ctx, "user_id", 0) or "",
                 user_name=_sender_name(getattr(command_ctx, "message", None)),
                 kind=str(getattr(command_ctx, "kind", "") or "group"),
                 conversation_id=conversation_id,

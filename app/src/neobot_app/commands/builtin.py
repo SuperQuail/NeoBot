@@ -20,6 +20,17 @@ from neobot_app.commands.model import (
     CommandContext,
     permission_name,
 )
+from neobot_app.bot_accounts import identity_text, looks_like_real_qq
+from neobot_app.user_identity import (
+    canonical_group_id,
+    canonical_user_id,
+    link_group_number,
+    link_user_qq,
+    openid_for_qq,
+    trusted_qq_for_user,
+    unlink_group_number,
+    unlink_user_qq,
+)
 from neobot_app.panel_auth import (
     MAX_PASSWORD_LENGTH,
     MIN_PASSWORD_LENGTH,
@@ -31,11 +42,15 @@ from neobot_app.runtime.sleep_service import (
     format_sleep_duration,
     parse_sleep_duration,
 )
+from neobot_app.database.identity_data_migration import get_identity_migration
+from neobot_app.identity_merge import get_identity_merge
 
 if TYPE_CHECKING:
     from neobot_app.commands.service import CommandService
 
 _QQ_PATTERN = re.compile(r"^\d{5,15}$")
+#: 官方 openid 形状（字母数字/下划线/连字符）；用于 /add_admin 直接接受 openid。
+_OPENID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16,}$")
 
 
 def _display_operator(raw: Any) -> str:
@@ -77,6 +92,20 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
             handler=_handle_help,
         ),
         Command(
+            name="get",
+            description=(
+                "查看当前通道的 ID：/get openid 看你自己（或 @ 到的用户）的 openid，"
+                "/get groupid 看本群的 openid"
+            ),
+            permission=PERM_EVERYONE,
+            usage="openid [@用户] | groupid",
+            params=(
+                ("openid [@用户]", "查看你本人（或 @ 到的用户）在当前通道的 openid"),
+                ("groupid", "查看本群的 openid（仅群聊）"),
+            ),
+            handler=_handle_get,
+        ),
+        Command(
             name="add_admin",
             description="添加次级管理员,用 QQ 号或 @ 指定",
             permission=PERM_SUPER_ADMIN,
@@ -95,6 +124,53 @@ def build_builtin_commands(service: "CommandService") -> list[Command]:
                 ("QQ号|@某人", "必填。要移除的次级管理员 QQ 号,或直接 @ 对方"),
             ),
             handler=_handle_del_admin,
+        ),
+        Command(
+            name="linkqq",
+            description=(
+                "把用户与本通道真实 QQ 号映射：只给 QQ 号时映射发送者本人；"
+                "@ 一个用户再给 QQ 号时映射对方；官方仅 AT 事件的群必须用 self 显式映射自己。\n"
+                "官方 openid 之后会显示为 QQ 号，管理员/名单也能按真实 QQ 号识别"
+            ),
+            permission=PERM_SUB_ADMIN,
+            usage="<QQ号> 或 <@用户> <QQ号> 或 self <QQ号>",
+            params=(
+                ("QQ号", "必填。真实 QQ 号（5~11 位纯数字）；不 @ 人时映射发送者自己"),
+                ("@用户", "可选。要映射的当前通道用户；提供时映射对方"),
+                ("self", "官方只收到 AT 事件、平台不给 @ 信息时，显式声明映射发送者本人"),
+            ),
+            at_args=(0,),
+            handler=_handle_link_qq,
+        ),
+        Command(
+            name="linkgroup",
+            description=(
+                "把当前群与真实 QQ 群号映射：官方群的 openid 之后会显示为群号，"
+                "群黑白名单也按真实群号识别"
+            ),
+            permission=PERM_SUB_ADMIN,
+            usage="<群号>",
+            params=(("群号", "必填。当前群的真实 QQ 群号（5~12 位纯数字）"),),
+            handler=_handle_link_group,
+        ),
+        Command(
+            name="unlinkqq",
+            description="解除用户与真实 QQ 号的 trusted 映射（仅超级管理员）",
+            permission=PERM_SUPER_ADMIN,
+            usage="<用户ID|QQ号> 或 <@用户>",
+            params=(
+                ("用户ID|QQ号", "必填。要解除映射的用户 ID 或已映射的真实 QQ 号"),
+                ("@用户", "可选。直接 @ 对应用户"),
+            ),
+            handler=_handle_unlink_qq,
+        ),
+        Command(
+            name="unlinkgroup",
+            description="解除当前群与真实群号的 trusted 映射（仅超级管理员）",
+            permission=PERM_SUPER_ADMIN,
+            usage="",
+            params=(),
+            handler=_handle_unlink_group,
         ),
         Command(
             name="sleep",
@@ -253,12 +329,59 @@ async def _handle_reload(ctx: CommandContext) -> str:
     )
 
 
+async def _handle_get(ctx: CommandContext) -> str:
+    """/get openid [@用户] / /get groupid：只读展示当前通道的完整 openid。
+
+    官方通道的 user_id / conv_id 本身就是 openid；OneBot 通道没有 openid，
+    只说明不可用，绝不回显 QQ 号/群号（命令回复遵循「不出现 QQ 号」约定）。
+    """
+    args = [str(arg).strip() for arg in (ctx.args or ()) if str(arg).strip()]
+    sub = args[0].casefold() if args else ""
+    channel = str(getattr(ctx.message, "neobot_channel", "") or "").strip().casefold()
+    official = channel == "official"
+
+    if sub == "openid":
+        bot_id = identity_text(ctx.service._bot_account(ctx.message))
+        targets: list[str] = []
+        for raw in ctx.at_qqs or ():
+            value = identity_text(raw)
+            # 排除 @bot 自身与官方 @ 事件的 qq=0 占位，其余按顺序保留
+            if value and value not in {bot_id, "0"}:
+                targets.append(value)
+        if len(targets) > 1:
+            return "一次只能 @ 一个用户。"
+        if len(args) > 1:
+            return "用法：/get openid 或 /get openid @用户"
+        target = targets[0] if targets else identity_text(ctx.user_id)
+        if not target:
+            return "无法确定用户 ID。"
+        if official:
+            if not targets and bool(getattr(ctx.message, "official_at_event", False)):
+                return (
+                    f"openid：{target}\n"
+                    "（本群官方 bot 只收到 @ 事件，平台不下发被 @ 用户信息；"
+                    "如果你 @ 了别人，这里显示的仍是你自己。查询他人请让对方发送 /get openid。）"
+                )
+            return f"openid：{target}"
+        return "当前通道是 OneBot，没有 openid（openid 仅官方机器人通道可用）。"
+
+    if sub == "groupid":
+        if ctx.kind != "group":
+            return "只能在群聊中使用 /get groupid。"
+        group_id = identity_text(ctx.conv_id)
+        if official:
+            return f"本群 group openid：{group_id}"
+        return "当前通道是 OneBot，没有 group openid（openid 仅官方机器人通道可用）。"
+
+    return "用法：/get openid [@用户] 或 /get groupid"
+
+
 async def _handle_help(ctx: CommandContext) -> str | None:
     """列出当前用户可见的命令;带参数时显示指定命令的详情。
 
-    首选自包含 HTML 卡片(命中预渲染缓存时直接发图),依次降级到
-    markdown→图片与纯文本;任一级成功即视为已回复(spec(5) §4.2 / R5-R9)。
-    返回 None 表示已自行发送回复。
+    首选自包含 HTML 卡片(命中预渲染缓存时直接发图);渲染或发送失败时回退
+    等价纯文本(spec(5) §4.2 / R5-R9)。返回 None 表示已自行发送图片，返回
+    文本表示由命令服务补发纯文本。
     """
     from neobot_app.runtime import help_cache, help_card
 
@@ -339,11 +462,7 @@ def _help_cache_dir(ctx: CommandContext) -> Any:
 
 
 async def _send_text_with_optional_image(ctx: CommandContext, text: str) -> str | None:
-    """提示类文案：先试既有 markdown→图片，失败则交回命令服务发纯文本。"""
-    if await ctx.service.send_markdown_image(
-        ctx.kind, ctx.conv_id, text, at_user_id=ctx.user_id
-    ):
-        return None
+    """提示类文案直接交回命令服务发纯文本，不再尝试图片降级。"""
     return text
 
 
@@ -389,11 +508,7 @@ async def _send_help_card(
     pages: int = 1,
     allow_cache: bool = True,
 ) -> str | None:
-    """三级降级发送 /help 卡片：HTML 卡片 → markdown 图片 → 纯文本。
-
-    任一级成功即返回 None（已回复）；全部失败才把纯文本交回命令服务发送，
-    保证用户一定有反馈（spec(5) R8 / A13）。
-    """
+    """发送 /help 卡片；渲染/发送失败写日志并回退等价纯文本。"""
     from neobot_app.runtime import help_card
     from neobot_app.runtime.html_card import render_card_image
 
@@ -451,16 +566,10 @@ async def _send_help_card(
     ):
         return None
 
-    markdown = help_card.render_payload_markdown(payload)
-    if await ctx.service.send_markdown_image(
-        ctx.kind, ctx.conv_id, markdown, at_user_id=ctx.user_id
-    ):
-        return None
-
-    text = help_card.render_payload_text(payload)
-    if help_card.FALLBACK_HINT not in text:
-        text = f"{text}\n{help_card.FALLBACK_HINT}"
-    return text
+    log = getattr(ctx.service, "_log", None)
+    if callable(log):
+        log("帮助卡片发送失败，已回退纯文本", kind=ctx.kind, conversation_id=ctx.conv_id)
+    return with_hint(help_card.render_payload_text(payload))
 
 
 async def _handle_standby(ctx: CommandContext) -> str:
@@ -725,6 +834,164 @@ def _ai_reply_available(ctx: CommandContext) -> bool:
         return False
 
 
+async def _handle_link_qq(ctx: CommandContext) -> str:
+    """把 @ 到的用户（或发送者本人）与真实 QQ 号绑定（管理员级）。
+
+    只有一个参数时映射**发送者本人**：这是官方通道的主路径（官方不能 @ 其他用户，
+    且被 @ 者信息在官方事件里需要 mentions 才能拿到）。
+    """
+    message = ctx.message
+    bot_account = ctx.service._bot_account(message)
+    bot_id = identity_text(bot_account)
+    args = list(ctx.args or ())
+    targets = [qq for qq in ctx.at_qqs if identity_text(qq) != bot_id]
+    injected = list(getattr(ctx, "at_args_resolved", ()) or ())
+    slots = tuple(getattr(ctx, "at_args_slots", ()) or ())
+    if not targets and not injected and any(
+        str(arg).startswith(("@", "＠")) for arg in args
+    ):
+        return "无法识别被 @ 的用户（官方事件未提供 openid），请让被 @ 者本人发送 /linkqq <QQ号>"
+    if len(targets) > 1:
+        return "一次只能 @ 一个用户。"
+    if injected:
+        # 按注入槽位删除目标，避免按值删到恰好同号的 QQ 参数。
+        injected_indexes = set(slots[: len(injected)])
+        args = [arg for index, arg in enumerate(args) if index not in injected_indexes]
+        target = injected[0]
+    else:
+        target = targets[0] if targets else identity_text(ctx.user_id)
+    qq_args = [arg for arg in args if arg.isdigit()]
+    if len(qq_args) != 1:
+        return (
+            "用法：/linkqq <QQ号>（映射你自己）或 /linkqq @用户 <QQ号>；"
+            "官方仅 AT 事件的群请用 /linkqq self <QQ号>（QQ 号为 5~11 位纯数字）"
+        )
+    qq_number = int(qq_args[0])
+    if not looks_like_real_qq(qq_number, min_digits=5):
+        return "QQ 号必须是 5~11 位纯数字。"
+    if not target:
+        return "无法确定要映射的用户。"
+    if identity_text(target) == bot_id:
+        return "不能把机器人账号映射成普通用户。"
+    permissions = ctx.service.permissions
+    if identity_text(qq_number) in permissions.super_admins and not permissions.is_super_admin(ctx.user_id):
+        return "超级管理员 QQ 的映射只允许超级管理员操作。"
+    channel = str(getattr(message, "neobot_channel", "") or "") or None
+    ok, message_text = link_user_qq(
+        target, qq_number, channel=channel, trusted=True
+    )
+    if not ok:
+        return f"映射失败：{message_text}"
+    # 先由迁移入口在快照/备份保护下完成档案与历史数据合并；失败也不会先删源行。
+    migrator = get_identity_migration()
+    if migrator is not None:
+        try:
+            migrated = await migrator.run()
+            if migrated:
+                message_text += "（历史数据已迁移到 openid）"
+        except Exception:
+            message_text += "（历史数据迁移失败，重启后会重试）"
+        return message_text
+    # 测试/未装配 coordinator 时退回即时档案合并。
+    merger = get_identity_merge()
+    if merger is not None:
+        try:
+            merged = await merger.merge_user(
+                openid=canonical_user_id(target, channel) or target,
+                qq=qq_number,
+                channel=channel,
+            )
+            if merged.get("merged"):
+                message_text += "（历史档案已并入 openid）"
+        except Exception:
+            message_text += "（历史档案合并失败，可重试 /linkqq）"
+    return message_text
+
+
+async def _handle_link_group(ctx: CommandContext) -> str:
+    """把当前群的真实群号映射到本通道群 ID（管理员级）。"""
+    if ctx.kind != "group":
+        return "请在群聊中使用 /linkgroup <群号>。"
+    args = [arg for arg in ctx.args if arg.isdigit()]
+    if len(args) != 1:
+        return "用法：/linkgroup <群号>（群号为 5~12 位纯数字）"
+    channel = str(getattr(ctx.message, "neobot_channel", "") or "") or None
+    ok, message_text = link_group_number(
+        ctx.conv_id, int(args[0]), channel=channel, trusted=True
+    )
+    if not ok:
+        return f"映射失败：{message_text}"
+    # 先由迁移入口在快照/备份保护下完成档案与历史数据合并；失败也不会先删源行。
+    migrator = get_identity_migration()
+    if migrator is not None:
+        try:
+            migrated = await migrator.run()
+            if migrated:
+                message_text += "（历史数据已迁移到 openid）"
+        except Exception:
+            message_text += "（历史数据迁移失败，重启后会重试）"
+        return message_text
+    # 测试/未装配 coordinator 时退回即时档案合并。
+    merger = get_identity_merge()
+    if merger is not None:
+        try:
+            merged = await merger.merge_group(
+                openid=canonical_group_id(ctx.conv_id, channel) or ctx.conv_id,
+                number=int(args[0]),
+                channel=channel,
+            )
+            if merged.get("merged"):
+                message_text += "（历史档案已并入 openid）"
+        except Exception:
+            message_text += "（历史档案合并失败，可重试 /linkgroup）"
+    return message_text
+
+
+async def _handle_unlink_qq(ctx: CommandContext) -> str:
+    """解除用户与真实 QQ 号的 trusted 映射（仅超管）。"""
+    message = ctx.message
+    bot_account = ctx.service._bot_account(message)
+    bot_id = identity_text(bot_account)
+    targets = [qq for qq in ctx.at_qqs if identity_text(qq) != bot_id]
+    channel = str(getattr(message, "neobot_channel", "") or "") or None
+    target: str | None = None
+    if targets:
+        target = identity_text(targets[0])
+    else:
+        args = [arg.strip() for arg in ctx.args if arg.strip()]
+        if len(args) != 1:
+            return "用法：/unlinkqq <用户ID|QQ号> 或 /unlinkqq @用户"
+        raw = identity_text(args[0])
+        if looks_like_real_qq(raw):
+            # 输入真实 QQ 号：反查已映射的本地 ID（openid / 旧合成号）
+            target = openid_for_qq(int(raw), channel) or openid_for_qq(int(raw))
+            if target is None:
+                return f"没有找到 QQ {raw} 对应的已映射用户"
+        else:
+            # 输入 openid / 本地用户 ID：直接解绑
+            target = raw
+    ok, text = unlink_user_qq(target, channel, force=True)
+    return text if ok else f"解除映射失败：{text}"
+
+
+async def _handle_unlink_group(ctx: CommandContext) -> str:
+    """解除当前群与真实群号的 trusted 映射（仅超管）。"""
+    if ctx.kind != "group":
+        return "请在群聊中使用 /unlinkgroup。"
+    channel = str(getattr(ctx.message, "neobot_channel", "") or "") or None
+    ok, text = unlink_group_number(ctx.conv_id, channel, force=True)
+    return text if ok else f"解除映射失败：{text}"
+
+
+def _extract_target_qq(ctx: CommandContext) -> int | None:
+    """兼容旧调用：返回数字 QQ 目标；openid 目标返回 None。"""
+    target = _extract_admin_target(ctx)
+    try:
+        return int(target) if target and str(target).isdigit() else None
+    except (TypeError, ValueError):
+        return None
+
+
 async def _handle_add_admin(ctx: CommandContext) -> str:
     return await _modify_admin(ctx, add=True)
 
@@ -739,7 +1006,13 @@ async def _modify_admin(ctx: CommandContext, *, add: bool) -> str:
     **回复里不出现任何 QQ 号**（含目标本人、其它次级管理员、超级管理员）：
     卡片只画头像 + 人数，纯文本降级也只说人数（issue #85）。
     """
-    target_qq = _extract_target_qq(ctx)
+    target_qq = _extract_admin_target(ctx)
+    if target_qq is not None:
+        # 本地 ID（openid/QQ）已人工映射时，管理员名单统一存真实 QQ 号；
+        # 未映射的官方 openid 直接存 openid（配置本来就支持 openid 字符串）。
+        mapped_qq = trusted_qq_for_user(target_qq)
+        if mapped_qq is not None:
+            target_qq = str(mapped_qq)
     if target_qq is None:
         # 参数缺失：一行提示就够，不上卡片；但仍然**不带任何号码**
         return (
@@ -748,19 +1021,20 @@ async def _modify_admin(ctx: CommandContext, *, add: bool) -> str:
         )
 
     permissions = ctx.service.permissions
-    if target_qq in permissions.super_admins:
+    target_text = identity_text(target_qq)
+    if target_text in permissions.super_admins:
         return "该用户是超级管理员,超级管理员只能通过配置增减,不能通过命令修改。"
 
     current = set(permissions.sub_admins)
     if add:
-        if target_qq in current:
+        if target_text in current:
             return "该用户已是次级管理员。"
-        current.add(target_qq)
+        current.add(target_text)
         action = "添加"
     else:
-        if target_qq not in current:
+        if target_text not in current:
             return "该用户不是次级管理员。"
-        current.discard(target_qq)
+        current.discard(target_text)
         action = "删除"
 
     result = await ctx.service.save_sub_admins(sorted(current))
@@ -769,7 +1043,7 @@ async def _modify_admin(ctx: CommandContext, *, add: bool) -> str:
 
     # 以"磁盘上回读到的列表"为准回复：写盘静默失败时不能再报成功
     persisted = list(result.accounts)
-    wanted = str(target_qq)
+    wanted = target_text
     if (add and wanted not in persisted) or (not add and wanted in persisted):
         return (
             "错误: 配置写入后内容不符合预期，"
@@ -853,18 +1127,33 @@ async def _handle_set_password(ctx: CommandContext) -> str:
     )
 
 
-def _extract_target_qq(ctx: CommandContext) -> int | None:
-    """从参数或 @ 段提取目标 QQ 号(排除 @bot 触发段)。"""
-    bot_account = ctx.service._bot_account()
+def _extract_admin_target(ctx: CommandContext) -> str | None:
+    """从参数或 @ 段提取管理员目标（真实 QQ 号或官方 openid，排除 @bot 段）。
+
+    官方通道 @ 到的是 openid：有 trusted 映射时优先用真实 QQ 号（与旧配置兼容），
+    没有映射时直接返回 openid——配置的 admin/sub_admin 本来就允许 openid 字符串。
+    """
+    bot_account = ctx.service._bot_account(getattr(ctx, "message", None))
+    bot_id = identity_text(bot_account)
     # 优先 @ 段(排除 bot 自己)
     for qq in sorted(ctx.at_qqs):
-        if qq != bot_account:
-            return qq
-    # 参数中的 QQ 号
+        text = identity_text(qq)
+        if not text or text == bot_id:
+            continue
+        if looks_like_real_qq(text, min_digits=5):
+            return str(int(text))
+        mapped = trusted_qq_for_user(text)
+        if mapped:
+            return str(int(mapped))
+        if _OPENID_PATTERN.match(text):
+            return text
+    # 参数中的 QQ 号或 openid
     for arg in ctx.args:
         candidate = arg.strip()
         if candidate.startswith("@"):
             candidate = candidate[1:]
         if _QQ_PATTERN.match(candidate):
-            return int(candidate)
+            return str(int(candidate))
+        if _OPENID_PATTERN.match(candidate):
+            return candidate
     return None

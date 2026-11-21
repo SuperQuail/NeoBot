@@ -73,9 +73,14 @@ class Assets:
 class Notifier:
     def __init__(self):
         self.transitions = []
+        self.previews = []
 
     async def handle_transition(self, transition):
         self.transitions.append(transition)
+
+    async def send_status_preview(self, group_id, **kwargs):
+        """记录 /直播状态 的预览调用，不真的发 QQ 消息。"""
+        self.previews.append((group_id, kwargs))
 
 
 async def make_state(tmp_path):

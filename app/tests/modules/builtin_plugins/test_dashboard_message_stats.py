@@ -115,8 +115,26 @@ async def test_dashboard_counts_messages_with_annotated_event(tmp_path: Path) ->
     stats = metrics.message_stats()
     assert stats["total"] == 1
     assert stats["today"] == 1
-    assert metrics.active_users(5)["items"][0]["user_id"] == 12345
+    assert metrics.active_users(5)["items"][0]["user_id"] == "12345"
     assert stub.stopped is True
+
+
+async def test_active_users_accept_openid_strings(tmp_path: Path) -> None:
+    """官方通道 user_id 是 openid 字符串：活跃用户统计不能按 int 过滤掉。"""
+    metrics = Metrics(data_dir=tmp_path, logger=_NullLogger())
+
+    await metrics.record_message(
+        {
+            "post_type": "message",
+            "message_type": "private",
+            "user_id": "2F1B3C4D5E6F7A8B",
+            "sender": {"nickname": "官方用户"},
+        }
+    )
+
+    items = metrics.active_users(5)["items"]
+    assert [item["user_id"] for item in items] == ["2F1B3C4D5E6F7A8B"]
+    assert items[0]["nickname"] == "官方用户"
 
 
 async def test_dashboard_ignores_non_message_events(tmp_path: Path) -> None:

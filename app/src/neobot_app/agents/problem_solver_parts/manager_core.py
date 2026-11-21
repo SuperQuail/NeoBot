@@ -14,10 +14,9 @@ from .models import (
     ProblemSolverAgentConfig,
     SolveTask,
     _MAX_AGENT_ITERATIONS,
-    _MODE_NOTE_NATIVE,
-    _MODE_NOTE_PTC,
     _json,
 )
+from .prompts import load_mode_note
 
 
 class ProblemSolverManagerCoreMixin:
@@ -51,15 +50,16 @@ class ProblemSolverManagerCoreMixin:
         from neobot_app.agents.problem_solver import _build_system_prompt
         from neobot_app.analysis.prompt_analysis import tools_to_text
 
+        mode_note = (
+            load_mode_note(self._prompt_store, getattr(self._tool_runtime, "mode", "") or "native")
+            if self._tool_runtime is not None
+            else ""
+        )
         prompt = _build_system_prompt(
             self._config,
             prompt_store=self._prompt_store,
             max_iterations=_MAX_AGENT_ITERATIONS,
-            mode_note=(
-                _MODE_NOTE_PTC
-                if getattr(self._tool_runtime, "mode", "") == "ptc"
-                else (_MODE_NOTE_NATIVE if self._tool_runtime is not None else "")
-            ),
+            mode_note=mode_note,
         )
         parts = [("系统提示词", "system", prompt)]
         agent = getattr(self, "_agent", None)

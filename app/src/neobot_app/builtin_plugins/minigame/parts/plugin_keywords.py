@@ -24,13 +24,16 @@ class _PluginKeywordsMixin:
                 hit = game_id
         return hit
 
-    def _event_identity(self, event: Any) -> tuple[int, str, str, str]:
-        """从事件里取出（user_id, user_name, kind, conversation_id）。"""
-        user_id = 0
+    def _event_identity(self, event: Any) -> tuple[int | str, str, str, str]:
+        """从事件里取出（user_id, user_name, kind, conversation_id）。
+
+        user_id 保持原类型：OneBot 是 int，官方通道是 openid 字符串。
+        """
+        user_id: int | str = 0
         conversation_id = ""
         kind = "group"
         if isinstance(event, dict):
-            user_id = int(event.get("user_id") or 0)
+            user_id = event.get("user_id") or 0
             if event.get("group_id") is not None:
                 conversation_id = str(event.get("group_id"))
             else:
@@ -70,7 +73,7 @@ class _PluginKeywordsMixin:
         return guidance
 
     def keyword_guidance(
-        self, *, game_id: str, user_id: int, user_name: str, text: str
+        self, *, game_id: str, user_id: int | str, user_name: str, text: str
     ) -> str:
         """命中关键词后的引导块：写明两个分支（先确认 / 直接执行）。"""
         game = self.game_by_id(game_id)
@@ -78,7 +81,7 @@ class _PluginKeywordsMixin:
         packages = "、".join(preactivate_for(game_id))
         return (
             f"【小游戏·{name}｜关键词入口】\n"
-            f"用户：{user_name or user_id}（QQ {user_id}）说：{text}\n"
+            f"用户：{user_name or user_id}（ID {user_id}）说：{text}\n"
             f"事实：用户提到了「{name}」，程序**没有执行任何游戏动作**；"
             "本轮已按玩法预激活该玩法的工具，你可以直接调用。\n"
             "请按下面两种情况分别处理：\n"

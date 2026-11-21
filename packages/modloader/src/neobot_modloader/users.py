@@ -11,6 +11,12 @@ from pydantic import BaseModel
 from neobot_adapter.model.response import GroupMemberData, StrangerInfoData
 
 
+def _api_id(value: Any) -> int | str:
+    """适配器便捷方法参数：纯数字保持 int（OneBot 习惯），openid 原样传字符串。"""
+    text = str(value or "").strip()
+    return int(text) if text.isdigit() else text
+
+
 @dataclass(frozen=True, slots=True)
 class UserProfile:
     user_id: str
@@ -83,7 +89,7 @@ class UserDirectory:
             return profile
         return None
 
-    async def get(self, user_id: str, *, group_id: str | None = None, refresh: bool = False) -> UserProfile:
+    async def get(self, user_id: int | str, *, group_id: int | str | None = None, refresh: bool = False) -> UserProfile:
         uid = str(user_id)
         key = (uid, str(group_id) if group_id is not None else None)
         if not refresh:
@@ -93,7 +99,7 @@ class UserDirectory:
         adapter = self._require_adapter()
         if group_id is not None:
             try:
-                response = await adapter.get_group_member_info(int(group_id), int(uid))
+                response = await adapter.get_group_member_info(_api_id(group_id), _api_id(uid))
             except Exception:
                 response = None
             if response is not None and getattr(response, "data", None) is not None:
@@ -105,7 +111,7 @@ class UserDirectory:
             if cached_stranger is not None:
                 return cached_stranger
         try:
-            response = await adapter.get_stranger_info(int(uid))
+            response = await adapter.get_stranger_info(_api_id(uid))
         except Exception:
             response = None
         if response is not None and getattr(response, "data", None) is not None:
@@ -137,10 +143,12 @@ class UserDirectory:
             raw=dict(sender),
         )
 
-    async def display_name(self, user_id: str, *, group_id: str | None = None, refresh: bool = False) -> str:
+    async def display_name(self, user_id: int | str, *, group_id: int | str | None = None, refresh: bool = False) -> str:
         return (await self.get(user_id, group_id=group_id, refresh=refresh)).display_name
 
-    async def get_many(self, user_ids: Sequence[str], *, group_id: str | None = None) -> dict[str, UserProfile]:
+    async def get_many(
+        self, user_ids: Sequence[int | str], *, group_id: int | str | None = None
+    ) -> dict[str, UserProfile]:
         if not user_ids:
             return {}
         uid_list: list[str] = []
@@ -166,7 +174,7 @@ class UserDirectory:
                 result[missing[0]] = await self.get(missing[0], group_id=group_id)
                 return {uid: result[uid] for uid in uid_list}
             try:
-                response = await adapter.get_group_member_list(int(group_id))
+                response = await adapter.get_group_member_list(_api_id(group_id))
             except Exception:
                 response = None
             if response is not None and getattr(response, "data", None) is not None:

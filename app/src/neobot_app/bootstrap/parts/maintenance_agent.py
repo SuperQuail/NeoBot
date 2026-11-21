@@ -28,11 +28,9 @@ def _make_maintenance_coro(
     """
     from neobot_chat.runtime.agent import Agent
 
-    from neobot_app.prompt.store import get_template_value
+    from neobot_app.prompt.assets import raw_text
 
-    maintenance_prompt = get_template_value(
-        prompt_store, "maintenance", "system_prompt"
-    )
+    maintenance_prompt = raw_text("maintenance", "system_prompt", store=prompt_store)
 
     from neobot_app.skills.agent_toolset import LiveToolset, SkillToolsetExecutor
 

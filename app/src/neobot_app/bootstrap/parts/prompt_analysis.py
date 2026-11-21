@@ -44,9 +44,9 @@ def _build_prompt_analysis(state: _BuildState) -> None:
         ]
 
     async def _maintenance_agent_parts() -> list:
-        from neobot_app.prompt.store import get_template_value
+        from neobot_app.prompt.assets import raw_text
 
-        prompt = get_template_value(prompt_store, "maintenance", "system_prompt")
+        prompt = raw_text("maintenance", "system_prompt", store=prompt_store)
         from neobot_app.skills.agent_toolset import LiveToolset, SkillToolsetExecutor
 
         definitions = LiveToolset(

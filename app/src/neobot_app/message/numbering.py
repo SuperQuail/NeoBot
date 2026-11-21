@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from neobot_app.bot_accounts import identity_text, is_bot_message
+
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -64,13 +66,18 @@ class MessageNumbering:
         输出的格式去模仿（问题报告的根因）。wait 结果、增量注入、文本回退路径
         都必须和聊天记录渲染保持一致，否则同一条管线里一边禁止一边示范。
         """
-        is_self = (
-            self._bot_account is not None
-            and getattr(message, "user_id", None) == self._bot_account
-        )
+        # 自身发言由统一提供者判定（self_id/通道/config 细节不可见）；直接构造
+        # MessageNumbering 并显式注入 bot_account 的旧测试/调用在没有绑定时兜底。
+        is_self = is_bot_message(message)
+        bot_text = identity_text(self._bot_account)
+        if not is_self and bot_text:
+            # 未绑定统一提供者的旧路径：user_id 可能是 openid 字符串，按字符串比较
+            is_self = identity_text(getattr(message, "user_id", None)) == bot_text
         marker = "[被回复消息] " if replied else ""
         if is_self:
-            return f"[msg_id={msg_id}] {marker}{content}"
+            # 自身发言不渲染 msg_id：负数合成 id 不是可引用的真实消息号，
+            # 渲染出来只会被模型模仿；与 role_messages 的 assistant 分支一致。
+            return f"{marker}{content}"
         return f"[msg_id={msg_id}] {number}: {marker}{sender}: {content}"
 
     def apply(
@@ -145,6 +152,9 @@ class MessageNumbering:
                 poke_count += 1
                 lines.append(queue._poke_to_text(entry.poke, poke_index=poke_count))
             elif entry.kind.value == "notification" and entry.notification is not None:
+                lines.append(queue._entry_to_text(entry, sender_labels=sender_labels))
+            elif entry.kind.value == "tool_call" and entry.tool_call is not None:
+                # 非发送工具只回放 compact 一行，参数/结果不进聊天管线
                 lines.append(queue._entry_to_text(entry, sender_labels=sender_labels))
             if last_reply_message_id is not None and entry.kind.value == "message" and entry.message is not None and entry.message.message_id == last_reply_message_id:
                 lines.append("<以上是上次对话回复过的内容>")
@@ -224,6 +234,8 @@ class MessageNumbering:
                 lines.append(queue._poke_to_text(entry.poke, poke_index=poke_count))
             elif entry.kind == QueueEntryType.NOTIFICATION and entry.notification is not None:
                 lines.append(queue._entry_to_text(entry, sender_labels=sender_labels))
+            elif entry.kind == QueueEntryType.TOOL_CALL and entry.tool_call is not None:
+                lines.append(queue._entry_to_text(entry, sender_labels=sender_labels))
         return "\n".join(lines)
 
     def apply_raw_messages(self, messages: list, queue: "MessageQueue") -> str:
@@ -261,7 +273,7 @@ class MessageNumbering:
             "消息格式说明：别人的消息以“[msg_id=真实message_id] 编号: 用户名: 消息内容”的格式呈现。\n"
             "- 行首方括号中的 msg_id= 即真实 OneBot message_id：工具参数需要 message_id 时"
             "（如 message_id、chat: 前缀等），直接使用它，不要再查映射。\n"
-            "- 编号（msg_id 之后的数字）用于 reply_to / msg_number 参数指定回复目标消息。\n"
+            "- 编号（msg_id 之后的数字）用于 reply_to_number / msg_number 参数指定回复目标消息。\n"
             "例如：[msg_id=1425980020] 1: 小明: 你好\n"
             "- 这套标注只是系统给你阅读用的，**不是你的输出格式**：你自己发言时只发正文，"
             "不要带 [msg_id=...]、编号或发送者名字。\n"

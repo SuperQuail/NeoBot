@@ -215,13 +215,19 @@ async def test_points_get_creates_zero_account_for_unknown_user(runtime) -> None
     assert data["checked_in_today"] is False
 
 
-async def test_points_get_requires_numeric_user_id(runtime) -> None:
+async def test_points_get_accepts_openid_user_id(runtime) -> None:
+    """官方通道的用户 ID 是 openid 字符串：对外能力必须接受，不能只认数字 QQ。"""
+    data = await _call("points.get", {"user_id": "2F1B3C4D5E6F7A8B"})
+
+    assert data["user_id"] == "2F1B3C4D5E6F7A8B"
+    assert data["score"] == 0
+
+
+async def test_points_get_rejects_missing_and_overlong_user_id(runtime) -> None:
     with pytest.raises(ValueError, match="缺少 user_id"):
         await _call("points.get", {})
-    with pytest.raises(ValueError, match="数字 QQ 号"):
-        await _call("points.get", {"user_id": "小明"})
-    with pytest.raises(ValueError, match="数字 QQ 号"):
-        await _call("points.get", {"user_id": "1" * 33})
+    with pytest.raises(ValueError, match="过长"):
+        await _call("points.get", {"user_id": "1" * 129})
 
 
 # ── 能力层：points.add ──────────────────────────────────────────

@@ -90,7 +90,7 @@ async def test_returns_rendered_text_with_sender_name():
     assert result["truncated"] is False
     assert result["messages"][0] == "甲: 你好"
     assert result["messages"][1] == "乙: 在的"
-    assert adapter.calls == [("group", 888888, 0, 20, False)]
+    assert adapter.calls == [("group", "888888", 0, 20, False)]
 
 
 @pytest.mark.asyncio
@@ -100,7 +100,7 @@ async def test_private_conversation_uses_friend_history():
     result = await _run(adapter, {"conversation_kind": "private", "conversation_id": "12345"})
 
     assert result["ok"] is True
-    assert adapter.calls == [("private", 12345, 0, 20, False)]
+    assert adapter.calls == [("private", "12345", 0, 20, False)]
 
 
 @pytest.mark.asyncio
@@ -167,15 +167,27 @@ async def test_invalid_message_seq_and_reverse_order_do_not_raise():
 
 
 @pytest.mark.asyncio
-async def test_bad_conversation_kind_and_id_are_rejected_before_api_call():
+async def test_bad_conversation_kind_and_empty_id_are_rejected_before_api_call():
     adapter = _FakeAdapter(_response([_item()]))
 
     bad_kind = await _run(adapter, {"conversation_kind": "群聊", "conversation_id": "888888"})
-    bad_id = await _run(adapter, {"conversation_kind": "group", "conversation_id": "abc"})
+    empty_id = await _run(adapter, {"conversation_kind": "group", "conversation_id": "  "})
 
     assert bad_kind["ok"] is False and "conversation_kind" in bad_kind["error"]
-    assert bad_id["ok"] is False and "conversation_id" in bad_id["error"]
+    assert empty_id["ok"] is False and "conversation_id" in empty_id["error"]
     assert adapter.calls == []
+
+
+async def test_openid_conversation_id_passes_through():
+    """官方通道会话 ID 是 openid 字符串：不再要求纯数字，原样传给适配器。"""
+    adapter = _FakeAdapter(_response([_item()]))
+
+    result = await _run(
+        adapter, {"conversation_kind": "group", "conversation_id": "A1B2C3openid"}
+    )
+
+    assert result["ok"] is True
+    assert adapter.calls == [("group", "A1B2C3openid", 0, 20, False)]
 
 
 @pytest.mark.asyncio

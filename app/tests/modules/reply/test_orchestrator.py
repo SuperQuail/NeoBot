@@ -343,7 +343,7 @@ async def test_private_pipeline_event_reaches_completed_state(monkeypatch):
 @pytest.mark.parametrize(
     "name,args,expected",
     [
-        ("poke_user", {"user_id": 1}, "poke_user|{\"user_id\": 1}"),
+        ("poke_user", {"target_qq": 1}, "poke_user|{\"target_qq\": 1}"),
         ("t", {"b": 1, "a": 2}, "t|{\"a\": 2, \"b\": 1}"),
     ],
 )
@@ -401,7 +401,7 @@ def _poke_call(call_id: str) -> dict:
     return {
         "id": call_id,
         "type": "function",
-        "function": {"name": "poke_user", "arguments": json.dumps({"user_id": 10002})},
+        "function": {"name": "poke_user", "arguments": json.dumps({"target_qq": 10002})},
     }
 
 
@@ -919,7 +919,7 @@ def test_render_skills_escapes_xml_fully():
         name = "weather"
         description = "说\"好\"<a> & '引'"
 
-    text = ReplyOrchestrator._render_skills([_Skill()])
+    text = _make_orchestrator()._render_skills([_Skill()])
 
     assert "&amp;" in text
     assert "&lt;" in text
@@ -1288,7 +1288,7 @@ async def test_disallowed_tool_is_rejected_before_consuming_before_hook(monkeypa
                         "type": "function",
                         "function": {
                             "name": "poke_user",
-                            "arguments": '{"user_id": 1}',
+                            "arguments": '{"target_qq": 1}',
                         },
                     }
                 ],
@@ -2373,7 +2373,15 @@ async def test_common_native_vision_loads_current_message_without_tools():
     messages, tools = provider.calls[0]
     assert tools is None
     assert messages[-1]["role"] == "user"
-    assert any(part.get("type") == "image_url" for part in messages[-1]["content"])
+    # 契约：图片上下文属于 RUNTIME_DATA，排在提醒/时间块之前；时间块仍是最后一条
+    assert "<当前时间>" in messages[-1]["content"]
+    image_messages = [
+        item
+        for item in messages
+        if isinstance(item.get("content"), list)
+        and any(part.get("type") == "image_url" for part in item["content"])
+    ]
+    assert image_messages, "原生视觉图片消息缺失"
     await orch.shutdown()
 
 
@@ -2467,6 +2475,9 @@ class _DisabledPromptStore:
 
     def template(self, key: str, default: str = "") -> str:
         return self._inner.template(key, default)
+
+    def get_section(self, key: str):
+        return self._inner.get_section(key)
 
 
 def _builtin_prompts(*disabled: str):
@@ -2893,8 +2904,9 @@ async def test_avoid_repeat_appended_once_per_activation_verbatim(monkeypatch):
 
     first = provider.calls[0][0]
     second = provider.calls[1][0]
-    assert first[-1] == {"role": "user", "content": text}
-    assert "<当前时间>" in first[-2]["content"]
+    # 契约：REMINDER 在 TIME 之前，时间块是请求的最后一条消息
+    assert first[-2] == {"role": "user", "content": text}
+    assert "<当前时间>" in first[-1]["content"]
     assert _count_content(first, text) == 1
     assert _count_content(second, text) == 1
 
@@ -2935,8 +2947,9 @@ async def test_common_path_appends_avoid_repeat_once(monkeypatch):
     await _wait_until_idle(orch)
 
     messages = provider.calls[0][0]
-    assert messages[-1] == {"role": "user", "content": text}
-    assert "<当前时间>" in messages[-2]["content"]
+    # 契约：防重复提醒在时间块之前，时间块始终是最后一条消息
+    assert messages[-2] == {"role": "user", "content": text}
+    assert "<当前时间>" in messages[-1]["content"]
     assert _count_content(messages, text) == 1
     await orch.shutdown()
 
@@ -3161,6 +3174,76 @@ async def test_no_tool_call_reminder_then_cancel(monkeypatch):
     await orch.shutdown()
 
 
+def test_unsent_marker_is_peeked_until_success_clears_it():
+    """跨轮标记只在成功 send/cancel 后清除；激活 prepare 只 peek、不消费。"""
+    orch = _make_orchestrator()
+    event = SimpleNamespace(
+        conversation_ref=SimpleNamespace(kind="private", id="123456")
+    )
+
+    orch._mark_unsent_marker(event)
+    assert orch._take_unsent_marker(event) is True
+    # 再次 prepare 仍能看到，说明 peek 没有消费
+    assert orch._take_unsent_marker(event) is True
+
+    orch._clear_unsent_marker(event)
+    assert orch._take_unsent_marker(event) is False
+
+
+async def test_prev_no_tool_reminder_injected_after_cancelled_activation(monkeypatch):
+    """上一次激活只输出正文被取消后，下一次激活要带一条跨轮纠正提醒。"""
+    provider = _ScriptedProvider([
+        {"content": "草稿一", "tool_calls": []},
+        {"content": "草稿二", "tool_calls": []},
+        _send_reply_response("收到"),
+        {"content": "", "tool_calls": []},
+        _send_reply_response("再来"),
+        {"content": "", "tool_calls": []},
+    ])
+    orch = _make_orchestrator(provider=provider)
+    queue = MessageQueue()
+
+    async def _no_suspend(source, snapshot, queue_key):
+        return [], None
+
+    monkeypatch.setattr(orch, "_suspend_private_chat", _no_suspend)
+
+    async def _run(message):
+        event = orch.start_reply(
+            message=message, queue=queue, queue_key="123456", decision=_make_decision()
+        )
+        for _ in range(300):
+            if not orch._active_pipelines:
+                break
+            await asyncio.sleep(0.01)
+        return event
+
+    first = await _run(_make_private_message(message_id=1, text="第一条"))
+    assert first.state.name == "CANCELLED"
+
+    second = await _run(_make_private_message(message_id=2, text="第二条"))
+    assert second.state.name == "COMPLETED"
+    # event1 用了 2 次调用；event2 的首个请求必须包含跨轮提醒
+    assert len(provider.calls) >= 3
+    second_messages = provider.calls[2][0]
+    assert any(
+        "上一次只输出了正文" in str(m.get("content") or "")
+        for m in second_messages
+        if isinstance(m, dict)
+    )
+
+    third = await _run(_make_private_message(message_id=3, text="第三条"))
+    assert third.state.name == "COMPLETED"
+    assert len(provider.calls) >= 5
+    third_messages = provider.calls[4][0]
+    assert all(
+        "上一次只输出了正文" not in str(m.get("content") or "")
+        for m in third_messages
+        if isinstance(m, dict)
+    )
+    await orch.shutdown()
+
+
 # ── 表情包/语音发出即视为已回复（回归：不得判 CANCELLED 或多拉模型）──
 
 
@@ -3209,8 +3292,8 @@ async def _run_media_only_pipeline(monkeypatch, provider, **orch_extra):
     return event
 
 
-async def test_send_emoji_only_round_counts_as_replied(monkeypatch, tmp_path):
-    """只发一张表情包也算已回复；send_emoji 是普通工具，不结束本轮，
+async def test_send_reply_images_only_round_counts_as_replied(monkeypatch, tmp_path):
+    """只发一张表情包（send_reply.emoji_numbers）也算已回复；send_reply 是普通工具，不结束本轮，
     发完仍会再拉一次模型收束，事件进 COMPLETED。"""
     emoji_file = tmp_path / "emoji.png"
     emoji_file.write_bytes(_PNG_1X1)
@@ -3225,7 +3308,7 @@ async def test_send_emoji_only_round_counts_as_replied(monkeypatch, tmp_path):
         {
             "content": "",
             "tool_calls": [
-                _media_tool_call("call-emoji", "send_emoji", json.dumps({"number": 3}))
+                _media_tool_call("call-emoji", "send_reply", json.dumps({"emoji_numbers": [3]}))
             ],
         }
     ])
@@ -3271,7 +3354,7 @@ async def test_speak_only_round_counts_as_replied(monkeypatch):
 
 
 
-async def test_send_emoji_then_cancel_keeps_completed(monkeypatch, tmp_path):
+async def test_send_reply_images_then_cancel_keeps_completed(monkeypatch, tmp_path):
     """emoji 已真实发出后 cancel 不能把事件改回 CANCELLED。"""
     emoji_file = tmp_path / "emoji.png"
     emoji_file.write_bytes(_PNG_1X1)
@@ -3296,7 +3379,7 @@ async def test_send_emoji_then_cancel_keeps_completed(monkeypatch, tmp_path):
         {
             "content": "",
             "tool_calls": [
-                _media_tool_call("call-emoji", "send_emoji", json.dumps({"number": 3}))
+                _media_tool_call("call-emoji", "send_reply", json.dumps({"emoji_numbers": [3]}))
             ],
         },
         cancel,

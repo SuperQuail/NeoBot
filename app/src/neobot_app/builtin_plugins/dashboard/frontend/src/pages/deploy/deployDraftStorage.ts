@@ -17,6 +17,7 @@ export function loadDeployDraft(): DeployDraft | null {
       persona: String(value.persona ?? ''),
       adminQq: String(value.adminQq ?? ''),
       chance: String(value.chance ?? '0.3'),
+      qqAppId: String(value.qqAppId ?? ''),
     };
   } catch {
     return null;

@@ -103,6 +103,25 @@ async def test_preview_generates_without_publishing() -> None:
     assert client.published == []
 
 
+async def test_prompt_store_override_reaches_diary_prompt(tmp_path) -> None:
+    from neobot_app.prompt.store import PromptStore
+
+    custom = tmp_path / "prompts" / "custom" / "prompts.toml"
+    custom.parent.mkdir(parents=True)
+    custom.write_text('[bili_diary]\nrules = "自定义动态规则-MARK"\n', encoding="utf-8")
+    provider = FakeProvider("今天很开心")
+    service = _service(provider, FakeClient(), prompt_store=PromptStore(tmp_path))
+
+    await service.generate()
+
+    system = next(
+        str(item.get("content") or "")
+        for item in provider.calls[0]
+        if item.get("role") == "system"
+    )
+    assert "自定义动态规则-MARK" in system
+
+
 async def test_publish_calls_client_and_returns_dynamic_id() -> None:
     client = FakeClient(dynamic_id=123)
     service = _service(FakeProvider("今天很开心"), client)

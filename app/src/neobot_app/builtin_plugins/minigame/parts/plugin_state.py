@@ -131,7 +131,7 @@ class _PluginStateMixin:
         game: str = "",
     ) -> dict[str, Any]:
         record = {
-            "user_id": int(user_id or 0),
+            "user_id": str(user_id or ""),
             "user_name": str(user_name or ""),
             "kind": str(kind or "group"),
             "conversation_id": str(conversation_id or ""),
@@ -197,7 +197,7 @@ class _PluginStateMixin:
             command_ctx=None,
             args=raw_args.split() if raw_args else [],
             raw_args=raw_args,
-            user_id=int(uid) if str(uid).isdigit() else 0,
+            user_id=str(uid or ""),
             user_name=name,
             kind=str(record.get("kind") or "group"),
             conversation_id=str(record.get("conversation_id") or ""),

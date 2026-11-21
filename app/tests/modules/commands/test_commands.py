@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from types import SimpleNamespace
+
 
 from neobot_app.commands.builtin import _extract_target_qq
 from neobot_app.commands.model import (
@@ -179,7 +182,7 @@ async def test_add_admin_by_qq() -> None:
         queue_key="42",
     )
     assert result.consumed is True
-    assert saved == [[SUB, 40000]]
+    assert saved == [[str(SUB), "40000"]]
 
 
 async def test_add_admin_by_at() -> None:
@@ -190,7 +193,7 @@ async def test_add_admin_by_at() -> None:
         queue_key="42",
     )
     assert result.consumed is True
-    assert saved == [[SUB, 50000]]
+    assert saved == [[str(SUB), "50000"]]
 
 
 async def test_add_admin_super_admin_protected() -> None:
@@ -309,3 +312,180 @@ async def test_permissions_reflect_config_reload() -> None:
     )
     # 40000 现在是次级管理员,但 add_admin 需要超级管理员权限 → 拒绝并消费
     assert result.consumed is True
+
+
+@pytest.mark.asyncio
+async def test_command_at_args_wildcard_injects_mentioned_user():
+    from neobot_adapter.model.message import GroupMessage, MessageSegment
+    from neobot_app.commands.model import Command
+
+    seen = {}
+
+    async def handler(ctx):
+        seen["args"] = list(ctx.args)
+        return "ok"
+
+    async def _send(*args, **kwargs):
+        return None
+
+    config = SimpleNamespace(chat=SimpleNamespace(admin_accounts=[], sub_admin_accounts=[]), bot=SimpleNamespace(account=88888))
+    service = CommandService(config=config, send_callback=_send)
+    service.registry.register(
+        Command(name="echo_at", description="", handler=handler, permission=PERM_EVERYONE, at_args=(0,))
+    )
+    message = GroupMessage(
+        message_id=1,
+        user_id="SENDER_OPENID",
+        group_id="GROUP",
+        neobot_channel="official",
+        self_id=88888,
+        mentioned_self=True,
+        message=[
+            MessageSegment(type="at", data={"qq": 88888}),
+            MessageSegment(type="text", data={"text": " /echo_at hello"}),
+            MessageSegment(type="at", data={"qq": "TARGET_OPENID"}),
+        ],
+    )
+    await service.handle_message(message, kind="group", queue_key="GROUP")
+    assert seen["args"] == ["TARGET_OPENID", "hello"]
+
+
+def _official_at_only_message(user_id: str, text: str):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        user_id=user_id,
+        official_at_event=True,
+        neobot_channel="official",
+        message=[
+            {"type": "at", "data": {"qq": 88888}},
+            {"type": "text", "data": {"text": text}},
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_at_args_auto_errors_on_official_at_event_without_target():
+    seen = {}
+
+    async def handler(ctx):
+        seen["args"] = list(ctx.args)
+        return "ok"
+
+    sent: list[str] = []
+
+    async def _send(kind, conv, text, at_user_id):
+        sent.append(text)
+
+    config = SimpleNamespace(chat=SimpleNamespace(admin_accounts=[], sub_admin_accounts=[]), bot=SimpleNamespace(account=88888))
+    service = CommandService(config=config, send_callback=_send)
+    service.registry.register(Command(name="echo_at", description="", handler=handler, permission=PERM_EVERYONE, at_args=(0,)))
+    message = _official_at_only_message("SENDER_OPENID", " /echo_at hello")
+    await service.handle_message(message, kind="group", queue_key="GROUP")
+    assert seen == {}
+    assert "无法判断" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_at_args_self_token_resolves_sender():
+    seen = {}
+
+    async def handler(ctx):
+        seen["args"] = list(ctx.args)
+        return "ok"
+
+    async def _send(kind, conv, text, at_user_id):
+        return None
+
+    config = SimpleNamespace(chat=SimpleNamespace(admin_accounts=[], sub_admin_accounts=[]), bot=SimpleNamespace(account=88888))
+    service = CommandService(config=config, send_callback=_send)
+    service.registry.register(Command(name="echo_at", description="", handler=handler, permission=PERM_EVERYONE, at_args=(0,)))
+    message = _official_at_only_message("SENDER_OPENID", " /echo_at self hello")
+    await service.handle_message(message, kind="group", queue_key="GROUP")
+    assert seen["args"] == ["SENDER_OPENID", "hello"]
+
+
+@pytest.mark.asyncio
+async def test_at_args_permission_checked_before_ambiguity_error():
+    sent: list[str] = []
+
+    async def _send(kind, conv, text, at_user_id):
+        sent.append(text)
+
+    async def handler(ctx):
+        return "ok"
+
+    config = SimpleNamespace(chat=SimpleNamespace(admin_accounts=[], sub_admin_accounts=[]), bot=SimpleNamespace(account=88888))
+    service = CommandService(config=config, send_callback=_send)
+    service.registry.register(Command(name="echo_perm", description="", handler=handler, permission=PERM_SUB_ADMIN, at_args=(0,)))
+    message = _official_at_only_message("999", " /echo_perm hello")
+    await service.handle_message(message, kind="group", queue_key="GROUP")
+    assert "没有权限" in sent[-1]
+    assert "无法判断" not in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_at_args_multi_slot_only_fills_available_targets():
+    seen = {}
+
+    async def handler(ctx):
+        seen["args"] = list(ctx.args)
+        return "ok"
+
+    async def _send(kind, conv, text, at_user_id):
+        return None
+
+    config = SimpleNamespace(chat=SimpleNamespace(admin_accounts=[], sub_admin_accounts=[]), bot=SimpleNamespace(account=88888))
+    service = CommandService(config=config, send_callback=_send)
+    service.registry.register(Command(name="echo_multi", description="", handler=handler, permission=PERM_EVERYONE, at_args=(0, 1)))
+    message = _official_at_only_message("SENDER_OPENID", " /echo_multi hello")
+    message.message.insert(1, {"type": "at", "data": {"qq": "TARGET_OPENID"}})
+    await service.handle_message(message, kind="group", queue_key="GROUP")
+    assert seen["args"] == ["TARGET_OPENID", "hello"]
+
+
+@pytest.mark.asyncio
+async def test_at_args_self_token_outside_slot_not_swallowed():
+    seen = {}
+
+    async def handler(ctx):
+        seen["args"] = list(ctx.args)
+        return "ok"
+
+    async def _send(kind, conv, text, at_user_id):
+        return None
+
+    config = SimpleNamespace(chat=SimpleNamespace(admin_accounts=[], sub_admin_accounts=[]), bot=SimpleNamespace(account=88888))
+    service = CommandService(config=config, send_callback=_send)
+    service.registry.register(Command(name="echo_self", description="", handler=handler, permission=PERM_EVERYONE, at_args=(0,)))
+    message = SimpleNamespace(user_id="SENDER_OPENID", neobot_channel="official", message=[{"type": "at", "data": {"qq": 88888}}, {"type": "text", "data": {"text": " /echo_self hello self"}}])
+    await service.handle_message(message, kind="group", queue_key="GROUP")
+    assert seen["args"] == ["hello", "self"]
+
+
+@pytest.mark.asyncio
+async def test_plugin_command_at_args_gets_wildcard_behavior():
+    from neobot_adapter.model.message import GroupMessage, MessageSegment
+    from neobot_modloader.context import PluginCommand
+
+    seen = {}
+
+    async def handler(ctx):
+        seen["args"] = list(ctx.args)
+        return "ok"
+
+    async def _send(kind, conv, text, at_user_id):
+        return None
+
+    config = SimpleNamespace(chat=SimpleNamespace(admin_accounts=[], sub_admin_accounts=[]), bot=SimpleNamespace(account=88888))
+    service = CommandService(config=config, send_callback=_send)
+    service.registry.register(
+        PluginCommand(name="plug_at", description="", handler=handler, permission=0, at_args=(0,))
+    )
+    message = GroupMessage(
+        message_id=1, user_id="SENDER", group_id="GROUP", neobot_channel="official", self_id=88888, mentioned_self=True,
+        message=[MessageSegment(type="at", data={"qq": 88888}), MessageSegment(type="text", data={"text": " /plug_at hi"}), MessageSegment(type="at", data={"qq": "TARGET"})],
+    )
+    await service.handle_message(message, kind="group", queue_key="GROUP")
+    assert seen["args"] == ["TARGET", "hi"]
+

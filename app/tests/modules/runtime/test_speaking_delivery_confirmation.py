@@ -34,7 +34,6 @@ class PromptBuilder:
         ("emoji", [1, 2], 1, False),
         ("emoji", [1, 2], 2, True),
         ("emoji", [1, 99], 1, True),
-        ("markdown", [], 1, True),
         ("long", [], 1, True),
     ],
 )
@@ -59,8 +58,6 @@ async def test_media_confirmation_survives_stalled_image_index(tmp_path, monkeyp
 
     class Provider:
         async def chat(self, messages, tools=None):
-            if kind == "markdown":
-                return {"content": "完整的 Markdown 回复"}
             name = "send_long_reply" if kind == "long" else "send_reply"
             args = {"image_path": str(image)} if kind == "long" else {"text": "cancel", "images": images}
             return {

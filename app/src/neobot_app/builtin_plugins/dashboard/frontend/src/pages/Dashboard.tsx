@@ -5,6 +5,7 @@ import { api } from '../api/endpoints';
 import { useQuery } from '../data/useQuery';
 import { POLL, QK } from '../data/queryKeys';
 import { fmtUptime, fmtNum, mapTag } from '../utils/format';
+import { displayId } from '../utils/identity';
 import StatCard from '../components/StatCard';
 import SystemResourceCard from '../components/SystemResourceCard';
 import MessageTrendCard from '../components/MessageTrendCard';
@@ -75,7 +76,7 @@ export default function Dashboard() {
         <StatCard
           label="机器人"
           value={d.bot_nickname || '等待连接'}
-          sub={d.bot_user_id ? `QQ ${d.bot_user_id}` : '尚未连接 OneBot'}
+          sub={d.bot_user_id ? displayId(d.bot_user_id) : '尚未连接 OneBot'}
           icon={<BotGlyph size={16} />}
         />
         <StatCard
@@ -147,7 +148,7 @@ export default function Dashboard() {
                   <strong title={bot.name}>{bot.name}</strong>
                   <span>
                     {bot.platform || 'OneBot'}
-                    {bot.user_id ? ` · ${bot.user_id}` : ''}
+                    {bot.user_id ? ` · ${displayId(bot.user_id)}` : ''}
                   </span>
                 </div>
                 <div className="monitor-item-side">

@@ -87,7 +87,9 @@ class PromptsMixin:
         values = payload.get("values")
         if values is not None and not isinstance(values, dict):
             return _json_error("values 必须是对象")
-        result = prompt_admin.preview_template(str(template), values or {})
+        result = prompt_admin.preview_template(
+            str(template), values or {}, self._prompt_store()
+        )
         return _json_ok(result)
 
     async def prompts_save(self, request: web.Request) -> web.Response:

@@ -15,6 +15,16 @@ def normalize_model_key(value: Any) -> str:
     return text[:64]
 
 
+#: [bot].official_mode 的合法取值
+OFFICIAL_MODES = ("auto", "official", "unofficial")
+
+
+def normalize_official_mode(value: Any) -> str:
+    """把 [bot].official_mode 规范化为 auto/official/unofficial；未识别的值回落 auto。"""
+    text = str(value or "").strip().casefold()
+    return text if text in OFFICIAL_MODES else "auto"
+
+
 class KeyWordRule(TypedDict, total=False):
     """关键词规则类型。"""
 
@@ -28,13 +38,31 @@ class KeyWordRule(TypedDict, total=False):
     description: str
 
 
+ID_CONFIG_NOTE = (
+    "官方适配器下 QQ 号/群号无效：请到前端控制台「聊天流」复制完整 openid 填入；"
+    "OneBot 模式仍使用 QQ 号/群号。"
+)
+
+
 @dataclass
 class Bot:
     """机器人基础配置。"""
 
     account: int = field(
         default=0,
-        metadata={"description": "机器人QQ号", "placeholder": True},
+        metadata={
+            "description": "机器人 QQ 号（OneBot 模式）；官方适配器会自动从 API 获取，无需填写。",
+            "placeholder": True,
+        },
+    )
+    official_mode: str = field(
+        default="auto",
+        metadata={
+            "description": (
+                "QQ 通道判定方式：auto 在连接建立后按 get_version_info 自动判定；"
+                "official / unofficial 强制指定。未连接时不判定"
+            )
+        },
     )
     nick_name: str = field(default="Neo Bot", metadata={"description": "Bot昵称"})
     alias_name: Optional[List[str]] = field(
@@ -79,15 +107,18 @@ class Chat:
     )
     group_list: Optional[List[str]] = field(
         default_factory=lambda: ["111111", "222222"],
-        metadata={"description": "群名单"},
+        metadata={"description": f"群名单（群号或 openid）。{ID_CONFIG_NOTE}"},
     )
     group_response_coefficient: Optional[Dict[str, float]] = field(
         default_factory=lambda: {"111111": 0.5, "222222": 0.5},
-        metadata={"description": "群聊回复系数", "aliases": ("group_Response_coefficient",)},
+        metadata={
+            "description": f"群聊回复系数，key 为群号或 openid。{ID_CONFIG_NOTE}",
+            "aliases": ("group_Response_coefficient",),
+        },
     )
     group_description: Optional[Dict[str, str]] = field(
         default_factory=lambda: {"111111": "这是不知道谁不知道干什么的群"},
-        metadata={"description": "群描述"},
+        metadata={"description": f"群描述，key 为群号或 openid。{ID_CONFIG_NOTE}"},
     )
     max_friend_chat_observations: Optional[int] = field(
         default=200,
@@ -99,15 +130,15 @@ class Chat:
     )
     friend_list: Optional[List[str]] = field(
         default_factory=lambda: ["111111", "222222"],
-        metadata={"description": "好友名单"},
+        metadata={"description": f"好友名单（QQ号或 openid）。{ID_CONFIG_NOTE}"},
     )
-    reply_blacklist: Optional[List[int]] = field(
+    reply_blacklist: Optional[List[str]] = field(
         default_factory=list,
-        metadata={"description": "回复黑名单(QQ号)，名单内用户@Bot时不强制追加回复要求"},
+        metadata={"description": f"回复黑名单（QQ号或 openid），名单内用户@Bot时不强制追加回复要求。{ID_CONFIG_NOTE}"},
     )
     friend_description: Optional[Dict[str, str]] = field(
         default_factory=lambda: {"111111": "这是不知道谁不知道干什么的人"},
-        metadata={"description": "好友描述"},
+        metadata={"description": f"好友描述，key 为 QQ 号或 openid。{ID_CONFIG_NOTE}"},
     )
     key_word: Optional[List[KeyWordRule]] = field(
         default_factory=lambda: [

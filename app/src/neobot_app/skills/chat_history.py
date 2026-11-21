@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
+from neobot_app.user_identity import display_user_id
 from neobot_app.message.process import history_message_to_text
 from neobot_app.skills.base import SkillModule
 
@@ -58,7 +59,7 @@ def _sender_name(item: Any) -> str:
     if name:
         return str(name)
     user_id = getattr(item, "user_id", None)
-    return f"QQ:{user_id}" if user_id else "未知用户"
+    return display_user_id(user_id) if user_id else "未知用户"
 
 
 class ChatHistorySkill(SkillModule):
@@ -102,7 +103,10 @@ class ChatHistorySkill(SkillModule):
                             "enum": ["group", "private"],
                             "description": "会话类型",
                         },
-                        "conversation_id": {"type": "string", "description": "群号或好友QQ号"},
+                        "conversation_id": {
+                            "type": "string",
+                            "description": "会话 ID（OneBot 为群号/好友QQ号，官方通道为 openid）",
+                        },
                         "message_seq": {
                             "type": "integer",
                             "description": "可选，历史起点 message_seq；0（默认）表示从最新一条往前取",
@@ -140,10 +144,9 @@ async def _handle_read_earlier_messages(self: ChatHistorySkill, args: dict) -> s
                 "ok": False,
                 "error": f"conversation_kind 必须是 group 或 private，收到 {conv_kind!r}",
             })
-        raw_id = str(args.get("conversation_id") or "").strip()
-        if not raw_id.isdigit():
-            return _json({"ok": False, "error": "conversation_id 必须是数字（群号或好友QQ号）"})
-        conv_id = int(raw_id)
+        conv_id = str(args.get("conversation_id") or "").strip()
+        if not conv_id:
+            return _json({"ok": False, "error": "conversation_id 不能为空（群号/好友QQ号或官方 openid）"})
         count = _coerce_int(args.get("count"), _DEFAULT_COUNT, low=_MIN_COUNT, high=_MAX_COUNT)
         message_seq = _coerce_int(args.get("message_seq"), 0, low=0)
         reverse_order = _coerce_bool(args.get("reverse_order", False))
@@ -173,7 +176,7 @@ async def _handle_read_earlier_messages(self: ChatHistorySkill, args: dict) -> s
         }
 
         async def _lookup(user_id: int) -> Any:
-            name = names.get(user_id) or f"QQ:{user_id}"
+            name = names.get(user_id) or display_user_id(user_id)
             return SimpleNamespace(data=SimpleNamespace(nickname=name))
 
         rendered: list[str] = []

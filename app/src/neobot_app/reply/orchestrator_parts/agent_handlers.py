@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
+from neobot_app.bot_accounts import bot_account_for_event
 from neobot_app.reply.event import ReplyState
 from neobot_app.reply.postprocess import ReplySplitPreview
-from neobot_app.utils.media_sender import prepare_image_segment, send_image
+from neobot_app.reply.sender import send_response_ok
+from neobot_app.utils.media_sender import send_image
 from ._runtime import asyncio
 from .agent_state import AgentLoopState
 from .sending import _segment_file_hint
@@ -24,6 +26,7 @@ class AgentHandlersMixin:
         self, state: AgentLoopState, event: ReplyEvent, reason: str | None = None
     ) -> None:
         state.cancelled = True
+        self._clear_unsent_marker(event)
         event.error = reason or "agent 主动取消回复"
         if not event.is_terminal:
             event.transition(ReplyState.CANCELLED)
@@ -43,11 +46,12 @@ class AgentHandlersMixin:
         numbering: MessageNumbering,
         text: str,
         reply_to: int | None = None,
-        mention: list[int] | None = None,
+        mention: list[int | str] | None = None,
         segments: list[str] | None = None,
         send_original: bool = False,
         images: list[int] | None = None,
         split_preview: ReplySplitPreview | None = None,
+        channel: str | None = None,
     ) -> bool:
         """发送回复；返回是否真的发出了内容（False ⇒ 工具层提示模型重新生成）。
 
@@ -73,6 +77,7 @@ class AgentHandlersMixin:
                 self_sent=sink,
                 sender_names=sender_names,
                 **({"split_preview": split_preview} if split_preview is not None else {}),
+                **({"channel": channel} if channel else {}),
             )
         else:
             delivered = await self._send_reply(
@@ -85,49 +90,15 @@ class AgentHandlersMixin:
                 self_sent=sink,
                 sender_names=sender_names,
                 **({"split_preview": split_preview} if split_preview is not None else {}),
+                **({"channel": channel} if channel else {}),
             )
         if delivered is not False:
             state.reply_sent = True
+            self._clear_unsent_marker(event)
             self._record_reply_delivered(
                 event, queue, queue_key, before_message_id=before_message_id
             )
         return delivered
-
-    async def _agent_send_emoji_handler(
-        self,
-        state: AgentLoopState,
-        event: ReplyEvent,
-        queue: MessageQueue,
-        queue_copy: MessageQueue,
-        queue_key: str,
-        number: int,
-    ) -> None:
-        if self._emoji_service is None:
-            return
-        entry = self._emoji_service.get_entry(number)
-        if entry is None:
-            return
-        # 表情包单独作为一条消息发送，不与要说的话合并
-        segments = [prepare_image_segment(self._file_server, entry.file_path)]
-        emoji_conv = event.conversation_ref
-        before_message_id = queue.get_last_message_id(queue_key)
-        delivered = await self._send_with_timeout(emoji_conv, segments)
-        # 表情包发出去了就算「已回复」：否则 emoji-only 轮次会被判 CANCELLED，
-        # 回复冷却与 last_reply_position 都不推进
-        if delivered is not False:
-            state.reply_sent = True
-            event.send_response = delivered
-            self._record_reply_delivered(
-                event, queue, queue_key, before_message_id=before_message_id
-            )
-        # 表情包也是「真实发出去了」的图片：按真实形态入队
-        if emoji_conv is not None:
-            emoji_sink = self._self_sent_sink(queue, queue_copy, queue_key)
-            await self._sender.record_self_sent_image(
-                emoji_sink, emoji_conv, entry.file_path
-            )
-        # 记录表情包使用次数
-        await self._emoji_service.record_usage(number)
 
     async def _agent_wait_handler(
         self,
@@ -242,6 +213,78 @@ class AgentHandlersMixin:
             lines.append(f"  ID {item['id']}: {item['name']} ({item['hint']})")
         return "\n".join(lines)
 
+    async def _agent_send_official_markdown_handler(
+        self,
+        state: AgentLoopState,
+        event: ReplyEvent,
+        queue: MessageQueue,
+        queue_copy: MessageQueue,
+        queue_key: str,
+        numbering: MessageNumbering,
+        *,
+        content: str,
+        reply_to_number: int | None = None,
+        at_everyone: bool = False,
+        commands: list[dict] | None = None,
+        display_text: str | None = None,
+        tool_arguments: dict[str, Any] | None = None,
+    ) -> object:
+        from neobot_app.reply.sender import send_response_ok
+
+        conv_ref = event.conversation_ref
+        if conv_ref is None:
+            return {"status": "failed", "message": "会话不存在"}
+        reply_id = numbering.get_message_id(reply_to_number) if reply_to_number is not None else None
+        before_message_id = queue.get_last_message_id(queue_key)
+        delivered = await self._sender.send_official_markdown(
+            event,
+            content,
+            reply_to_message_id=reply_id,
+            at_everyone=at_everyone,
+            commands=commands or [],
+            # 后台/定时任务触发的官方卡片没有被动窗口：透传主动消息标志。
+            proactive=bool(event.proactive),
+        )
+        if not send_response_ok(delivered):
+            self._logger.info(
+                "官方 Markdown 消息发送失败",
+                event_id=event.event_id,
+                error=str(getattr(delivered, "message", "") or ""),
+            )
+            return delivered
+        state.reply_sent = True
+        self._clear_unsent_marker(event)
+        event.send_response = delivered
+        self._record_reply_delivered(
+            event, queue, queue_key, before_message_id=before_message_id
+        )
+        await self._sender.record_self_sent_text(
+            self._self_sent_sink(queue, queue_copy, queue_key),
+            conv_ref,
+            display_text or content,
+            bot_account=bot_account_for_event(event, self._config),
+            tool_name="send_official_markdown",
+            tool_arguments=tool_arguments or {"content": content},
+        )
+        return delivered
+
+    async def _agent_official_group_manage_handler(
+        self, *, action: str, params: dict[str, object]
+    ) -> dict:
+        mapping = {
+            "robot_status": "get_group_robot_status",
+            "ban": "set_group_ban",
+            "unban": "set_group_ban",
+            "kick": "set_group_kick",
+            "approve_join": "set_group_add_request",
+            "reject_join": "set_group_add_request",
+        }
+        api_action = mapping[action]
+        result = await self._call_api_with_timeout(api_action, dict(params))
+        if isinstance(result, dict):
+            return result
+        return {"status": "failed", "message": "官方群管理没有返回结果"}
+
     async def _agent_speak_handler(
         self,
         state: AgentLoopState,
@@ -259,10 +302,22 @@ class AgentHandlersMixin:
         )
         speak_conv = event.conversation_ref
         before_message_id = queue.get_last_message_id(queue_key)
-        delivered = await self._send_with_timeout(speak_conv, [segment])
-        # 与 send_reply 同语义：语音真实发出即视为已回复
+        delivered = await self._send_with_timeout(
+            speak_conv, [segment], proactive=bool(event.proactive)
+        )
+        from neobot_app.reply.sender import send_response_ok
+
+        if not send_response_ok(delivered):
+            self._logger.info(
+                "语音消息发送失败",
+                event_id=event.event_id,
+                error=str(getattr(delivered, "message", "") or ""),
+            )
+            return "错误：语音发送失败，请检查后台日志或告知用户无法发送"
+        # 与 send_reply 同语义：语音真实发出才视为已回复
         if delivered is not False:
             state.reply_sent = True
+            self._clear_unsent_marker(event)
             event.send_response = delivered
             self._record_reply_delivered(
                 event, queue, queue_key, before_message_id=before_message_id
@@ -275,6 +330,7 @@ class AgentHandlersMixin:
                 speak_conv,
                 text,
                 file_hint=_segment_file_hint(segment),
+                bot_account=bot_account_for_event(event, self._config),
             )
         return f"已发送语音消息，内容：{text[:50]}{'...' if len(text) > 50 else ''}"
 
@@ -285,7 +341,7 @@ class AgentHandlersMixin:
             result = await self._call_api_with_timeout(
                 "group_poke",
                 {
-                    "group_id": int(conv_id),
+                    "group_id": str(conv_id),
                     "user_id": user_id,
                 },
             )
@@ -318,10 +374,13 @@ class AgentHandlersMixin:
         image_path: str,
         caption: str = "",
         reply_to: int | None = None,
-        mention: list[int] | None = None,
+        mention: list[int | str] | None = None,
         markdown: str = "",
+        channel: str | None = None,
     ) -> None:
         conv_ref = event.conversation_ref
+        # 未显式指定时跟随事件通道；双待下图片/说明文字与文本走同一个框架。
+        channel = channel or getattr(event, "neobot_channel", None) or None
         before_message_id = queue.get_last_message_id(queue_key)
         # 解析消息编号 -> 实际 message_id
         reply_to_message_id = None
@@ -337,13 +396,24 @@ class AgentHandlersMixin:
                 conversation_kind=conv_ref.kind if conv_ref else "",
                 reply_to_message_id=reply_to_message_id,
                 mention_user_ids=mention,
+                channel=channel,
             )
-            caption_delivered = await self._send_with_timeout(conv_ref, caption_segs)
-            if conv_ref is not None and caption_delivered is not False:
+            caption_delivered = await self._send_with_timeout(
+                conv_ref, caption_segs, channel=channel, proactive=bool(event.proactive)
+            )
+            if conv_ref is not None and send_response_ok(caption_delivered):
                 state.reply_sent = True
+                self._clear_unsent_marker(event)
                 event.send_response = caption_delivered
                 self._record_reply_delivered(event, queue, queue_key, before_message_id=before_message_id)
-                self._sender.record_self_sent_text(long_reply_sink, conv_ref, caption.strip())
+                self._sender.record_self_sent_text(
+                    long_reply_sink,
+                    conv_ref,
+                    caption.strip(),
+                    bot_account=bot_account_for_event(event, self._config),
+                    tool_name="send_long_reply",
+                    tool_arguments={"caption": caption.strip()},
+                )
         # 发送图片（不附带引用，图片单独发送）
         image_delivered = await send_image(
             self._file_server,
@@ -351,42 +421,36 @@ class AgentHandlersMixin:
             conv_ref,
             Path(image_path),
             wait_response=False,
+            channel=channel,
+            proactive=bool(event.proactive),
         )
-        if image_delivered is not False:
+        if send_response_ok(image_delivered):
             state.reply_sent = True
+            self._clear_unsent_marker(event)
             event.send_response = image_delivered
             event.send_incomplete = False
             self._record_reply_delivered(event, queue, queue_key, before_message_id=before_message_id)
         # 图片入队为「索引」：产物登记进 temp 图库（tmp_xxx）+ file 路径兜底，
         # Markdown 原文只留前 N 字来源标注（全文不再重复注入上下文）。
-        if conv_ref is not None:
+        # 只有真正发出去了才写历史：失败时写回索引会让重建后的历史谎报「已发送」。
+        if conv_ref is not None and send_response_ok(image_delivered):
             await self._sender.record_self_sent_image(
                 long_reply_sink,
                 conv_ref,
                 Path(image_path),
                 kind="markdown",
                 source_note=markdown,
+                bot_account=bot_account_for_event(event, self._config),
+                tool_name="send_long_reply",
+                tool_arguments={"image_path": str(image_path)},
             )
-        if image_delivered is not False or caption_delivered is not False:
+        if send_response_ok(image_delivered) or send_response_ok(caption_delivered):
             state.reply_sent = True
+            self._clear_unsent_marker(event)
             event.send_response = (
-                image_delivered if image_delivered is not False else caption_delivered
+                image_delivered if send_response_ok(image_delivered) else caption_delivered
             )
             self._record_reply_delivered(
                 event, queue, queue_key, before_message_id=before_message_id
             )
-
-    def _append_current_time_block(
-        self, state: AgentLoopState, messages: list[dict]
-    ) -> None:
-        if state.time_block_full_sent:
-            block = self._build_short_time_message()
-            if block is None:
-                # 短时间戳分区关闭/缺失时回退完整块,保证时间仍在推进
-                block = self._build_current_time_message()
-        else:
-            block = self._build_current_time_message()
-            if block is not None:
-                state.time_block_full_sent = True
-        if block is not None:
-            messages.append(block)
+        return image_delivered if send_response_ok(image_delivered) else caption_delivered

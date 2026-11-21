@@ -39,7 +39,8 @@ class HotReloadRule:
 #: 的子系统可以通过 ``register_rule`` 登记更准确的结论，无需修改本表结构。
 RULES: tuple[HotReloadRule, ...] = (
     # ── 需要重启（启动期快照）────────────────────────────────
-    HotReloadRule("bot.account", False, "机器人账号在启动时用于登录与适配器初始化"),
+    HotReloadRule("bot.account", True, "连接后重新解析身份，并同步消息队列的 bot_account"),
+    HotReloadRule("bot.official_mode", True, "身份解析时按新设置重新判定通道；未连接不判定"),
     HotReloadRule("chat.key_word", False, "关键词规则在启动时构建快照（KeywordReactionBuilder）"),
     HotReloadRule("chat.cache_retention_seconds", False, "缓存计算器参数在启动时读取"),
     HotReloadRule("chat.cache_hit_price_difference", False, "缓存计算器参数在启动时读取"),

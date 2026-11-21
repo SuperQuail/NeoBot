@@ -14,15 +14,15 @@ from neobot_chat.schema.types import (
     ToolGuardContext,
 )
 
+from neobot_app.prompt.assets import raw_text as _raw_text
 from neobot_app.time_context import monotonic_seconds
 
 
 
 EXPOSED_TO_MAIN_AGENT_NAME = "self_heal"
-EXPOSED_TO_MAIN_AGENT_DESCRIPTION = (
-    "系统自修复诊断。仅由系统在累积异常时自动唤起，不直接面向用户聊天。"
-    "诊断 Bot 自身运行时异常、尝试安全修复、产出调试报告并通过通知系统告知管理员。"
-)
+# 文本在 prompt/templates/prompts.toml 的 [self_heal].description；
+# TOML 里按行折行保存，导出常量沿用旧的单行拼接（逐字兼容）。
+EXPOSED_TO_MAIN_AGENT_DESCRIPTION = _raw_text("self_heal", "description").replace("\n", "")
 
 # Source names used when publishing to BackgroundNotificationHub
 START_SOURCE = "self_heal_start"
@@ -76,7 +76,7 @@ class SelfHealAgentConfig:
         min_interval_seconds: int = 300,
         buffer_size: int = 200,
         daily_limit: int = 5,
-        timeout_seconds: float = 300.0,
+        timeout_seconds: float = 7200.0,
         max_tokens: int = 8192,
         reasoning_effort: str = "high",
         sandbox_debug_dir: str = "debug/self_heal",
@@ -112,7 +112,7 @@ class SelfHealAgentConfig:
             ),
             buffer_size=int(getattr(config, "buffer_size", 200) or 200),
             daily_limit=int(getattr(config, "daily_limit", 5) or 5),
-            timeout_seconds=float(getattr(config, "timeout_seconds", 300) or 300),
+            timeout_seconds=float(getattr(config, "timeout_seconds", 7200) or 7200),
             max_tokens=int(getattr(config, "max_tokens", 8192) or 8192),
             reasoning_effort=str(getattr(config, "reasoning_effort", "high") or "high"),
             sandbox_debug_dir=str(

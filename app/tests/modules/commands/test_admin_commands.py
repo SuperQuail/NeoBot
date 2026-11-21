@@ -271,3 +271,43 @@ async def test_chat_update_callback_rejects_unknown_key(config_file: Path) -> No
 
     assert result.startswith("错误")
     assert "不允许更新配置键" in result
+
+
+OPENID = "1939BECB96D062817668DAFB030FCD6C"
+
+
+def _official_message(text: str, user_id: int, target_openid: str):
+    return SimpleNamespace(
+        user_id=user_id,
+        neobot_channel="official",
+        mentioned_self=True,
+        message=[
+            {"type": "at", "data": {"qq": BOT}},
+            {"type": "text", "data": {"text": text}},
+            {"type": "at", "data": {"qq": target_openid}},
+        ],
+    )
+
+
+async def test_add_admin_accepts_official_openid_target(config_file: Path) -> None:
+    config, service, adapter = _service(config_file)
+    result = await service.handle_message(
+        _official_message("/add_admin", SUPER, OPENID), kind="group", queue_key="GROUP"
+    )
+    assert result.consumed is True
+    assert read_sub_admin_accounts(config_file) == (OPENID,)
+    assert service.permissions.is_sub_admin(OPENID) is True
+    assert adapter.sent
+
+
+async def test_del_admin_accepts_official_openid_target(config_file: Path) -> None:
+    config, service, adapter = _service(config_file)
+    await service.handle_message(
+        _official_message("/add_admin", SUPER, OPENID), kind="group", queue_key="GROUP"
+    )
+    await service.handle_message(
+        _official_message("/del_admin", SUPER, OPENID), kind="group", queue_key="GROUP"
+    )
+    assert read_sub_admin_accounts(config_file) == ()
+    assert service.permissions.is_sub_admin(OPENID) is False
+

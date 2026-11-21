@@ -10,8 +10,9 @@ from neobot_contracts.ports.logging import NullLogger
 
 
 class SwitchingAdapter:
-    def __init__(self, connected: bool):
+    def __init__(self, connected: bool, user_id: int | str = 10001):
         self.connected = connected
+        self.user_id = user_id
         self.calls: list[str] = []
 
     async def call_api(self, action: str, params: dict, timeout: float = 5.0):
@@ -19,7 +20,7 @@ class SwitchingAdapter:
         if not self.connected:
             return None
         if action == "get_login_info":
-            return {"status": "ok", "data": {"user_id": 10001, "nickname": "连接状态测试机器人"}}
+            return {"status": "ok", "data": {"user_id": self.user_id, "nickname": "连接状态测试机器人"}}
         if action == "get_version_info":
             return {"status": "ok", "data": {"app_name": "OneBot", "app_version": "11"}}
         raise AssertionError(f"未声明的接口：{action}")
@@ -53,3 +54,23 @@ async def test_bot_cache_observes_connection_change_before_profile_ttl(tmp_path:
     calls = list(adapter.calls)
     assert await server.bot_info() == after
     assert adapter.calls == calls
+
+
+async def test_bot_info_does_not_request_qlogo_for_openid(tmp_path: Path):
+    """官方通道的 ID 可能是 openid 字符串：不能拼 qlogo 头像地址。"""
+    adapter = SwitchingAdapter(True, user_id="2F1B3C4D5E6F7A8B")
+    server = DashboardServer(
+        plugin_name="dashboard",
+        config=DashboardConfig(bot_info_cache_ttl=300),
+        data_dir=tmp_path,
+        logger=NullLogger(),
+        adapter=adapter,
+        config_path=tmp_path / "config.toml",
+        env_path=tmp_path / ".env",
+        backup_dir=tmp_path / "backups",
+    )
+
+    info = await server.bot_info()
+
+    assert info["user_id"] == "2F1B3C4D5E6F7A8B"
+    assert info["avatar_url"] == ""

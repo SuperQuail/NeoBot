@@ -10,10 +10,12 @@ from neobot_app.bootstrap._runtime import build_browser_components, build_creato
 from neobot_app.bootstrap._services import build_adapter_service, build_context_recorder, build_debug_recorder, build_emoji_service, build_file_server, build_memory_services, build_message_queues
 from neobot_app.bootstrap._usage import build_usage_components
 from neobot_app.core import DATA_DIR, SRC_DATA_DIR
+from neobot_app.database.identity_data_migration import official_only_mode
 from neobot_app.observability.logging import LoguruLoggerFactory, configure_loguru, set_console_show_module
 from neobot_app.prompt.store import PromptStore, sync_default_prompts
 from neobot_app.runtime.adapter_supervisor import AdapterSupervisor
 from neobot_app.runtime.hot_reload_registry import HotReloadRegistry
+from neobot_app.user_identity import bind_user_identity
 from neobot_app.utils.data_sync import sync_data_files
 from .core_reuse import _build_storage, _load_config_for_reuse, _reuse_or, _run_once, config_load_error
 from .maintenance_services import _register_billing_hot_reload_rule, _warmup_billing_scripts
@@ -26,6 +28,7 @@ def _build_core_services(state: _BuildState) -> None:
     _run_once("loguru", lambda: configure_loguru(DATA_DIR / "logs", runtime_events=True))
     logger_factory = _reuse_or("logger_factory", LoguruLoggerFactory)
     config = _load_config_for_reuse()
+    bind_user_identity(DATA_DIR)
     set_console_show_module(getattr(getattr(config, "debug", None), "console_show_module", False))
 
     sync_data_files(SRC_DATA_DIR, DATA_DIR)
@@ -125,7 +128,10 @@ def _build_core_services(state: _BuildState) -> None:
     db_path = DATA_DIR / "neobot.db"
     db_url = sqlite_url(db_path)
     _engine, uow_factory = _reuse_or(
-        "storage", lambda: _build_storage(db_path, db_url, logger_factory)
+        "storage",
+        lambda: _build_storage(
+            db_path, db_url, logger_factory, official_only=official_only_mode(config)
+        ),
     )
 
     usage = _reuse_or(

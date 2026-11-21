@@ -5,6 +5,17 @@ from __future__ import annotations
 from typing import Optional
 
 
+def _identity_str(value: object) -> str:
+    """本地身份 ID 归一化（openid 字符串 / QQ 数字）；空值返回空串。
+
+    user/group/session 主键一律按字符串比较：官方 openid 是字母数字串，OneBot
+    QQ 号是数字，不能混用 int()/位数判断，否则 openid 会被截成 0 或抛异常。
+    """
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
 def _safe_int(value: object) -> Optional[int]:
     try:
         return int(str(value))

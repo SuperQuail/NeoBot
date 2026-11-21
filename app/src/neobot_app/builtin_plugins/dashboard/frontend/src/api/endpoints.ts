@@ -26,6 +26,7 @@ import type {
   ConfigDocument,
   DeployStatus,
   EnvPayload,
+  OfficialDeploy,
   ExtensionEntry,
   LogPayload,
   ModelsPayload,
@@ -329,10 +330,13 @@ export const api = {
 
   // 本体配置 / 环境变量 / 模型
   config: () => getResult<ConfigDocument>('/api/config'),
-  // 快捷部署：只读状态（缺什么 + OneBot 生效地址/token）与 token 生成
+  // 快捷部署：只读状态（缺什么 + 官方扫码/手动信息）与扫码绑定
   deployStatus: () => getResult<DeployStatus>('/api/deploy/status'),
-  deployOneBotToken: (body: unknown) =>
-    postJSON<{ token?: string; message?: string; applied?: boolean }>('/api/deploy/onebot-token', body),
+  deployOfficialBind: (body: unknown) =>
+    postJSON<{ official?: OfficialDeploy; message?: string; applied?: boolean }>(
+      '/api/deploy/official-bind',
+      body,
+    ),
   configSave: (body: ConfigSaveBody) => postJSON<ConfigDocument>('/api/config', body),
   configValidate: (body: ConfigSaveBody) =>
     postJSON<{ errors?: Array<{ path?: string; message?: string }> }>('/api/config/validate', body),

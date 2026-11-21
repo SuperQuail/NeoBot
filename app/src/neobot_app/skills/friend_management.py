@@ -55,7 +55,7 @@ class FriendManagementSkill(SkillModule):
                             ],
                             "description": "要执行的好友管理动作。send_like=点赞用户QQ主页/资料卡",
                         },
-                        "user_id": {"type": "integer", "description": "目标 QQ 号"},
+                        "user_id": {"type": ["string", "integer"], "description": "目标用户 ID（OneBot 为 QQ 号，官方通道为 openid）"},
                         "remark": {"type": "string", "description": "好友备注"},
                         "category_id": {"type": "integer", "description": "好友分组 ID"},
                         "flag": {"type": "string", "description": "好友请求 flag"},
@@ -87,7 +87,7 @@ async def _handle_manage_friend(self: FriendManagementSkill, args: dict) -> str:
         return _json({"ok": False, "error": str(e)})
 
 def _friend_action_params(action: str, args: dict) -> tuple[str, dict[str, Any]]:
-    user_id = _as_int(args.get("user_id"))
+    user_id = _as_id(args.get("user_id"))
     if action == "set_remark":
         return "set_friend_remark", {
             "user_id": _require(user_id, "user_id"),
@@ -112,6 +112,16 @@ def _friend_action_params(action: str, args: dict) -> tuple[str, dict[str, Any]]
             "times": int(args.get("times") or 1),
         }
     raise ValueError(f"未知好友管理动作: {action}")
+
+def _as_id(value: Any) -> int | str | None:
+    """用户本地 ID：纯数字保留 int（OneBot 协议原义），openid 原样透传。"""
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return int(text) if text.isdigit() else text
+
 
 def _as_int(value: Any) -> int | None:
     if value in (None, ""):

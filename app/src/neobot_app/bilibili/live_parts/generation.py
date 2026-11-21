@@ -14,13 +14,17 @@ from neobot_app.bilibili.live_parts.constants import (
     _MAX_HISTORY,
 )
 from neobot_app.bilibili.live_parts.helpers import _to_int
+from neobot_app.bilibili.live_parts.tools import LIVE_TOOL_DEFS, build_live_executors
 from neobot_app.bilibili.prompts import (
     LiveDanmakuContext,
+    _text,
     build_live_danmaku_prompt,
     build_live_observation_prompt,
     build_live_scheduled_prompt,
 )
 from neobot_app.bilibili.tool_reply import ToolReply, run_tool_reply
+from neobot_app.prompt import assets
+from neobot_app.statistics.tracker import get_usage_tracker
 
 
 class _GenerationMixin:
@@ -94,13 +98,12 @@ class _GenerationMixin:
             lines = self.format_history(_to_int(room_id), self._summary_every)
             if not lines:
                 return
-            summary = await self._chat(
+            summary, summary_usage = await self._chat(
                 [
                     {
                         "role": "system",
-                        "content": (
-                            "你是直播弹幕总结器。把弹幕浓缩成一段直播记忆，"
-                            "只保留话题、梗、反复出现的人/事件和约定；不要逐条复述，200 字以内。"
+                        "content": _text(
+                            "live", "summary_system", store=self._prompt_store
                         ),
                     },
                     {"role": "user", "content": lines},
@@ -110,6 +113,7 @@ class _GenerationMixin:
             summary = summary.strip()
             if not summary:
                 return
+            await self._record_live_usage(_to_int(room_id), summary_usage)
             self._room_memory[room_id] = summary[:2000]
             if self._archive_service is not None:
                 try:
@@ -153,9 +157,7 @@ class _GenerationMixin:
         if self._prompt_store is None:
             return ""
         try:
-            from neobot_app.prompt.store import get_template_value
-
-            return str(get_template_value(self._prompt_store, "live_chat") or "").strip()
+            return assets.text("live_chat", store=self._prompt_store)
         except Exception:
             return ""
 
@@ -168,16 +170,19 @@ class _GenerationMixin:
             text="",
             recent_history=self.format_history(room_id, _MAX_HISTORY),
             room_memory=self._room_memory.get(str(room_id), ""),
+            live_started_at=self._live_started_at.get(str(room_id), ""),
             frame_context=await self.frame_context(room_id),
         )
-        system, content = build_live_observation_prompt(ctx, self._live_persona())
+        system, content = build_live_observation_prompt(
+            ctx, self._live_persona(), prompt_store=self._prompt_store
+        )
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": content},
         ]
         self._record_live_flow(room_id, system, messages)
         try:
-            return await run_tool_reply(
+            result = await run_tool_reply(
                 self._provider,
                 system,
                 content,
@@ -191,6 +196,8 @@ class _GenerationMixin:
         except Exception as exc:
             self._logger.warning(f"B站直播主动观察生成失败：{type(exc).__name__}: {exc}")
             return None
+        await self._record_live_usage(room_id, result.usage)
+        return result
 
     async def _auto_look_loop(self) -> None:
         while self._running:
@@ -229,38 +236,53 @@ class _GenerationMixin:
                     )
 
     async def _generate_reply(
-        self, text: str, room_id: int, user_name: str = "", user_id: int = 0
+        self,
+        text: str,
+        room_id: int,
+        user_name: str = "",
+        user_id: int = 0,
+        *,
+        at_me: bool = False,
     ) -> Any:
         room = self._rooms.get(str(room_id)) or {}
+        # 历史按角色消息给（别人的 user、自己的 assistant 工具调用），不再拼成一整段文本：
+        # 逐条追加的稳定前缀才能命中缓存，模型也才看得到"用工具说话"的示范。
+        history_messages = self.build_history_messages(room_id, _MAX_HISTORY)
         ctx = LiveDanmakuContext(
             bot_name=self._bot_name,
             bot_data=self._bot_data,
             room_name=str(room.get("name") or ""),
             viewer_name=user_name,
+            viewer_uid=user_id,
+            viewer_at_me=at_me,
             text=text,
-            recent_history=self.format_history(room_id, _MAX_HISTORY),
             room_memory=self._room_memory.get(str(room_id), ""),
             viewer_memory=await self._load_user_memory(user_id),
+            live_started_at=self._live_started_at.get(str(room_id), ""),
             frame_context="",
         )
-        system, content = build_live_danmaku_prompt(ctx, self._live_persona())
+        system, content = build_live_danmaku_prompt(
+            ctx, self._live_persona(), prompt_store=self._prompt_store
+        )
         asr_context = await self._live_asr_context(room_id)
         if asr_context:
-            content += f"\n<直播语音>{asr_context}</直播语音>"
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": content},
-        ]
+            content += "\n" + _text(
+                "live", "asr_wrapper", store=self._prompt_store
+            ).format(asr_context=asr_context)
+        conversation = [*history_messages, {"role": "user", "content": content}]
+        messages = [{"role": "system", "content": system}, *conversation]
         self._record_live_flow(room_id, system, messages)
         try:
             result = await run_tool_reply(
                 self._provider,
                 system,
-                content,
+                messages=conversation,
                 max_chars=self._max_reply_chars,
                 split=True,
                 timeout=90.0,
                 allow_reply_to=True,
+                extra_tools=LIVE_TOOL_DEFS,
+                extra_executors=build_live_executors(self, room_id),
             )
         except asyncio.CancelledError:
             raise
@@ -280,13 +302,18 @@ class _GenerationMixin:
             text=prompt,
             recent_history=context or self.format_history(room_id, _MAX_HISTORY),
             room_memory=self._room_memory.get(str(room_id), ""),
+            live_started_at=self._live_started_at.get(str(room_id), ""),
             frame_context="",
             scheduled_prompt=prompt,
         )
-        system, content = build_live_scheduled_prompt(ctx, self._live_persona())
+        system, content = build_live_scheduled_prompt(
+            ctx, self._live_persona(), prompt_store=self._prompt_store
+        )
         asr_context = await self._live_asr_context(room_id)
         if asr_context:
-            content += f"\n<直播语音>{asr_context}</直播语音>"
+            content += "\n" + _text(
+                "live", "asr_wrapper", store=self._prompt_store
+            ).format(asr_context=asr_context)
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": content},
@@ -306,11 +333,38 @@ class _GenerationMixin:
         except Exception as exc:
             self._logger.warning(f"B站直播定时弹幕生成失败：{type(exc).__name__}: {exc}")
             return []
+        await self._record_live_usage(room_id, result.usage)
         return result.segments or ([result.text] if result.text else [])
 
-    async def _chat(self, messages: list[dict[str, str]], *, error_label: str) -> str:
+    async def _record_live_usage(self, room_id: int, usage: dict | None) -> None:
+        """把本轮模型用量写进统一用量表（与 B站评论/私信同一张表、同一 module）。"""
+        usage = usage if isinstance(usage, dict) else {}
+        if not usage:
+            return
+        provider = self._provider
+        try:
+            await get_usage_tracker().record(
+                module="bilibili",
+                model_name=str(getattr(provider, "model", "") or ""),
+                registered_key=str(getattr(provider, "registered_key", "") or ""),
+                input_tokens=int(usage.get("input_tokens", 0) or 0),
+                output_tokens=int(usage.get("output_tokens", 0) or 0),
+                cache_hit_tokens=int(usage.get("cache_hit_tokens", 0) or 0),
+                cache_miss_tokens=int(usage.get("cache_miss_tokens", 0) or 0),
+                conversation_kind="bilibili_live",
+                conversation_id=str(_to_int(room_id)),
+            )
+        except Exception as exc:
+            self._logger.debug(
+                f"B站直播用量记录失败：房间 {room_id}，错误 {type(exc).__name__}: {exc}"
+            )
+
+    async def _chat(
+        self, messages: list[dict[str, str]], *, error_label: str
+    ) -> tuple[str, dict]:
+        """单次模型调用；返回 (正文, usage)，失败返回空正文与空 usage。"""
         if self._provider is None:
-            return ""
+            return "", {}
         try:
             response = self._provider.chat(messages)
             if inspect.isawaitable(response):
@@ -319,6 +373,7 @@ class _GenerationMixin:
             raise
         except Exception as exc:
             self._logger.warning(f"{error_label}：{type(exc).__name__}: {exc}")
-            return ""
+            return "", {}
         content = response.get("content", "") if isinstance(response, dict) else get_field(response, "content", "")
-        return str(content or "")
+        usage = response.get("extensions", {}).get("usage") if isinstance(response, dict) else None
+        return str(content or ""), usage if isinstance(usage, dict) else {}

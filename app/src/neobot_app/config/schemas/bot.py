@@ -39,6 +39,7 @@ from .bot_parts.memory import (
     AgentMemory,
 )
 from .bot_parts.model_registry import ModelAssignments, Models, AgentModelRouting
+from .bot_parts.prompt import PromptOptimizations
 from .bot_parts.models import (
     ModelPricing,
     ModelSettings,
@@ -102,6 +103,7 @@ __all__ = [
     "ModelSettings",
     "Models",
     "Plugins",
+    "PromptOptimizations",
     "SandboxMaintenance",
     "ScheduledTask",
     "Standby",

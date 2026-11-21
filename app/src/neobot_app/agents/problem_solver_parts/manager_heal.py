@@ -16,10 +16,15 @@ from .models import (
     SolveTask,
     _SOLUTION_RESULT,
 )
+from .prompts import prompt_text
 
 
 class ProblemSolverManagerHealMixin:
     """解题任务执行、通知推送与失败重试。"""
+
+    def _prompt_text(self, key: str) -> str:
+        """读取 [problem_solver] 的提示词文本(受自定义提示词覆盖)。"""
+        return prompt_text(getattr(self, "_prompt_store", None), key)
 
     async def _run_solve(self, task: SolveTask) -> None:
         """后台执行解题。"""
@@ -59,11 +64,7 @@ class ProblemSolverManagerHealMixin:
                 messages.append(
                     {
                         "role": "user",
-                        "content": (
-                            "你尚未调用 submit_solution 提交任何解答。"
-                            "请立即提交你的最终解答（调用 submit_solution）。"
-                            "即使无法解答，也必须说明失败原因（如缺少关键信息、超出能力范围等）。"
-                        ),
+                        "content": self._prompt_text("resume_prompt"),
                     }
                 )
                 retry_state: State = {
@@ -131,11 +132,13 @@ class ProblemSolverManagerHealMixin:
                 "task_id": task.task_id,
                 "question": question_preview,
                 "next": [
-                    {"action": "reply_to_user", "text": "按下方解题结果原文回复用户"},
+                    {
+                        "action": "reply_to_user",
+                        "text": self._prompt_text("notify_reply_result"),
+                    },
                     {
                         "action": "note",
-                        "text": "需要发文件时用 sandbox_manager__send_chat_file；"
-                        "长文可用 send_long_reply 转图片",
+                        "text": self._prompt_text("notify_send_file_hint"),
                     },
                 ],
             },
@@ -144,10 +147,8 @@ class ProblemSolverManagerHealMixin:
         # 解答保持裸 Markdown：写进 JSON 会把换行转义成 \n，
         # 标题/列表/代码块在通知里变成一行字，模型抄给用户时更容易走样。
         notification = (
-            f"{header}\n\n"
-            "--- 解题结果（Markdown 原文，直接据此回复用户）---\n\n"
-            f"{solution}\n\n"
-            "--- 解题结果结束 ---"
+            f"{header}\n\n{self._prompt_text('notify_result_header')}\n\n"
+            f"{solution}\n\n{self._prompt_text('notify_result_footer')}"
         )
         self._logger.info(
             "推送解题完成通知",
@@ -169,7 +170,7 @@ class ProblemSolverManagerHealMixin:
                 "next": [
                     {
                         "action": "reply_to_user",
-                        "text": "告知用户解题失败，请稍后重试或补充信息；不要复述技术错误",
+                        "text": self._prompt_text("notify_reply_failed"),
                     }
                 ],
             },
@@ -285,7 +286,10 @@ class ProblemSolverManagerHealMixin:
                     "task_id": task.task_id,
                     "question": task.question[:200],
                     "next": [
-                        {"action": "reply_to_user", "text": "检查并发送解题结果"}
+                        {
+                            "action": "reply_to_user",
+                            "text": self._prompt_text("notify_retry_result"),
+                        }
                     ],
                 },
                 ensure_ascii=False,
@@ -300,7 +304,7 @@ class ProblemSolverManagerHealMixin:
                 "next": [
                     {
                         "action": "reply_to_user",
-                        "text": "告知用户任务未完成及原因",
+                        "text": self._prompt_text("notify_retry_failed"),
                     }
                 ],
             },

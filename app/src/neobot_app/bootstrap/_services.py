@@ -16,6 +16,7 @@ from neobot_app.audio import TTSService, VolcengineTTSService
 from neobot_app.bot_detect import BotDetector
 from neobot_app.config.schemas.env import EnvConfig
 from neobot_app.config.schemas.bot import BotConfig as BotConfigSchema
+from neobot_app.bot_accounts import primary_bot_account
 from neobot_app.core import DATA_DIR
 from neobot_app.database.chatstream import ChatStreamManager
 from neobot_app.emoji.service import EmojiService
@@ -23,6 +24,13 @@ from neobot_app.image import ImageParseService
 from neobot_app.observability.debug import DEFAULT_RETENTION_DAYS, DebugRecorder
 from neobot_app.prompt.builder import PromptBuilder
 from neobot_app.user_profiles import UserProfileService
+from neobot_app.database.identity_data_migration import (
+    IdentityMigrationCoordinator,
+    bind_identity_migration,
+    official_only_mode,
+)
+from neobot_app.identity_merge import IdentityMergeService, bind_identity_merge
+from neobot_app.user_identity import canonical_archive_key
 from neobot_app.willing import WillingService
 from neobot_app.core.file_server import FileServer
 from neobot_app.runtime.archive_memory_summary import ArchiveMemoryAutoSummaryService
@@ -96,8 +104,8 @@ def build_message_queues(*, config: BotConfigSchema) -> tuple[Any, Any]:
     self_sent_weight = getattr(config.chat, "self_sent_message_weight", 0.1)
     if self_sent_weight is None:
         self_sent_weight = 0.1
-    bot_account = config.bot.account
-    reply_blacklist = set(config.chat.reply_blacklist or [])
+    bot_account = primary_bot_account(config)
+    reply_blacklist = {str(item) for item in (config.chat.reply_blacklist or [])}
 
     group_queue = MessageQueue(
         max_size=config.chat.max_group_chat_observations,
@@ -161,6 +169,7 @@ def build_memory_services(
     archive_memory_service = build_archive_memory_service(
         uow_factory=uow_factory,
         logger=logger_factory.get_logger("app.archive_memory"),
+        key_mapper=canonical_archive_key,
     )
     profile_service = UserProfileService(
         adapter=adapter,
@@ -168,6 +177,21 @@ def build_memory_services(
         config=config,
         logger=logger_factory.get_logger("app.user_profiles"),
         archive_memory_service=archive_memory_service,
+    )
+    bind_identity_merge(
+        IdentityMergeService(
+            uow_factory=uow_factory,
+            logger=logger_factory.get_logger("app.identity_merge"),
+        )
+    )
+    # /linkqq、/linkgroup 成功后的即时全量迁移入口（启动期已迁移过一次）。
+    bind_identity_migration(
+        IdentityMigrationCoordinator(
+            db_path=data_dir / "neobot.db",
+            data_dir=data_dir,
+            official_only=official_only_mode(config),
+            logger=logger_factory.get_logger("app.db_migration"),
+        )
     )
     bot_detector = BotDetector(adapter)
     willing_service = WillingService(

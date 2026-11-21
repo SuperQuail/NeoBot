@@ -26,14 +26,34 @@ from .test_orchestrator import (
 )
 
 
-@pytest.mark.parametrize("section", ["group_chat", "friend_chat"])
-def test_default_prompts_require_a_real_cancel_tool_call(section):
+def test_default_prompts_require_a_real_cancel_tool_call():
     prompts = tomllib.loads((TEMPLATES_DIR / "prompts.toml").read_text(encoding="utf-8"))
-    text = prompts[section]["template"]
+    # 规则在 [qq_chat]，取消/引用的写法说明在共享回复样例里
+    text = prompts["qq_chat"]["template"] + prompts["qq_chat_examples"]["template"]
     assert "取消本轮回复必须直接调用 cancel 工具" in text
     assert "讨论或引用这个词不等于调用工具" in text
     assert "所有对外发言都必须通过工具调用" in text
     assert "没有调用发送工具就直接输出的正文不会被发送" in text
+
+
+def test_qq_default_prompts_do_not_allow_direct_output():
+    """QQ 回复相关默认文案不允许“先输出正文再补工具”的模糊表述。"""
+    prompts = tomllib.loads((TEMPLATES_DIR / "prompts.toml").read_text(encoding="utf-8"))
+    fallback = tomllib.loads((TEMPLATES_DIR / "fallback.toml").read_text(encoding="utf-8"))
+    text = "\n".join(
+        [prompts[name]["template"] for name in (
+            "qq_chat", "qq_chat_examples", "group_chat", "friend_chat", "friend_chat_hint",
+            "reply_tool_contract", "no_tool_call_reminder", "silent_nudge",
+        )]
+        + [fallback[name]["template"] for name in ("reply_tool_contract", "friend_chat_hint")]
+    )
+
+    assert "你可以先告诉对方" not in text
+    assert "正常回复对方的消息" not in text
+    assert "本轮会被记为失败" not in text
+    assert "没有调用发送工具就直接输出的正文不会被发送" in text
+    assert "必须先调用 send_reply 回复" in text
+    assert "content 留空" in text
 
 
 def test_send_reply_definition_declares_the_only_outlet():
@@ -45,6 +65,7 @@ def test_send_reply_definition_declares_the_only_outlet():
     )
 
     assert "唯一出口" in definition["function"]["description"]
+    assert "判为失败" not in definition["function"]["description"]
 
 
 def tool_response(name, args):
@@ -148,7 +169,7 @@ async def test_review_without_tool_is_cancelled_and_never_sends_draft(monkeypatc
 @pytest.mark.parametrize("kind", ["group", "private"])
 @pytest.mark.parametrize("decision", ["send_reply", "cancel"])
 async def test_structured_review_decisions_still_work(monkeypatch, kind, decision):
-    args = {"text": "确认后的正文", "ai_check_approved": True} if decision == "send_reply" else {"reason": "无需参与"}
+    args = {"text": "确认后的正文", "segments": ["确认后的正文"]} if decision == "send_reply" else {"reason": "无需参与"}
     event, provider, sent, stages, _, _ = await run_script(monkeypatch, [
         tool_response("send_reply", {"text": "待审草稿"}), tool_response(decision, args),
     ], kind=kind)
@@ -188,9 +209,7 @@ async def test_bare_cancel_in_plain_model_output_is_not_claimed_sent(monkeypatch
 ])
 async def test_orchestrator_forwards_verified_preview_to_real_sender(monkeypatch, text, segments):
     first = tool_response("send_reply", {"text": text})
-    approved = tool_response("send_reply", {
-        "text": text, "segments": segments, "ai_check_approved": True,
-    })
+    approved = tool_response("send_reply", {"text": text, "segments": segments})
     event, provider, sent, _, _, _ = await run_script(monkeypatch, [first, approved])
     assert event.state is ReplyState.COMPLETED
     assert len(provider.calls) == 3
@@ -209,10 +228,10 @@ async def test_tool_review_pending_clears_only_on_successful_decision():
     result = await executor.execute("send_reply", {"text": "你好"})
     assert "暂未发送" in result and executor.ai_check_pending
     send.assert_not_awaited()
-    result = await executor.execute("send_reply", {"text": "你好", "ai_check_approved": True})
+    result = await executor.execute("send_reply", {"text": "你好", "segments": ["你好"]})
     assert result.startswith("错误：") and executor.ai_check_pending
     send.return_value = True
-    await executor.execute("send_reply", {"text": "你好", "ai_check_approved": True})
+    await executor.execute("send_reply", {"text": "你好", "segments": ["你好"]})
     assert not executor.ai_check_pending
     await executor.execute("send_reply", {"text": "下一条"})
     await executor.execute("cancel", {})

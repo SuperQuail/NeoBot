@@ -9,6 +9,8 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
+from neobot_app.user_identity import display_user_id
+
 from .common import QueueMessage
 from .helpers import _safe_int
 
@@ -38,7 +40,7 @@ class _QueueSegmentMixin:
                         reply_number_resolver=reply_number_resolver,
                     )
                 )
-                if wrap_at_mention and self._is_at_bot_segment(segment):
+                if wrap_at_mention and self._is_at_bot_segment(segment, message):
                     has_at_bot = True
                     parts.append(
                         f"<这是新的可能要回答的内容>{seg_text}</这是新的可能要回答的内容>"
@@ -61,23 +63,40 @@ class _QueueSegmentMixin:
 
         return "[无消息内容]"
 
-    def _is_at_bot_segment(self, segment: object) -> bool:
-        if self.bot_account is None:
-            return False
+    def _is_at_bot_segment(self, segment: object, message: object = None) -> bool:
+        """该 at 段是否指向任一 bot。
+
+        官方消息优先用适配器的权威结论 mentioned_self（uin/at 段 qq=0 时也能判）；
+        非官方/未知回退 at 段匹配（消息级 self_id 优先，其次 bot_accounts）。
+        """
         seg_type = getattr(segment, "type", None)
         if isinstance(seg_type, Enum):
             seg_type = seg_type.value
         if str(seg_type) != "at":
             return False
+        mentioned_self = getattr(message, "mentioned_self", None)
+        if mentioned_self is not None:
+            return bool(mentioned_self)
         raw_data = getattr(segment, "data", None)
         data = self._segment_data_to_dict(raw_data)
         qq = str(data.get("qq") or "")
-        return qq == str(self.bot_account)
+        if not qq:
+            return False
+        return qq in {str(bot_id) for bot_id in self._bot_ids(message)}
 
-    def _wrap_at_in_raw_message(self, text: str, _message: QueueMessage) -> str:
-        if self.bot_account is None:
+    @staticmethod
+    def _at_mention_pattern(bot_ids: set[int]) -> str:
+        """匹配渲染文本里的 @QQ:xxx / @昵称(QQ:xxx)（含旧格式）的正则。"""
+        ids = [str(bot_id) for bot_id in sorted(bot_ids)]
+        alternatives = [f"@QQ:{qq}" for qq in ids]
+        alternatives.extend(rf"@[^(\n]*\(QQ:{qq}\)" for qq in ids)
+        return "(" + "|".join(alternatives) + ")"
+
+    def _wrap_at_in_raw_message(self, text: str, message: QueueMessage) -> str:
+        bot_ids = self._bot_ids(message)
+        if not bot_ids:
             return f"<这是新的可能要回答的内容>{text}</这是新的可能要回答的内容>"
-        pattern = rf"(@QQ:{self.bot_account}|@[^(\n]*\(QQ:{self.bot_account}\))"
+        pattern = self._at_mention_pattern(bot_ids)
         if re.search(pattern, text):
             return re.sub(
                 pattern,
@@ -153,12 +172,15 @@ class _QueueSegmentMixin:
     @staticmethod
     def _format_at_segment(data: Dict[str, object]) -> str:
         qq = data.get("qq", "未知")
-        if qq == "all":
+        if str(qq) == "all":
             return "@全体成员"
+        text = str(qq)
+        # 身份全量展示：真实 QQ 号 QQ:<号>，官方 openid openid:<完整值>
+        label = display_user_id(text) if text and text != "未知" else f"QQ:{qq}"
         name = data.get("name")
         if name:
-            return f"@{name}(QQ:{qq})"
-        return f"@QQ:{qq}"
+            return f"@{name}({label})"
+        return f"@{label}"
 
     @staticmethod
     def _normalize_inline_text(text: str) -> str:

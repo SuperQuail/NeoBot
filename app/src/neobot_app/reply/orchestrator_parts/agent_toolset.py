@@ -17,17 +17,16 @@ if TYPE_CHECKING:
 
 class AgentToolsetMixin:
 
-    def _agent_conversation_ids(self, event: ReplyEvent) -> tuple[str, str, int | None]:
-        """本轮会话 kind/id 与当前用户 id（工具回调与工具集构建共用）。"""
+    def _agent_conversation_ids(self, event: ReplyEvent) -> tuple[str, str, str | None]:
+        """本轮会话 kind/id 与当前用户 id（工具回调与工具集构建共用）。
+
+        user_id 可能是官方 openid 字符串：原样按字符串透传，绝不 int()。
+        """
+        from neobot_app.bot_accounts import identity_text
+
         conv_kind = event.conversation_ref.kind if event.conversation_ref else ""
         conv_id = event.conversation_ref.id if event.conversation_ref else ""
-        current_user_id = None
-        try:
-            raw_user = getattr(event.message, "user_id", None)
-            if raw_user is not None:
-                current_user_id = int(raw_user)
-        except (TypeError, ValueError):
-            current_user_id = None
+        current_user_id = identity_text(getattr(event.message, "user_id", None)) or None
         return conv_kind, conv_id, current_user_id
 
     async def _build_agent_toolset(
@@ -58,14 +57,6 @@ class AgentToolsetMixin:
             queue_copy,
             queue_key,
             numbering,
-        )
-        send_emoji_handler = partial(
-            self._agent_send_emoji_handler,
-            state,
-            event,
-            queue,
-            queue_copy,
-            queue_key,
         )
         wait_handler = partial(
             self._agent_wait_handler,
@@ -101,12 +92,22 @@ class AgentToolsetMixin:
             queue_key,
             numbering,
         )
+        send_official_markdown_handler = partial(
+            self._agent_send_official_markdown_handler,
+            state,
+            event,
+            queue,
+            queue_copy,
+            queue_key,
+            numbering,
+        )
+
+        official_group_manage_handler = self._agent_official_group_manage_handler
 
         reply_toolset = build_reply_toolset(
             send_reply_handler=send_reply_handler,
             willing_service=self._willing_service,
             numbering=numbering,
-            send_emoji_handler=send_emoji_handler,
             emoji_service=self._emoji_service,
             wait_handler=wait_handler,
             react_emoji_handler=react_emoji_handler,
@@ -122,6 +123,8 @@ class AgentToolsetMixin:
             notification_hub=self._notification_hub,
             markdown_image_converter=self._markdown_image_converter,
             send_long_reply_handler=send_long_reply_handler,
+            send_official_markdown_handler=send_official_markdown_handler,
+            official_group_manage_handler=official_group_manage_handler,
             chat_context=prompt,
             conv_kind=conv_kind,
             conv_id=conv_id,
@@ -130,6 +133,7 @@ class AgentToolsetMixin:
             agent_history=messages,
             skills_registry=self._markdown_skills,
             allowed_tools=allowed_tools,
+            official_platform=self._is_official_platform(event),
             wait_cooldown_seconds=self._get_wait_cooldown_seconds(),
             ai_reply_check=self._get_ai_reply_check(),            ai_reply_check_lightweight=self._get_ai_reply_check_lightweight(),
             bot_name=self._get_bot_name(),
@@ -169,7 +173,7 @@ class AgentToolsetMixin:
                     event_id=event.event_id,
                     error=str(exc),
                 )
-        if self._skill_manager is not None and conv_kind in {"group", "private"} and str(conv_id).isdigit():
+        if self._skill_manager is not None and conv_kind in {"group", "private"}:
             from neobot_app.skills.agent_tools_skill import AgentToolsSkill
             from neobot_app.agent_tools.contracts import ToolContext
             shared_tools = self._skill_manager.get("agent_tools")
@@ -285,9 +289,9 @@ class AgentToolsetMixin:
                 "role": "user",
                 "content": (
                     "[表情包选择] 你觉得现在发一张表情包比较合适。"
-                    "下面是候选表情包的编号和图片；可以用 send_emoji 工具单独发送一张"
-                    "（表情包单独发，不要附带文字，也不要和要说的话一起发），"
-                    "如果觉得没有合适的，就不要发表情包，继续正常回复。"
+                    "下面是候选表情包的编号和图片；可以用 send_reply 的 emoji_numbers 参数发送（"
+                    "每张图单独一条消息，文字另外发），也可以只发图不配文字，"
+                    "如果觉得没有合适的，就不要发表情包，继续用 send_reply 正常回复。"
                     "候选编号：" + "、".join(str(n) for n in numbers) + "。"
                 ),
             }

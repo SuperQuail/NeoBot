@@ -168,6 +168,10 @@ async def _archive_get(skill: _BilibiliToolBase, table: str, key: str) -> str:
 async def _load_qq_user(skill: _BilibiliToolBase, qq_number: str) -> Any:
     if skill._uow_factory is None:
         return None
+    # QQ 号可能已 link 到 openid：资料行以 openid 为主键，先归一。
+    from neobot_app.user_identity import canonical_user_id
+
+    qq_number = canonical_user_id(qq_number)
     try:
         async with skill._uow_factory() as uow:
             profiles = getattr(uow, "profiles", None)

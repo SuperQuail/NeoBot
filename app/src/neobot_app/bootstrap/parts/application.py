@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from neobot_app.bootstrap._pipeline import build_pipelines_and_app, register_host_services
+from neobot_app.bot_accounts import get_bot_accounts
 from neobot_app.bootstrap._skills import build_plugin_runtime
 from neobot_app.runtime.application import NeoBotApplication
 from neobot_app.runtime.process_restart import ProcessRestartSignal
@@ -165,6 +166,10 @@ def create_application(*, owns_plugins: bool = True) -> NeoBotApplication:
             "willing_service": (memory_svcs["willing_service"], "回复意愿服务"),
             "chat_stream": (memory_svcs["chat_stream"], "聊天流管理器"),
             "bot_detector": (memory_svcs["bot_detector"], "官方 Bot 检测器"),
+            "bot_accounts": (
+                get_bot_accounts(),
+                "机器人 QQ 号统一提供者（单/双通道取号、自身发言判定）",
+            ),
             "sandbox_service": (sandbox["sandbox_service"], "沙箱服务"),
             "prompt_store": (prompt_store, "提示词存储"),
             "chat_flow_registry": (chat_flow_registry, "聊天流快照登记处（面板只读）"),

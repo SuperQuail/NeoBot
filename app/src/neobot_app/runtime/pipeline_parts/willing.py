@@ -25,14 +25,10 @@ class _PipelineWillingMixin:
         """睡眠中的群消息处理:仅被@可唤醒回复,其余消息只入队不触发回复。"""
         at_mentioned = self._willing_service is not None and self._willing_service.is_at_mentioned(message)
         if not at_mentioned:
-            self._logger.debug(
-                "睡眠中，消息已入队",
-                event="reply.decided",
-                should_reply=False,
-                reason="sleeping",
-                chat_flow_id=f"group:{queue_key}",
-                conversation_kind="group",
-                conversation_id=queue_key,
+            self._log_message_enqueued(
+                message=message,
+                queue_key=queue_key,
+                reason="睡眠中，不触发回复",
             )
             return False
 
@@ -43,16 +39,10 @@ class _PipelineWillingMixin:
                 queue_key=queue_key,
             )
             if block_reason:
-                self._logger.debug(
-                    "回复意愿判定",
-                    event="reply.decided",
-                    chat_flow_id=f"group:{queue_key}",
-                    message_id=message.message_id,
-                    conversation_kind="group",
-                    conversation_id=queue_key,
-                    probability=0.0,
-                    should_reply=False,
-                    reasons=f"原因: 已屏蔽: {block_reason}",
+                self._log_message_enqueued(
+                    message=message,
+                    queue_key=queue_key,
+                    reason=f"已屏蔽: {block_reason}",
                 )
                 return False
 
@@ -86,17 +76,7 @@ class _PipelineWillingMixin:
             should_reply=True,
             reasons=("睡眠中被@唤醒,直接回复",),
         )
-        self._logger.debug(
-            "回复意愿判定",
-            event="reply.decided",
-            chat_flow_id=f"group:{queue_key}",
-            message_id=message.message_id,
-            conversation_kind="group",
-            conversation_id=queue_key,
-            probability=1.0,
-            should_reply=True,
-            reasons="原因: 睡眠中被@唤醒,注入唤醒提示词",
-        )
+        self._log_message_enqueued(message=message, queue_key=queue_key, decision=decision)
         if self._reply_orchestrator is None:
             return False
         return self._start_reply_with_tracking(
@@ -151,6 +131,14 @@ class _PipelineWillingMixin:
             return
 
         for msg in pending:
+            # 同 msg_id 已触发过回复（FULL→AT 升级）：不再重复触发
+            if self._reply_started_for_message(getattr(msg, "message_id", None)):
+                self._logger.debug(
+                    "同 msg_id 已触发过回复，跳过图片等待队列中的重复消息",
+                    queue_key=queue_key,
+                    message_id=getattr(msg, "message_id", None),
+                )
+                continue
             if queue_key in self._replying_queues and not self._has_active_reply_pipeline("group", queue_key):
                 self._logger.debug(
                     "已清理过期的回复中队列状态",
@@ -189,6 +177,15 @@ class _PipelineWillingMixin:
         )
 
         for msg in pending:
+            # 同 msg_id 已触发过回复（FULL→AT 升级）：不再重复触发。
+            # 必须先于「仍在回复中」判断，否则会被再次放回 post-reply 队列。
+            if self._reply_started_for_message(getattr(msg, "message_id", None)):
+                self._logger.debug(
+                    "同 msg_id 已触发过回复，跳过回复后队列中的重复消息",
+                    queue_key=queue_key,
+                    message_id=getattr(msg, "message_id", None),
+                )
+                continue
             if queue_key in self._replying_queues and not self._has_active_reply_pipeline("group", queue_key):
                 self._logger.debug(
                     "已清理过期的回复中队列状态",

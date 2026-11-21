@@ -12,6 +12,15 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 
 from neobot_app.utils.prompt_text import escape_prompt_text
 
+from neobot_app.bot_accounts import identity_text
+from neobot_app.user_identity import (
+    canonical_group_id,
+    canonical_user_id,
+    display_user_id,
+    group_number_for,
+    profile_identity,
+    qq_for_user,
+)
 from neobot_app.favorability import (
     FAVORABILITY_MAX,
     FAVORABILITY_MIN,
@@ -57,6 +66,15 @@ class UserProfileService:
         self._logger = logger or NullLogger()
         self._archive_memory_service = archive_memory_service
 
+    @staticmethod
+    def _user_key(user_id: Any) -> str:
+        """资料/档案主键归一：已 link 的 QQ 号统一落到 openid。"""
+        return canonical_user_id(identity_text(user_id))
+
+    @staticmethod
+    def _group_key(group_id: Any) -> str:
+        return canonical_group_id(identity_text(group_id))
+
     def _get_dependency_timeout_seconds(self) -> float:
         return 10.0
 
@@ -82,13 +100,15 @@ class UserProfileService:
         observed_fields: Optional[dict[str, Any]] = None,
     ) -> Any | None:
         user_id_str = str(user_id)
-        record = await self.get_user(user_id_str)
+        canonical = self._user_key(user_id_str)
+        record = await self.get_user(canonical)
         if record is not None and observed_fields:
-            record = await self._merge_observed_fields(user_id_str, record, observed_fields)
+            record = await self._merge_observed_fields(canonical, record, observed_fields)
 
         if record is None or self._needs_refresh(record):
             record = await self._refresh_user_profile(
                 user_id_str,
+                canonical_id=canonical,
                 observed_fields=observed_fields,
                 current_profile=record,
             )
@@ -96,14 +116,14 @@ class UserProfileService:
 
     async def get_user(self, user_id: str | int) -> Any | None:
         async with self._uow_factory() as uow:
-            return await uow.profiles.get_user(str(user_id))
+            return await uow.profiles.get_user(self._user_key(user_id))
 
     async def get_group(self, group_id: str | int) -> Any | None:
         async with self._uow_factory() as uow:
-            return await uow.profiles.get_group(str(group_id))
+            return await uow.profiles.get_group(self._group_key(group_id))
 
     async def update_user_remark(self, user_id: str | int, remark: str | None) -> Any | None:
-        user_id_str = str(user_id)
+        user_id_str = self._user_key(user_id)
         remark_text = str(remark or "").strip()
         async with self._uow_factory() as uow:
             await uow.profiles.upsert_user(user_id_str, remark=remark_text)
@@ -115,7 +135,7 @@ class UserProfileService:
         user_id: str | int,
         avatar_analysis: str | None,
     ) -> Any | None:
-        user_id_str = str(user_id)
+        user_id_str = self._user_key(user_id)
         avatar_text = str(avatar_analysis or "").strip()
         async with self._uow_factory() as uow:
             await uow.profiles.upsert_user(user_id_str, avatar_analysis=avatar_text)
@@ -137,7 +157,7 @@ class UserProfileService:
         CAS 失败或 SQLite 锁冲突时重放整个事务，而不是在回滚后仅重试
         commit。每次重读当前值，因此并发回复/摘要任务不会覆盖彼此的增量。
         """
-        user_id_str = str(user_id).strip()
+        user_id_str = self._user_key(user_id).strip()
         if not user_id_str:
             raise ValueError("user_id 不能为空")
         requested = int(change)
@@ -193,7 +213,7 @@ class UserProfileService:
         user_id: str | int,
         favorability: int,
     ) -> Any | None:
-        user_id_str = str(user_id)
+        user_id_str = self._user_key(user_id)
         async with self._uow_factory() as uow:
             await uow.profiles.upsert_user(user_id_str, favorability=favorability)
             await uow.commit()
@@ -203,7 +223,8 @@ class UserProfileService:
         group = await self.get_group(group_id)
         if group is not None and getattr(group, "group_name", None):
             return str(group.group_name)
-        return f"群聊{group_id}"
+        mapped_group = group_number_for(group_id)
+        return f"群聊{mapped_group or group_id}"
 
     async def get_user_name(self, user_id: str | int) -> str:
         """用户可读昵称：nick_name → long_nick → QQ:{id}。
@@ -216,7 +237,7 @@ class UserProfileService:
         name = str(getattr(user, "nick_name", "") or "").strip()
         if not name:
             name = str(getattr(user, "long_nick", "") or "").strip()
-        return name or f"QQ:{user_id}"
+        return name or display_user_id(user_id)
 
     async def render_group_owner_text(
         self,
@@ -224,17 +245,16 @@ class UserProfileService:
         message_queue: Any | None = None,
     ) -> str:
         """获取群主信息文本：'群主：name（QQ：123456）'，从队列或 API 动态查找。"""
-        group_id_int = _safe_int(group_id)
         members = None
 
         # 先从消息队列中查找（轻量，无 API 调用）
         members = self._collect_group_members_from_queue(group_id, message_queue)
 
-        # 队列中找不到则调用 API
-        if not members and group_id_int is not None:
+        # 队列中找不到则调用 API（群 ID 原样传：OneBot 数字 / 官方 openid）
+        if not members and identity_text(group_id):
             try:
                 response = await self._adapter_call(
-                    self._adapter.get_group_member_list(group_id_int),
+                    self._adapter.get_group_member_list(group_id),
                     action="get_group_member_list",
                     group_id=str(group_id),
                 )
@@ -251,9 +271,12 @@ class UserProfileService:
                         continue
                     card = getattr(member, "card", None)
                     nickname = getattr(member, "nickname", None)
-                    name = card or nickname or f"QQ:{user_id}"
+                    name = card or nickname or display_user_id(user_id)
                     # 群昵称/昵称是用户可控文本，直接拼进提示词会破坏区块结构
-                    return f"群主：{escape_prompt_text(name)}（QQ：{user_id}）"
+                    return (
+                        f"群主：{escape_prompt_text(name)}"
+                        f"（{profile_identity(user_id)}）"
+                    )
 
         return ""
 
@@ -275,11 +298,20 @@ class UserProfileService:
             group_id, message_queue, window=archive_fetch_window,
         )
         if members is None:
-            response = await self._adapter_call(
-                self._adapter.get_group_member_list(int(group_id)),
-                action="get_group_member_list",
-                group_id=str(group_id),
-            )
+            try:
+                response = await self._adapter_call(
+                    self._adapter.get_group_member_list(group_id),
+                    action="get_group_member_list",
+                    group_id=str(group_id),
+                )
+            except Exception as exc:
+                # 成员列表只是增强信息：API 异常不能把整轮提示词构建带崩
+                self._logger.warning(
+                    "获取群成员列表失败，跳过成员信息",
+                    group_id=str(group_id),
+                    error_type=type(exc).__name__,
+                )
+                response = None
             members = response.data if response and response.data else []
 
         lines: list[str] = []
@@ -317,7 +349,7 @@ class UserProfileService:
                 await self._fetch_user_archive(str(user_id)) if include_archives else None
             )
             member = SimpleNamespace(
-                user_id=int(user_id),
+                user_id=identity_text(user_id),
                 nickname=getattr(profile, "nick_name", None),
                 card=None,
                 sex=getattr(profile, "sex", None),
@@ -371,9 +403,10 @@ class UserProfileService:
         if self._archive_memory_service is None:
             return None
         limit = self._user_archive_max_chars()
+        key = self._user_key(user_id)
         for table in ("user_summary", "user_profile"):
             try:
-                item = await self._archive_memory_service.get(table, user_id)
+                item = await self._archive_memory_service.get(table, key)
             except Exception:
                 continue
             if item is not None and item.value:
@@ -526,51 +559,50 @@ class UserProfileService:
         *,
         message_queue: Any | None = None,
     ) -> str | None:
-        bot_account_int = _safe_int(bot_account)
-        if bot_account_int is None:
+        group_text = identity_text(group_id)
+        bot_text = identity_text(bot_account)
+        if not group_text or not bot_text:
             return None
 
-        group_id_int = _safe_int(group_id)
-        if group_id_int is not None:
-            getter = getattr(self._adapter, "get_group_member_info", None)
-            if getter is not None:
-                try:
-                    response = await self._adapter_call(
-                        getter(group_id_int, bot_account_int),
-                        action="get_group_member_info",
-                        group_id=str(group_id),
-                        bot_account=str(bot_account),
-                    )
-                    role = _normalize_role(getattr(getattr(response, "data", None), "role", None))
-                    if role:
-                        return role
-                except Exception as exc:
-                    self._logger.warning(
-                        "查询 Bot 群成员信息失败",
-                        group_id=str(group_id),
-                        bot_account=str(bot_account),
-                        error=str(exc),
-                    )
-
+        getter = getattr(self._adapter, "get_group_member_info", None)
+        if getter is not None:
             try:
                 response = await self._adapter_call(
-                    self._adapter.get_group_member_list(group_id_int),
-                    action="get_group_member_list",
+                    getter(group_text, bot_text),
+                    action="get_group_member_info",
                     group_id=str(group_id),
+                    bot_account=str(bot_account),
                 )
-                role = _find_member_role(getattr(response, "data", None), bot_account_int)
+                role = _normalize_role(getattr(getattr(response, "data", None), "role", None))
                 if role:
                     return role
             except Exception as exc:
                 self._logger.warning(
-                    "查询群成员列表失败",
+                    "查询 Bot 群成员信息失败",
                     group_id=str(group_id),
                     bot_account=str(bot_account),
                     error=str(exc),
                 )
 
+        try:
+            response = await self._adapter_call(
+                self._adapter.get_group_member_list(group_text),
+                action="get_group_member_list",
+                group_id=str(group_id),
+            )
+            role = _find_member_role(getattr(response, "data", None), bot_account)
+            if role:
+                return role
+        except Exception as exc:
+            self._logger.warning(
+                "查询群成员列表失败",
+                group_id=str(group_id),
+                bot_account=str(bot_account),
+                error=str(exc),
+            )
+
         members = self._collect_group_members_from_queue(group_id, message_queue)
-        return _find_member_role(members, bot_account_int)
+        return _find_member_role(members, bot_account)
 
     def _needs_refresh(self, profile: Any) -> bool:
         if not getattr(self._config.chat, "enable_periodic_user_info_update", False):
@@ -613,18 +645,21 @@ class UserProfileService:
         self,
         user_id: str,
         *,
+        canonical_id: str | None = None,
         observed_fields: Optional[dict[str, Any]] = None,
         current_profile: Any | None = None,
     ) -> Any | None:
+        # 适配器必须用平台原始 ID（QQ号/openid）拉资料；落库统一用 canonical_id。
+        key = canonical_id or self._user_key(user_id)
         try:
             response = await self._adapter_call(
-                self._adapter.get_stranger_info(int(user_id)),
+                self._adapter.get_stranger_info(identity_text(user_id)),
                 action="get_stranger_info",
                 user_id=user_id,
             )
         except Exception as exc:
             self._logger.warning("刷新用户信息失败", user_id=user_id, error=str(exc))
-            return await self.get_user(user_id)
+            return await self.get_user(key)
 
         data = getattr(response, "data", None)
         fields = self._build_user_fields(
@@ -635,9 +670,9 @@ class UserProfileService:
         fields["fetched_at"] = now_utc()
 
         async with self._uow_factory() as uow:
-            await uow.profiles.upsert_user(user_id, **fields)
+            await uow.profiles.upsert_user(key, **fields)
             await uow.commit()
-            return await uow.profiles.get_user(user_id)
+            return await uow.profiles.get_user(key)
 
     @staticmethod
     def _build_user_fields(
@@ -754,7 +789,7 @@ class UserProfileService:
         nickname = escape_prompt_text(
             getattr(member, "nickname", None)
             or getattr(profile, "nick_name", None)
-            or f"QQ:{user_id}"
+            or display_user_id(user_id)
         )
         remark = escape_prompt_text(getattr(profile, "remark", None))
         nickname_part = f"昵称:{nickname}"
@@ -765,7 +800,7 @@ class UserProfileService:
         card = escape_prompt_text(getattr(member, "card", None))
         if card:
             segments.append(f"群昵称:{card}")
-        segments.append(f"QQ号:{user_id}")
+        segments.append(profile_identity(user_id))
 
         qq_gender = _sex_to_text(getattr(member, "sex", None)) or _sex_to_text(getattr(profile, "sex", None))
         if qq_gender:
@@ -805,13 +840,13 @@ class UserProfileService:
         *,
         archive_text: str | None = None,
     ) -> str:
-        nickname = getattr(profile, "nick_name", None) or f"QQ:{user_id}"
+        nickname = getattr(profile, "nick_name", None) or display_user_id(user_id)
         remark = getattr(profile, "remark", None)
         nickname_part = f"昵称:{nickname}"
         if remark:
             nickname_part += f"(你对Ta的备注:{remark})"
 
-        segments = [nickname_part, f"QQ号:{user_id}"]
+        segments = [nickname_part, profile_identity(user_id)]
 
         qq_gender = _sex_to_text(getattr(profile, "sex", None))
         if qq_gender:
@@ -845,13 +880,6 @@ class UserProfileService:
         return f"<聊天对象>{','.join(segments)}</聊天对象>"
 
 
-def _safe_int(value: object) -> int | None:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _normalize_role(value: object) -> str | None:
     role = getattr(value, "value", value)
     if role is None:
@@ -860,12 +888,16 @@ def _normalize_role(value: object) -> str | None:
     return role_text or None
 
 
-def _find_member_role(members: Any, bot_account: int) -> str | None:
+def _find_member_role(members: Any, bot_account: object) -> str | None:
+    """在成员列表里找 Bot 自己的角色：ID 按字符串比较，映射到同一真实 QQ 也算。"""
     if not members:
         return None
+    target = identity_text(bot_account)
+    target_qq = qq_for_user(bot_account) if target else None
     for member in members:
-        user_id = _safe_int(getattr(member, "user_id", None))
-        if user_id != bot_account:
+        user_text = identity_text(getattr(member, "user_id", None))
+        if not user_text:
             continue
-        return _normalize_role(getattr(member, "role", None))
+        if user_text == target or (target_qq is not None and qq_for_user(user_text) == target_qq):
+            return _normalize_role(getattr(member, "role", None))
     return None

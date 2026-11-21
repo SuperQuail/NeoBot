@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, cast
@@ -50,13 +50,14 @@ class Agent:
         skills: SkillRegistry | None = None,
         description: str = "",
         cwd: str | Path | None = None,
-        max_iterations: int = 10,
+        max_iterations: int | None = 10,
         command_timeout: int = 30,
         allowed_commands: list[str] | None = None,
         system_prompt: str | None = None,
         on_event: OnEvent | None = None,
         tool_guard: ToolGuard | None = None,
         on_model_usage: Callable[..., Any] | None = None,
+        message_compactor: Callable[[list[Message]], Awaitable[list[Message] | None]] | None = None,
         logger: Logger = NullLogger(),
         output: Any | None = None,
     ):
@@ -86,6 +87,7 @@ class Agent:
         self.skills = skills
         self.description = description
         self.max_iterations = max_iterations
+        self._message_compactor = message_compactor
         self.command_timeout = command_timeout
         self.system_prompt = system_prompt
         self.on_event = on_event
@@ -96,7 +98,9 @@ class Agent:
         state, tools, messages = self._prepare(state)
         heartbeat = SILENT_HEARTBEAT.get()
 
-        for i in range(self.max_iterations):
+        i = 0
+        while self.max_iterations is None or i < self.max_iterations:
+            messages = await self._maybe_compact(messages)
             self._emit("llm_start", {"iteration": i})
             try:
                 response = await self.provider.chat(messages, tools=tools)
@@ -142,6 +146,7 @@ class Agent:
             await self._run_tools(tool_calls, messages, heartbeat=heartbeat)
             # 工具可能改变工具面（skills__load_tools 按需加载），下一轮必须重新取。
             tools = self._all_tools() or None
+            i += 1
 
         return {**state, "messages": messages}
 
@@ -149,7 +154,9 @@ class Agent:
         state, tools, messages = self._prepare(state)
         heartbeat = SILENT_HEARTBEAT.get()
 
-        for i in range(self.max_iterations):
+        i = 0
+        while self.max_iterations is None or i < self.max_iterations:
+            messages = await self._maybe_compact(messages)
             self._emit("llm_start", {"iteration": i, "stream": True})
 
             response: Message | None = None
@@ -214,6 +221,7 @@ class Agent:
             await self._run_tools(tool_calls, messages, heartbeat=heartbeat)
             # 工具可能改变工具面（skills__load_tools 按需加载），下一轮必须重新取。
             tools = self._all_tools() or None
+            i += 1
 
         yield ChatChunk(state={**state, "messages": messages})
 
@@ -235,6 +243,16 @@ class Agent:
 
     def _all_tools(self) -> list[ToolDefinition]:
         return self.toolset.definitions()
+
+    async def _maybe_compact(self, messages: list[Message]) -> list[Message]:
+        """每轮模型调用前尝试压缩上下文；压缩失败不影响主流程。"""
+        if self._message_compactor is None:
+            return messages
+        try:
+            compacted = await self._message_compactor(messages)
+        except Exception:
+            return messages
+        return compacted if compacted is not None else messages
 
     def _prepare(
         self, state: State

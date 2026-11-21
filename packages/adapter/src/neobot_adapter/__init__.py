@@ -6,6 +6,7 @@ from .local import LocalAdapter
 from .mapping import map_to_incoming_message
 from .onebot import AdapterCore, OneBotAdapter, Subscription
 from .request.websocket import WebSocketAPI
+from .switchable import SwitchableAdapter
 
 __all__ = [
     "OneBotAdapter",
@@ -17,5 +18,6 @@ __all__ = [
     "RuntimeAdapter",
     "map_to_incoming_message",
     "AdapterCore",
+    "SwitchableAdapter",
     "WebSocketAPI",
 ]

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from neobot_contracts.ports.speaking import SpeechBlocked
 
 import asyncio
 import inspect
+import re
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -17,12 +18,31 @@ from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.runtime_event import RuntimeEnvelope
 from neobot_contracts.time_context import now_utc
 
+from neobot_app.message.queue import SelfSentToolCall
 from neobot_app.reply.debug import DebugHelper
 from neobot_app.reply.event import ReplyState
 from neobot_app.reply.output_guard import clean_segments, clean_text, should_drop
 from neobot_app.reply.postprocess import ReplySplitPreview, process_reply_text
+from neobot_app.bot_accounts import primary_bot_account
+from neobot_app.message.addressing import is_addressed_to_bot
 from neobot_app.utils.media_sender import prepare_image_segment, send_image
 from neobot_app.time_context import monotonic_seconds
+
+
+def send_response_ok(result: Any) -> bool:
+    """适配器 SendMsgResponse 是否真正成功；失败响应不能被当成已发送。"""
+    if result is False or result is None:
+        return False
+    status = getattr(result, "status", None)
+    if status is None and isinstance(result, dict):
+        status = result.get("status")
+    return status != "failed"
+
+#: 模型常在正文里再写一遍「@昵称」；已经通过 mention_qqs 发真实 @ 时需要去掉，
+#: 否则客户端会出现「@唐天 @ 唐天 喵」这种重复假 @。
+_LEADING_MENTION_TEXT = re.compile(
+    r"^\s*(?:(?:@\s*[^\s@]+)[\s,，:：]*\s*)+", re.UNICODE
+)
 
 _MARKDOWN_RENDER_TIMEOUT_SECONDS = 60.0
 
@@ -87,6 +107,20 @@ def _default_self_sent_uow_factory() -> Any:
         return None
     _DEFAULT_SELF_SENT_UOW_FACTORY = factory
     return factory
+
+
+def _tool_call_payload(tool_call: SelfSentToolCall | None) -> dict[str, Any] | None:
+    """工具元数据 → storage 契约里的不透明 dict（IncomingMessage.tool_call）。"""
+    if tool_call is None:
+        return None
+    return {
+        "name": tool_call.name,
+        "arguments": dict(tool_call.arguments or {}),
+        "result": dict(tool_call.result or {}),
+        "ok": bool(tool_call.ok),
+        "compact": bool(tool_call.compact),
+        "call_id": str(tool_call.call_id or ""),
+    }
 
 
 class ReplySender:
@@ -188,7 +222,87 @@ class ReplySender:
 
     # ── public API (also used by engine) ────────────────────────
 
-    async def send_with_timeout(self, conversation_ref: ConversationRef, payload: object) -> Any:
+    async def send_official_markdown(
+        self,
+        event: Any,
+        content: str,
+        *,
+        reply_to_message_id: int | None = None,
+        proactive: bool = False,
+        at_everyone: bool = False,
+        commands: list[dict] | None = None,
+    ) -> Any:
+        """发送一条官方 Markdown 消息；不切分、不降级，失败原样返回。
+
+        at_everyone/commands 是结构化参数（工具层已校验），随段一起交给适配器
+        按官方协议拼装；content 里的同名标签会被适配器转义成普通文字。
+        """
+        conv_ref = event.conversation_ref
+        if conv_ref is None:
+            raise ValueError("ReplyEvent.conversation_ref is None")
+        data: dict[str, Any] = {"content": content}
+        if at_everyone:
+            data["at_everyone"] = True
+        if commands:
+            data["commands"] = list(commands)
+        segments: list[dict] = []
+        if reply_to_message_id is not None:
+            segments.append({"type": "reply", "data": {"id": str(reply_to_message_id)}})
+        segments.append({"type": "official_markdown", "data": data})
+        return await self.send_with_timeout(
+            conv_ref, segments, channel="official", proactive=proactive
+        )
+
+    def _event_is_addressed(self, event: Any) -> bool:
+        """本轮是否因被 @ 触发：被 @ 的回复固定在来源通道，不再切到 OneBot/官方。"""
+        message = getattr(event, "message", None)
+        if message is None:
+            return False
+        try:
+            return bool(is_addressed_to_bot(message, self._config))
+        except Exception:
+            return False
+
+    def _preferred_linked_group_target(
+        self, conversation_ref: ConversationRef, channel: str | None
+    ) -> tuple[ConversationRef, str | None]:
+        """已人工 link 且两通道都在线的群：默认 OneBot，OneBot 不可用再走官方。
+
+        同一群在两通道的本地会话 id 不同（OneBot 真实群号 / 官方 openid），所以
+        换通道时必须同时换 ConversationRef.id。映射来自 /linkgroup 的人工绑定，
+        不再由「ID 是不是纯数字」推断通道可用性（openid 不是数字）。
+        """
+        if conversation_ref.kind != "group" or not channel:
+            return conversation_ref, channel
+        from neobot_app.user_identity import group_number_for, openid_for_group
+
+        source_channel = str(channel).strip().casefold()
+        if source_channel == "onebot":
+            real_group = str(conversation_ref.id).strip()
+        else:
+            real_group = str(group_number_for(conversation_ref.id, source_channel) or "")
+        if not real_group:
+            return conversation_ref, channel
+        official_id = openid_for_group(real_group, "official")
+        if not official_id:
+            return conversation_ref, channel
+        connected = getattr(self._adapter, "connected_channels", None)
+        if connected is None:
+            return conversation_ref, channel
+        if "onebot" in connected:
+            return ConversationRef(kind="group", id=real_group), "onebot"
+        if "official" in connected:
+            return ConversationRef(kind="group", id=str(official_id)), "official"
+        return conversation_ref, channel
+
+    async def send_with_timeout(
+        self,
+        conversation_ref: ConversationRef,
+        payload: object,
+        channel: str | None = None,
+        *,
+        proactive: bool = False,
+    ) -> Any:
         envelope = RuntimeEnvelope(
             kind="reply_lifecycle",
             stage="message.send.before",
@@ -203,10 +317,15 @@ class ReplySender:
         if envelope.consumed:
             return envelope.result
         send_payload = envelope.payload.get("message", payload)
+        # 只有指定了通道才带 channel：单通道/旧适配器的 send 没有这个参数，
+        # 传 None 会让它们 TypeError；None 本来就表示「交给适配器默认通道」。
+        channel_kwargs: dict[str, Any] = {"channel": channel} if channel else {}
+        if proactive:
+            channel_kwargs["proactive"] = True
         # 不等 echo 回执：请求写上线即视为发送成功。等待回执会把 agent 循环
         # 卡在上游往返上，而实测发送几乎不会失败（失败由连接状态与心跳发现）。
         result = await asyncio.wait_for(
-            self._adapter.send(conversation_ref, send_payload, wait_response=False),
+            self._adapter.send(conversation_ref, send_payload, wait_response=False, **channel_kwargs),
             timeout=self._io_timeout_seconds,
         )
         after = RuntimeEnvelope(
@@ -235,20 +354,28 @@ class ReplySender:
         text: str,
         *,
         reply_to_message_id: int | None = None,
-        mention_user_ids: list[int] | None = None,
+        mention_user_ids: list[int | str] | None = None,
         segments: list[str] | None = None,
         send_original: bool = False,
         images: list[int] | None = None,
         self_sent: SelfSentSink | None = None,
         sender_names: list[str] | None = None,
         split_preview: ReplySplitPreview | None = None,
+        channel: str | None = None,
     ) -> bool:
         """发送一段回复；返回是否真的发出了内容。
 
         清洗后没有正文（含裸 cancel）且没有可用图片时返回 False，不发空消息。
         send_original 只跳过分句，不跳过安全清洗；图片不因附带文字被清空而丢弃。
         调用方（工具层）据此提示未发送，而不是误报「已发送」。
+
+        channel 为空时跟随事件来自的通道（双待模式下每个事件自带 neobot_channel）；
+        显式传值优先，用于「这条回复指定用另一个框架发」。
         """
+        requested_channel = channel
+        channel = channel or getattr(event, "neobot_channel", None) or None
+        # 双待模式两个 bot 的 QQ 号不同：self-sent 历史优先记事件自己的账号
+        bot_account = int(getattr(event, "bot_account", 0) or 0)
         before_postprocess = await self._debug_helper.emit_runtime_event(
             "reply.postprocess.before",
             event,
@@ -323,6 +450,9 @@ class ReplySender:
         conv_ref = event.conversation_ref
         if conv_ref is None:
             raise ValueError("ReplyEvent.conversation_ref is None")
+        if requested_channel is None and not self._event_is_addressed(event):
+            # 普通/随机回复优先非官方；被 @ 时只由被 @ 的那个 bot 回复，不跨通道改投。
+            conv_ref, channel = self._preferred_linked_group_target(conv_ref, channel)
 
         send_results: list[object] = []
         formatted_messages: list[list[dict]] = []
@@ -344,48 +474,36 @@ class ReplySender:
             ]
             for index, (image_number, entry) in enumerate(image_entries):
                 formatted_messages.append([prepare_image_segment(self._file_server, entry.file_path)])
-                record_delivery(
-                    await send_image(
-                        self._file_server,
-                        self._adapter,
-                        conv_ref,
-                        entry.file_path,
-                        wait_response=False,
-                    )
+                image_result = await send_image(
+                    self._file_server,
+                    self._adapter,
+                    conv_ref,
+                    entry.file_path,
+                    wait_response=False,
+                    channel=channel,
+                    proactive=bool(event.proactive),
                 )
+                if not send_response_ok(image_result):
+                    self._logger.info(
+                        "图片消息发送失败",
+                        event_id=event.event_id,
+                        error=str(getattr(image_result, "message", "") or ""),
+                    )
+                    self._leave_sending(event, conv_ref.kind)
+                    return False
+                record_delivery(image_result)
                 if index == len(image_entries) - 1 and not text.strip() and not segments:
                     event.send_incomplete = False
-                await self._emit_self_sent_image(self_sent, conv_ref, entry.file_path)
+                # 历史里记成真实工具调用 send_reply(emoji_numbers=[n]) + 图片索引回执，
+                # 管线重置后模型才知道「这张表情包已经发过了」，不会反复重发。
+                await self._emit_self_sent_image(
+                    self_sent,
+                    conv_ref,
+                    entry.file_path,
+                    bot_account=bot_account,
+                    tool_arguments={"emoji_numbers": [image_number]},
+                )
                 await self._emoji_service.record_usage(image_number)
-
-        # long reply → markdown image
-        if not images and not send_original and not segments and text.strip():
-            if self._can_use_markdown_image(text):
-                try:
-                    image_path = await asyncio.wait_for(
-                        self._render_long_reply_as_image(text),
-                        timeout=_MARKDOWN_RENDER_TIMEOUT_SECONDS,
-                    )
-                    formatted_messages.append([prepare_image_segment(self._file_server, image_path)])
-                    record_delivery(await self.send_with_timeout(conv_ref, formatted_messages[-1]))
-                    event.send_incomplete = False
-                    await self._emit_self_sent_image(
-                        self_sent,
-                        conv_ref,
-                        image_path,
-                        kind="markdown",
-                        source_note=text,
-                    )
-                    event.send_response = send_results[0]
-                    self._leave_sending(event, conv_ref.kind)
-                    self._debug_helper.record(
-                        "reply_sent_as_markdown_image", event, text_len=len(text), image_path=str(image_path)
-                    )
-                    return True
-                except SpeechBlocked:
-                    raise
-                except Exception as exc:
-                    self._logger.warning("Markdown 图片渲染失败，降级为文本发送", error=str(exc))
 
         # Phase C: send text (segmented, with cooldown)
         # 已经发过图片、且清洗后没有任何文字可发时，直接收尾：
@@ -460,11 +578,23 @@ class ReplySender:
                 conversation_kind=conv_ref.kind,
                 reply_to_message_id=reply_to_message_id if index == 0 else None,
                 mention_user_ids=mention_user_ids if index == 0 else None,
+                channel=channel,
             )
             formatted_messages.append(formatted)
-            record_delivery(await self.send_with_timeout(conv_ref, formatted))
+            text_result = await self.send_with_timeout(
+                conv_ref, formatted, channel=channel, proactive=bool(event.proactive)
+            )
+            if not send_response_ok(text_result):
+                self._logger.info(
+                    "回复消息发送失败",
+                    event_id=event.event_id,
+                    error=str(getattr(text_result, "message", "") or ""),
+                )
+                self._leave_sending(event, conv_ref.kind)
+                return False
+            record_delivery(text_result)
             # 逐条按「真正发到 QQ 的那句文本」入队：重建后模型知道自己分几句说了什么
-            self._emit_self_sent_text(self_sent, conv_ref, message_text)
+            self._emit_self_sent_text(self_sent, conv_ref, message_text, bot_account=bot_account)
             self._last_sentence_time[pipeline_key] = monotonic_seconds()
 
         event.send_response = send_results[0] if len(send_results) == 1 else send_results
@@ -509,10 +639,27 @@ class ReplySender:
         )
 
     def record_self_sent_text(
-        self, sink: SelfSentSink | None, conv_ref: ConversationRef, text: str
+        self,
+        sink: SelfSentSink | None,
+        conv_ref: ConversationRef,
+        text: str,
+        *,
+        bot_account: int = 0,
+        tool_name: str = "send_reply",
+        tool_arguments: dict[str, Any] | None = None,
     ) -> asyncio.Task[None] | None:
-        """把一段真实发出的文本入队并落盘（供工具 handler 复用统一通道）。"""
-        return self._emit_self_sent(sink, conv_ref, text)
+        """把一段真实发出的文本入队并落盘（供工具 handler 复用统一通道）。
+
+        tool_name/tool_arguments 描述这次发言对应的工具调用（如
+        send_official_markdown、send_long_reply 的 caption），重置后历史才能
+        还原成真实工具调用而不是一段裸文本。
+        """
+        tool_call = SelfSentToolCall(
+            name=tool_name,
+            arguments=dict(tool_arguments or {"text": text}),
+            result={"ok": True},
+        )
+        return self._emit_self_sent(sink, conv_ref, text, bot_account=bot_account, tool_call=tool_call)
 
     async def record_self_sent_image(
         self,
@@ -522,16 +669,27 @@ class ReplySender:
         *,
         kind: str = "image",
         source_note: str = "",
+        bot_account: int = 0,
+        tool_name: str = "send_reply",
+        tool_arguments: dict[str, Any] | None = None,
     ) -> asyncio.Task[None] | None:
         """把一张真实发出的图片按「索引」入队（产物进 temp 图库，队列只留引用）。
 
         索引里同时写 temp 图库 id（可被 image_context 再次取回查看）与 file: 路径
         （图库清理后仍能定位产物），不写图片内容 ⇒ 不占上下文窗口。
+
+        同时记录这次发图对应的工具调用（send_reply 的 emoji_numbers / send_long_reply
+        的图片参数）与回执里的图片索引：重置后的历史据此重建「发过哪张图」。
         """
         if sink is None or not sink.usable:
             return None
         index_text = await self._build_image_index_text(file_path, kind=kind, source_note=source_note)
-        return self._emit_self_sent(sink, conv_ref, index_text)
+        tool_call = SelfSentToolCall(
+            name=tool_name,
+            arguments=dict(tool_arguments or {"image_path": str(file_path)}),
+            result={"ok": True, "image_index": index_text},
+        )
+        return self._emit_self_sent(sink, conv_ref, index_text, bot_account=bot_account, tool_call=tool_call)
 
     async def record_self_sent_voice(
         self,
@@ -540,6 +698,9 @@ class ReplySender:
         text: str,
         *,
         file_hint: str = "",
+        bot_account: int = 0,
+        tool_name: str = "speak",
+        tool_arguments: dict[str, Any] | None = None,
     ) -> asyncio.Task[None] | None:
         """把一条真实发出的语音入队：暂无解析能力 ⇒ 原始文本 + 音频文件索引。"""
         if sink is None or not sink.usable:
@@ -549,7 +710,14 @@ class ReplySender:
             hint = f"file:{hint}"
         head = f"[语音:{hint}]" if hint else "[语音]"
         spoken = str(text or "").strip()
-        return self._emit_self_sent(sink, conv_ref, f"{head} {spoken}" if spoken else head)
+        tool_call = SelfSentToolCall(
+            name=tool_name,
+            arguments=dict(tool_arguments or {"text": spoken}),
+            result={"ok": True, "file_index": head},
+        )
+        return self._emit_self_sent(
+            sink, conv_ref, f"{head} {spoken}" if spoken else head, bot_account=bot_account, tool_call=tool_call
+        )
 
     def _next_self_sent_message_id(self) -> int:
         """生成严格递减的负数合成消息 id（与后端真实 id 不同源，天然不撞号）。"""
@@ -559,7 +727,9 @@ class ReplySender:
         self._last_self_sent_id = candidate
         return candidate
 
-    def _build_self_sent_message(self, conv_ref: ConversationRef, text: str, synthetic_msg_id: int) -> Any:
+    def _build_self_sent_message(
+        self, conv_ref: ConversationRef, text: str, synthetic_msg_id: int, bot_account: int = 0
+    ) -> Any:
         """把一段 Bot 自身发言构造为可入队的消息对象。"""
         from neobot_adapter.model.basic import PostMessageMessagesender
         from neobot_adapter.model.message import (
@@ -569,23 +739,29 @@ class ReplySender:
             PrivateMessage,
         )
 
-        bot_qq = self._resolve_bot_account()
+        bot_qq = self._resolve_bot_account(bot_account)
         message_segments = [MessageSegment(type="text", data={"text": text})]
         sender = PostMessageMessagesender(user_id=bot_qq, nickname=self._bot_name)
 
+        # self_id 与 user_id 同值：历史回放时 is_bot_message 不看账号集合也能
+        # 认出这是「我自己发的」（官方合成号/账号未解析时账号集合可能对不上）。
         if conv_ref.kind == "group":
             return GroupMessage(
                 message_type=MessageTypeEnum.group,
                 message_id=synthetic_msg_id,
+                self_id=bot_qq,
                 user_id=bot_qq,
                 message=message_segments,
                 raw_message=text,
-                group_id=int(conv_ref.id) if conv_ref.id else 0,
+                # 群 ID 可能是官方 openid 字符串：原样透传，绝不 int()
+                group_id=str(conv_ref.id) if conv_ref.id else 0,
+
                 sender=sender,
             )
         return PrivateMessage(
             message_type=MessageTypeEnum.private,
             message_id=synthetic_msg_id,
+            self_id=bot_qq,
             user_id=bot_qq,
             message=message_segments,
             raw_message=text,
@@ -593,17 +769,27 @@ class ReplySender:
         )
 
     def _emit_self_sent(
-        self, sink: SelfSentSink | None, conv_ref: ConversationRef, text: str
+        self,
+        sink: SelfSentSink | None,
+        conv_ref: ConversationRef,
+        text: str,
+        *,
+        bot_account: int = 0,
+        tool_call: SelfSentToolCall | None = None,
     ) -> asyncio.Task[None] | None:
-        """唯一入队点：写回源队列 + 管线快照，并异步落盘一份（无独立历史上限）。"""
+        """唯一入队点：写回源队列 + 管线快照，并异步落盘一份（无独立历史上限）。
+
+        tool_call 随队列条目一起保存：管线重置后 role_messages 能把它重建成
+        assistant.tool_calls + tool 回执，而不是一段无法归因的文本。
+        """
         if sink is None or not sink.usable or not str(text or "").strip():
             return None
         synthetic_msg_id = self._next_self_sent_message_id()
         try:
-            message = self._build_self_sent_message(conv_ref, text, synthetic_msg_id)
-            sink.queue.push(sink.queue_key, message)
+            message = self._build_self_sent_message(conv_ref, text, synthetic_msg_id, bot_account=bot_account)
+            sink.queue.push(sink.queue_key, message, tool_call=tool_call)
             if sink.snapshot is not None and sink.snapshot is not sink.queue:
-                sink.snapshot.push(sink.queue_key, message)
+                sink.snapshot.push(sink.queue_key, message, tool_call=tool_call)
         except Exception as exc:
             # 入队失败绝不能反噬发送路径：宁可少一条上下文，也不能让回复发不出去。
             self._logger.warning(
@@ -615,12 +801,28 @@ class ReplySender:
                 error=str(exc),
             )
             return None
-        return self._schedule_self_sent_persist(conv_ref, text, synthetic_msg_id)
+        return self._schedule_self_sent_persist(
+            conv_ref, text, synthetic_msg_id, bot_account=bot_account, tool_call=tool_call
+        )
 
     def _emit_self_sent_text(
-        self, sink: SelfSentSink | None, conv_ref: ConversationRef, text: str
+        self,
+        sink: SelfSentSink | None,
+        conv_ref: ConversationRef,
+        text: str,
+        *,
+        bot_account: int = 0,
+        tool_name: str = "send_reply",
+        tool_arguments: dict[str, Any] | None = None,
     ) -> asyncio.Task[None] | None:
-        return self._emit_self_sent(sink, conv_ref, text)
+        return self.record_self_sent_text(
+            sink,
+            conv_ref,
+            text,
+            bot_account=bot_account,
+            tool_name=tool_name,
+            tool_arguments=tool_arguments,
+        )
 
     async def _emit_self_sent_image(
         self,
@@ -630,8 +832,20 @@ class ReplySender:
         *,
         kind: str = "image",
         source_note: str = "",
+        bot_account: int = 0,
+        tool_name: str = "send_reply",
+        tool_arguments: dict[str, Any] | None = None,
     ) -> asyncio.Task[None] | None:
-        return await self.record_self_sent_image(sink, conv_ref, file_path, kind=kind, source_note=source_note)
+        return await self.record_self_sent_image(
+            sink,
+            conv_ref,
+            file_path,
+            kind=kind,
+            source_note=source_note,
+            bot_account=bot_account,
+            tool_name=tool_name,
+            tool_arguments=tool_arguments,
+        )
 
     async def _build_image_index_text(self, file_path: Any, *, kind: str, source_note: str) -> str:
         label = "Markdown图片" if kind == "markdown" else "图片"
@@ -666,25 +880,33 @@ class ReplySender:
             image_id = result
         return str(image_id) if image_id else None
 
-    def _resolve_bot_account(self) -> int:
-        """读取配置里的机器人 QQ 号（缺失时返回 0）。"""
-        if self._config is None:
-            return 0
-        bot_cfg = getattr(self._config, "bot", None)
-        if bot_cfg is None:
-            return 0
-        account = getattr(bot_cfg, "account", 0)
-        return int(account) if account else 0
+    def _resolve_bot_account(self, bot_account: int = 0) -> int:
+        """机器人 QQ 号统一从提供者取：调用方不再关心事件/通道/config。"""
+        return int(bot_account) if bot_account else primary_bot_account(self._config)
 
     def _schedule_self_sent_persist(
-        self, conv_ref: ConversationRef, text: str, synthetic_msg_id: int
+        self,
+        conv_ref: ConversationRef,
+        text: str,
+        synthetic_msg_id: int,
+        *,
+        bot_account: int = 0,
+        tool_call: SelfSentToolCall | None = None,
     ) -> asyncio.Task[None] | None:
         """把落盘调度成后台任务：发送路径绝不等数据库。"""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return None
-        task = loop.create_task(self.persist_self_sent_message(conv_ref, text, synthetic_msg_id=synthetic_msg_id))
+        task = loop.create_task(
+            self.persist_self_sent_message(
+                conv_ref,
+                text,
+                synthetic_msg_id=synthetic_msg_id,
+                bot_account=bot_account,
+                tool_call=tool_call,
+            )
+        )
         self._self_sent_persist_tasks.add(task)
         task.add_done_callback(self._self_sent_persist_tasks.discard)
         return task
@@ -696,12 +918,15 @@ class ReplySender:
         *,
         synthetic_msg_id: int | None = None,
         occurred_at: datetime | None = None,
+        bot_account: int = 0,
+        tool_call: SelfSentToolCall | None = None,
     ) -> None:
         """把 Bot 自己发出的消息写入 MessageData（软重启后据此补齐 assistant 块）。
 
         复用既有 MessageData 表与仓库，不新建表；event_id 形如 self:<合成消息id>，
-        与后端真实 message_id 不冲突。本方法永不抛异常：任何失败（无 UoW、
-        无表、写冲突）都只记日志，绝不能反噬发送路径。
+        与后端真实 message_id 不冲突。tool_call 随消息一起落库（发送工具 full 显示
+        所需的参数/产物索引），供恢复时重建 assistant.tool_calls。
+        本方法永不抛异常：任何失败（无 UoW、无表、写冲突）都只记日志，绝不能反噬发送路径。
         """
         if not text or not text.strip():
             return
@@ -715,10 +940,11 @@ class ReplySender:
                     IncomingMessage(
                         event_id=self_sent_event_id(message_id),
                         conversation=conv_ref,
-                        sender_id=str(self._resolve_bot_account()),
+                        sender_id=str(self._resolve_bot_account(bot_account)),
                         sender_name=self._bot_name,
                         text=text,
                         occurred_at=occurred_at or now_utc(),
+                        tool_call=_tool_call_payload(tool_call),
                     )
                 )
                 await uow.commit()
@@ -732,6 +958,73 @@ class ReplySender:
                 error=str(exc),
             )
 
+    def schedule_persist_tool_call(
+        self,
+        conv_ref: ConversationRef,
+        tool_call: SelfSentToolCall,
+        *,
+        occurred_at: datetime | None = None,
+        bot_account: int = 0,
+    ) -> asyncio.Task[None] | None:
+        """把非发送工具的落盘调度成后台任务：工具执行路径绝不等数据库。"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        task = loop.create_task(
+            self.persist_tool_call(conv_ref, tool_call, occurred_at=occurred_at, bot_account=bot_account)
+        )
+        self._self_sent_persist_tasks.add(task)
+        task.add_done_callback(self._self_sent_persist_tasks.discard)
+        return task
+
+    async def persist_tool_call(
+        self,
+        conv_ref: ConversationRef,
+        tool_call: SelfSentToolCall,
+        *,
+        occurred_at: datetime | None = None,
+        bot_account: int = 0,
+    ) -> None:
+        """把一次非发送工具调用写入 MessageData（text="" + tool_call 完整元数据）。
+
+        与 self-sent 消息复用同一张表与既有仓库；event_id 形如 tool:<call_id>，
+        不与 self:<合成消息id> / 真实 message_id 冲突。本方法永不抛异常：任何失败
+        都只记日志，绝不能反噬工具执行路径。
+        """
+        payload = _tool_call_payload(tool_call)
+        if payload is None:
+            return
+        try:
+            factory = self._self_sent_uow_factory or _default_self_sent_uow_factory()
+            if factory is None:
+                return
+            call_id = str(tool_call.call_id or "").strip()
+            event_id = f"tool:{call_id or int(time.time() * 1_000_000)}:{uuid.uuid4().hex}"
+            async with factory() as uow:
+                await uow.messages.save_message(
+                    IncomingMessage(
+                        event_id=event_id,
+                        conversation=conv_ref,
+                        sender_id=str(self._resolve_bot_account(bot_account)),
+                        sender_name=self._bot_name,
+                        text="",
+                        occurred_at=occurred_at or now_utc(),
+                        tool_call=payload,
+                    )
+                )
+                await uow.commit()
+        except Exception as exc:
+            self._logger.warning(
+                "工具调用未写入历史记录",
+                event="tool.history_persist_failed",
+                chat_flow_id=f"{conv_ref.kind}:{conv_ref.id}",
+                tool_name=tool_call.name,
+                call_id=tool_call.call_id,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+
     # ── message building ────────────────────────────────────────
 
     @staticmethod
@@ -740,15 +1033,29 @@ class ReplySender:
         text: str,
         conversation_kind: str,
         reply_to_message_id: int | None = None,
-        mention_user_ids: list[int] | None = None,
+        mention_user_ids: list[int | str] | None = None,
+        channel: str | None = None,
     ) -> list[dict]:
         segments: list[dict] = []
         if mention_user_ids and conversation_kind == "group":
-            for qq in mention_user_ids:
+            from neobot_app.bot_accounts import looks_like_real_qq
+            from neobot_app.user_identity import openid_for_qq
+
+            text = _LEADING_MENTION_TEXT.sub("", text, count=1)
+            for raw in mention_user_ids:
+                # mention 参数可能是真实 QQ 数字或官方 openid 字符串：原样按字符串处理
+                target = str(raw or "").strip()
+                if not target:
+                    continue
+                if channel == "official" and looks_like_real_qq(target):
+                    # 官方 @ 需要 openid：真实 QQ 号只能通过人工绑定反查
+                    mapped = openid_for_qq(target, channel)
+                    if mapped:
+                        target = mapped
                 segments.append(
                     {
                         "type": "at",
-                        "data": {"qq": str(qq)},
+                        "data": {"qq": target},
                     }
                 )
 

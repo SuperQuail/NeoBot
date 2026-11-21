@@ -21,6 +21,8 @@ class Adapter:
         self.sent = []
 
     async def call_api(self, action, params, timeout=5):
+        if action == "get_login_info":
+            return {"status": "ok", "data": {"user_id": 10001, "nickname": "离线验收机器人"}}
         assert action == "get_group_list"
         return {
             "status": "ok",

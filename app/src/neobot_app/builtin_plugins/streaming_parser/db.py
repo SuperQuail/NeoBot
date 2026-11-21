@@ -20,6 +20,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     select,
+    text,
 )
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -45,7 +46,8 @@ class Subscription(Base):
     __table_args__ = (UniqueConstraint("group_id", "platform", "room_id", name="uq_subscription"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    group_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    #: 会话本地 ID：OneBot 是数字群号，官方通道是 openid 字符串（统一存 TEXT）。
+    group_id: Mapped[str] = mapped_column(String(64), index=True)
     platform: Mapped[str] = mapped_column(String(32), default="bilibili")
     room_id: Mapped[int] = mapped_column(BigInteger, index=True)
     short_id: Mapped[int] = mapped_column(BigInteger, default=0)
@@ -63,7 +65,7 @@ class GroupSetting(Base):
 
     __tablename__ = "group_settings"
 
-    group_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     card_style: Mapped[str] = mapped_column(String(32), default="random")
     ai_reply_live: Mapped[bool] = mapped_column(Boolean, default=True)
     ai_reply_live_end: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -94,8 +96,119 @@ async def _create_initial_schema(connection: AsyncConnection) -> None:
     await connection.run_sync(Base.metadata.create_all)
 
 
+async def _group_id_as_text(connection: AsyncConnection) -> None:
+    """v2：group_id 从 INTEGER 改成 TEXT，官方通道的 openid 才能落库。
+
+    SQLite 不支持改列类型，只能重建表：创建新表 -> CAST 旧值 -> 换名。
+    旧值仍是数字群号，CAST 成文本后与 OneBot 侧保持一致。
+    """
+    await connection.execute(
+        text(
+            """
+            CREATE TABLE subscriptions_v2 (
+                id INTEGER NOT NULL PRIMARY KEY,
+                group_id VARCHAR(64) NOT NULL,
+                platform VARCHAR(32) NOT NULL,
+                room_id BIGINT NOT NULL,
+                short_id BIGINT NOT NULL,
+                uid BIGINT NOT NULL,
+                name VARCHAR(128) NOT NULL,
+                avatar_url VARCHAR(512) NOT NULL,
+                push_live BOOLEAN NOT NULL,
+                push_live_end BOOLEAN NOT NULL,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                CONSTRAINT uq_subscription UNIQUE (group_id, platform, room_id)
+            )
+            """
+        )
+    )
+    await connection.execute(
+        text(
+            """
+            INSERT INTO subscriptions_v2 (
+                id, group_id, platform, room_id, short_id, uid, name,
+                avatar_url, push_live, push_live_end, created_at, updated_at
+            )
+            SELECT
+                id, CAST(group_id AS TEXT), platform, room_id, short_id, uid, name,
+                avatar_url, push_live, push_live_end, created_at, updated_at
+            FROM subscriptions
+            """
+        )
+    )
+    await connection.execute(text("DROP TABLE subscriptions"))
+    await connection.execute(text("ALTER TABLE subscriptions_v2 RENAME TO subscriptions"))
+    await connection.execute(
+        text("CREATE INDEX IF NOT EXISTS ix_subscriptions_group_id ON subscriptions (group_id)")
+    )
+    await connection.execute(
+        text("CREATE INDEX IF NOT EXISTS ix_subscriptions_room_id ON subscriptions (room_id)")
+    )
+    await connection.execute(
+        text(
+            """
+            CREATE TABLE group_settings_v2 (
+                group_id VARCHAR(64) NOT NULL PRIMARY KEY,
+                card_style VARCHAR(32) NOT NULL,
+                ai_reply_live BOOLEAN NOT NULL,
+                ai_reply_live_end BOOLEAN NOT NULL,
+                default_push_live BOOLEAN NOT NULL,
+                default_push_live_end BOOLEAN NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+    )
+    await connection.execute(
+        text(
+            """
+            INSERT INTO group_settings_v2 (
+                group_id, card_style, ai_reply_live, ai_reply_live_end,
+                default_push_live, default_push_live_end, updated_at
+            )
+            SELECT
+                CAST(group_id AS TEXT), card_style, ai_reply_live, ai_reply_live_end,
+                default_push_live, default_push_live_end, updated_at
+            FROM group_settings
+            """
+        )
+    )
+    await connection.execute(text("DROP TABLE group_settings"))
+    await connection.execute(text("ALTER TABLE group_settings_v2 RENAME TO group_settings"))
+
+
+async def _legacy_group_ids_to_openid(connection: AsyncConnection) -> None:
+    """v3：把旧 13 位合成号群 ID 改写成官方 openid。
+
+    本体数据库的启动迁移只覆盖本体表；插件库是独立 SQLite，升级后旧订阅/
+    群设置在官方通道按 openid 查不到。借本体 user_identity 的只读映射
+    （bootstrap 在加载插件前已 bind DATA_DIR）做一次显式 UPDATE：无
+    identities.json / 非合成号 / 无映射时原样保留；目标 openid 行已存在时
+    UPDATE OR IGNORE 跳过该行，不删除旧数据。
+    """
+    from neobot_app.user_identity import openid_for_legacy_id
+
+    for table in ("subscriptions", "group_settings"):
+        result = await connection.execute(text(f"SELECT DISTINCT group_id FROM {table}"))
+        for (value,) in result:
+            legacy = str(value or "")
+            openid = openid_for_legacy_id("group", legacy)
+            if not openid or openid == legacy:
+                continue
+            await connection.execute(
+                text(
+                    f"UPDATE OR IGNORE {table} SET group_id=:openid "
+                    "WHERE group_id=:legacy"
+                ),
+                {"openid": openid, "legacy": legacy},
+            )
+
+
 MIGRATIONS: list[Migration] = [
     Migration(version=1, name="initial-schema", upgrade=_create_initial_schema),
+    Migration(version=2, name="group-id-as-text", upgrade=_group_id_as_text),
+    Migration(version=3, name="legacy-group-id-to-openid", upgrade=_legacy_group_ids_to_openid),
 ]
 
 
@@ -108,7 +221,7 @@ class SubscriptionView:
     都必须先在会话内把值拷成这样的纯数据对象。
     """
 
-    group_id: int
+    group_id: str
     room_id: int
     uid: int = 0
     short_id: int = 0
@@ -122,7 +235,7 @@ class SubscriptionView:
 class GroupSettingView:
     """群设置的只读快照。"""
 
-    group_id: int
+    group_id: str
     card_style: str = "random"
     ai_reply_live: bool = True
     ai_reply_live_end: bool = False
@@ -142,12 +255,17 @@ class RoomStateView:
     online: int = 0
 
 
+def _group_id_text(value: Any) -> str:
+    """群会话 ID 统一存文本：int 群号 -> "123"，官方 openid 原样。"""
+    return str(value if value is not None else "").strip()
+
+
 def sub_view(row: Subscription | None) -> SubscriptionView | None:
     """Subscription -> 纯数据快照（必须在会话内调用）。"""
     if row is None:
         return None
     return SubscriptionView(
-        group_id=int(row.group_id),
+        group_id=_group_id_text(row.group_id),
         room_id=int(row.room_id),
         uid=int(row.uid or 0),
         short_id=int(row.short_id or 0),
@@ -163,7 +281,7 @@ def setting_view(row: GroupSetting | None) -> GroupSettingView | None:
     if row is None:
         return None
     return GroupSettingView(
-        group_id=int(row.group_id),
+        group_id=_group_id_text(row.group_id),
         card_style=str(row.card_style or "random"),
         ai_reply_live=bool(row.ai_reply_live),
         ai_reply_live_end=bool(row.ai_reply_live_end),
@@ -189,21 +307,21 @@ def room_view(row: RoomState | None) -> RoomStateView | None:
 # ── 仓储函数 ──────────────────────────────────────────────────────────────
 
 
-async def list_group_subscriptions(session: AsyncSession, group_id: int) -> list[Subscription]:
+async def list_group_subscriptions(session: AsyncSession, group_id: int | str) -> list[Subscription]:
     result = await session.scalars(
         select(Subscription)
-        .where(Subscription.group_id == int(group_id))
+        .where(Subscription.group_id == _group_id_text(group_id))
         .order_by(Subscription.room_id)
     )
     return list(result)
 
 
 async def get_subscription(
-    session: AsyncSession, group_id: int, room_id: int
+    session: AsyncSession, group_id: int | str, room_id: int
 ) -> Subscription | None:
     return await session.scalar(
         select(Subscription).where(
-            Subscription.group_id == int(group_id),
+            Subscription.group_id == _group_id_text(group_id),
             Subscription.room_id == int(room_id),
             Subscription.platform == "bilibili",
         )
@@ -213,7 +331,7 @@ async def get_subscription(
 async def upsert_subscription(
     session: AsyncSession,
     *,
-    group_id: int,
+    group_id: int | str,
     room_id: int,
     short_id: int = 0,
     uid: int = 0,
@@ -232,7 +350,7 @@ async def upsert_subscription(
         existing.updated_at = _now()
         return existing, False
     row = Subscription(
-        group_id=int(group_id),
+        group_id=_group_id_text(group_id),
         platform="bilibili",
         room_id=int(room_id),
         short_id=int(short_id or 0),
@@ -246,7 +364,7 @@ async def upsert_subscription(
     return row, True
 
 
-async def remove_subscription(session: AsyncSession, group_id: int, room_id: int) -> bool:
+async def remove_subscription(session: AsyncSession, group_id: int | str, room_id: int) -> bool:
     row = await get_subscription(session, group_id, room_id)
     if row is None:
         return False
@@ -256,7 +374,7 @@ async def remove_subscription(session: AsyncSession, group_id: int, room_id: int
 
 async def set_subscription_flags(
     session: AsyncSession,
-    group_id: int,
+    group_id: int | str,
     room_id: int,
     *,
     push_live: bool | None = None,
@@ -273,19 +391,19 @@ async def set_subscription_flags(
     return row
 
 
-async def get_group_setting(session: AsyncSession, group_id: int) -> GroupSetting | None:
-    return await session.get(GroupSetting, int(group_id))
+async def get_group_setting(session: AsyncSession, group_id: int | str) -> GroupSetting | None:
+    return await session.get(GroupSetting, _group_id_text(group_id))
 
 
 async def ensure_group_setting(
-    session: AsyncSession, group_id: int, defaults: dict[str, Any] | None = None
+    session: AsyncSession, group_id: int | str, defaults: dict[str, Any] | None = None
 ) -> GroupSetting:
-    row = await session.get(GroupSetting, int(group_id))
+    row = await session.get(GroupSetting, _group_id_text(group_id))
     if row is not None:
         return row
     defaults = defaults or {}
     row = GroupSetting(
-        group_id=int(group_id),
+        group_id=_group_id_text(group_id),
         card_style=str(defaults.get("card_style", "random")),
         ai_reply_live=bool(defaults.get("ai_reply_live", True)),
         ai_reply_live_end=bool(defaults.get("ai_reply_live_end", False)),

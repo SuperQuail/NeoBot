@@ -117,6 +117,27 @@ def test_alembic_diagnostics_go_to_file_but_warning_stays_visible(name, tmp_path
     assert "setup plugin alembic.autogenerate.schemas" in detailed
 
 
+@pytest.mark.parametrize(
+    ("name", "message"),
+    [
+        ("httpx", 'HTTP Request: POST https://api.example.com/v1/chat/completions "HTTP/1.1 200 OK"'),
+        ("aiohttp.access", '127.0.0.1 [07/Nov/2026:20:32:35 +0800] "GET /files/a.png HTTP/1.1" 200 1024'),
+    ],
+)
+def test_per_request_info_goes_to_file_but_warning_stays_visible(name, message, tmp_path, capsys):
+    """第三方逐请求 INFO 只留 DEBUG 文件，控制台留给可行动信息。"""
+    configure_loguru(tmp_path)
+    logger = logging.getLogger(name)
+    logger.info(message)
+    logger.warning("请求失败后重试")
+    console = capsys.readouterr().out
+    assert message not in console
+    assert "请求失败后重试" in console
+    detailed = (tmp_path / "neobot.log").read_text(encoding="utf-8")
+    assert "DEBUG" in detailed
+    assert message in detailed
+
+
 def test_console_retains_human_error_reason_without_dumping_args(capsys):
     configure_loguru()
     loguru.logger.bind(module_name="app.tools", error="连接被拒绝", args={"large": "unneeded payload"}).warning(

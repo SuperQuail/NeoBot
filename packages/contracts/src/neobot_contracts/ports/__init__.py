@@ -36,6 +36,7 @@ from neobot_contracts.ports.host import (
     QueryRegistry,
     QuerySpec,
 )
+from neobot_contracts.ports.cross_chat_session_access import CrossChatSessionAccess
 from neobot_contracts.ports.scheduled_task_access import ScheduledTaskAccess
 from neobot_contracts.ports.sandbox import SandboxDataPort
 from neobot_contracts.ports.screenshot import (
@@ -89,6 +90,7 @@ __all__ = [
     "ensure_optional_str",
     "ensure_str",
     "ImageAnalysisAccess",
+    "CrossChatSessionAccess",
     "ScheduledTaskAccess",
     "CapabilityRegistry",
     "CapabilitySpec",

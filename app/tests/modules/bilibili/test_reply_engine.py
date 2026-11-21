@@ -33,6 +33,10 @@ class FakeProvider:
         self.calls.append(messages)
         if self.error is not None:
             raise self.error
+        # 真实模型调完发送工具就收尾；不模拟这一点会让 agent 一路跑到迭代上限，
+        # 把「本轮用量」放大成 200 次调用。
+        if len(self.calls) > 1:
+            return {"role": "assistant", "content": ""}
         name = "cancel" if self.content.strip().upper() == "[SKIP]" else "send_reply"
         arguments = {} if name == "cancel" else {"text": self.content}
         response = {
@@ -166,6 +170,26 @@ async def test_comment_reply_generation_uses_provider() -> None:
     user = next(item for item in messages if item.get("role") == "user")
     assert system["role"] == "system" and "B站" in system["content"]
     assert "你好" in user["content"]
+
+
+async def test_prompt_store_override_reaches_comment_prompt(tmp_path) -> None:
+    from neobot_app.prompt.store import PromptStore
+
+    custom = tmp_path / "prompts" / "custom" / "prompts.toml"
+    custom.parent.mkdir(parents=True)
+    custom.write_text(
+        '[bili_scene]\ncomment = "<场景>自定义评论场景-MARK</场景>"\n',
+        encoding="utf-8",
+    )
+    provider = FakeProvider("好哦")
+    engine = _engine(provider, prompt_store=PromptStore(tmp_path))
+
+    await engine.generate_comment_reply(_comment_ctx())
+
+    system = next(
+        item for item in provider.calls[0] if item.get("role") == "system"
+    )
+    assert "自定义评论场景-MARK" in system["content"]
 
 
 async def test_skip_returns_none() -> None:

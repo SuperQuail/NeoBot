@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event';
 import Prompts from '../pages/Prompts';
 import { api } from '../api/endpoints';
 import { clearQueries } from '../data/queryCore';
-import type { PromptsPayload } from '../api/types';
+import type { PromptKeyView, PromptsPayload } from '../api/types';
 import { confirmAction } from '../components/ui/ConfirmDialog';
 import { POLL } from '../data/queryKeys';
 
@@ -29,6 +29,10 @@ const PAYLOAD: PromptsPayload = {
   sections: [
     {
       name: 'group_chat',
+      stage: 'system_main',
+      scope: ['group'],
+      order: 10,
+      note: '群聊 system 提示词',
       customized: false,
       keys: [
         {
@@ -45,6 +49,10 @@ const PAYLOAD: PromptsPayload = {
     },
     {
       name: 'problem_solver',
+      stage: 'subagent',
+      scope: ['subagent'],
+      order: 10,
+      note: '解题子 Agent',
       customized: true,
       keys: [
         {
@@ -61,6 +69,49 @@ const PAYLOAD: PromptsPayload = {
     },
   ],
 };
+
+/** 复用第一条键的模板字段，只改值，给分组用例造数据。 */
+const templateKey = (value: string): PromptKeyView => ({
+  ...PAYLOAD.sections![0].keys[0],
+  value,
+  default: value,
+});
+
+/** 多 stage 载荷：同一 stage 两个分区且接口顺序非字母序，另有 context 与未登记分区。 */
+const groupedPayload = (): PromptsPayload => ({
+  ...PAYLOAD,
+  sections: [
+    {
+      name: 'friend_chat',
+      stage: 'system_main',
+      scope: ['private'],
+      order: 10,
+      note: '私聊 system 提示词',
+      customized: false,
+      keys: [templateKey('私聊模板')],
+    },
+    {
+      ...PAYLOAD.sections![0],
+      keys: [templateKey('<你是谁>\n你的名字是{bot_name}')],
+    },
+    {
+      name: 'group_context',
+      stage: 'context',
+      scope: ['group'],
+      order: 10,
+      note: '群聊上下文',
+      customized: false,
+      keys: [templateKey('群聊上下文内容')],
+    },
+    {
+      name: 'my_custom',
+      stage: null,
+      note: '',
+      customized: false,
+      keys: [templateKey('自定义内容')],
+    },
+  ],
+});
 
 beforeEach(() => {
   clearQueries();
@@ -149,7 +200,9 @@ describe('Prompts', () => {
 
     expect(await screen.findByRole('button', { name: '群聊人设 · 提示词模板' })).toBeInTheDocument();
     const directory = screen.getByRole('region', { name: '提示词分区' });
-    expect(within(directory).getAllByRole('button')).toHaveLength(2);
+    // 「子 Agent」组默认收起，展开后再检查组内目录
+    fireEvent.click(within(directory).getByText('子 Agent'));
+    expect(within(directory).getAllByTitle(/^(group_chat|problem_solver)\./)).toHaveLength(2);
     expect(within(directory).getByRole('button', { name: '复杂问题解题 · 功能描述' })).toHaveTextContent(
       '复杂问题解题',
     );
@@ -190,6 +243,7 @@ describe('Prompts', () => {
     expect(screen.queryByRole('button', { name: '复杂问题解题 · 功能描述' })).not.toBeInTheDocument();
 
     fireEvent.change(search, { target: { value: '' } });
+    fireEvent.click(screen.getByText('子 Agent'));
     fireEvent.click(screen.getByRole('button', { name: '复杂问题解题 · 功能描述' }));
     await waitFor(() => expect(screen.getByLabelText('提示词内容')).toHaveValue('复杂问题解题'));
     fireEvent.click(screen.getByRole('button', { name: '复杂问题解题 · 提示词模板' }));
@@ -198,6 +252,41 @@ describe('Prompts', () => {
     fireEvent.change(search, { target: { value: 'description' } });
     expect(screen.getByRole('button', { name: '复杂问题解题 · 功能描述' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '复杂问题解题 · 提示词模板' })).not.toBeInTheDocument();
+  });
+
+  it('按 stage 分组折叠，默认只展开主模板且组内保持接口顺序', async () => {
+    prompts.mockResolvedValue({ ok: true, data: groupedPayload(), error: null, status: 200 });
+    render(<Prompts />);
+
+    const main = (await screen.findByText('主模板')).closest('details')!;
+    const context = screen.getByText('上下文块').closest('details')!;
+    const other = screen.getByText('其它分区').closest('details')!;
+    expect(main).toHaveAttribute('open');
+    expect(context).not.toHaveAttribute('open');
+    expect(other).not.toHaveAttribute('open');
+    expect(within(main).getByText('2 个分区')).toBeInTheDocument();
+    expect(within(other).getByText('1 个分区')).toBeInTheDocument();
+    expect(
+      Array.from(main.querySelectorAll('.prompt-nav-key')).map((node) => node.getAttribute('title')),
+    ).toEqual(['friend_chat.template', 'group_chat.template']);
+  });
+
+  it('搜索命中自动展开分组，清除搜索后恢复页内折叠状态', async () => {
+    prompts.mockResolvedValue({ ok: true, data: groupedPayload(), error: null, status: 200 });
+    render(<Prompts />);
+
+    const main = (await screen.findByText('主模板')).closest('details')!;
+    fireEvent.click(within(main).getByText('主模板'));
+    expect(main).not.toHaveAttribute('open');
+
+    const search = screen.getByRole('textbox', { name: '搜索提示词' });
+    fireEvent.change(search, { target: { value: 'group_context' } });
+    expect(screen.queryByText('主模板')).not.toBeInTheDocument();
+    expect(screen.getByText('上下文块').closest('details')).toHaveAttribute('open');
+
+    fireEvent.change(search, { target: { value: '' } });
+    expect(screen.getByText('主模板').closest('details')).not.toHaveAttribute('open');
+    expect(screen.getByText('上下文块').closest('details')).not.toHaveAttribute('open');
   });
 
   it('编辑后防抖预览转义结果，并保存到自定义文件', async () => {
@@ -428,6 +517,7 @@ describe('Prompts', () => {
     vi.mocked(confirmAction).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     render(<Prompts />);
     const editor = await screen.findByLabelText('提示词内容');
+    fireEvent.click(screen.getByText('子 Agent'));
     fireEvent.change(editor, { target: { value: '尚未保存的人设' } });
     fireEvent.click(screen.getByRole('button', { name: '复杂问题解题 · 功能描述' }));
     await waitFor(() => expect(confirmAction).toHaveBeenCalledTimes(1));

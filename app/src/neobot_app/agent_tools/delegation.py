@@ -406,7 +406,7 @@ class ChildAgentTools:
             raise ValueError("Invalid context flags")
         if value.get("parent_agent_id") is not None and not isinstance(value["parent_agent_id"], str):
             raise ValueError("Invalid parent identity")
-        if value.get("user_id") is not None and type(value["user_id"]) is not int:
+        if value.get("user_id") is not None and not isinstance(value["user_id"], (int, str)):
             raise ValueError("Invalid user identity")
         scope = value.get("allowed_tools")
         if scope is not None and (not isinstance(scope, list) or not all(isinstance(s, str) and s for s in scope)):
@@ -433,7 +433,7 @@ class ChildAgentTools:
                         or context.owner == parent.owner or context.agent_id == parent.agent_id
                         or context.parent_agent_id != parent.agent_id
                         or context.chat_flow_id != parent.chat_flow_id
-                        or context.user_id != parent.user_id or context.depth != parent.depth + 1
+                        or str(context.user_id) != str(parent.user_id) or context.depth != parent.depth + 1
                         or context.depth > self.max_depth
                         or (parent.allowed_tools is not None and
                             (context.allowed_tools is None or not context.allowed_tools <= parent.allowed_tools))):

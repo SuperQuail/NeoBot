@@ -7,13 +7,11 @@
 
 ## 分支模型
 
-- **`dev`**：默认分支，功能/修复 PR 默认提到这里；
-- **`main`**：发布候选，只接收来自 `dev` 的 PR；
-- **`release`**：发布分支，只接收来自 `main` 的 PR；`main → release` 的 PR 版本号必须高于
-  release 当前版本（在 `dev` 上统一提升 8 个 `pyproject.toml` 并更新 `uv.lock`，随 `dev→main` 带入），
-  合并后自动触发 PyPI 发布。
+- **`main`**：默认分支，功能/修复 PR 默认提到这里。
+- 合并到 `main` 后 QuailEgg 根据 `.changes/` 记录创建发布 PR（`release` → `main`），合并后自动发布 PyPI 并创建 tag/Release。
+- `dev` 保留为普通分支，长期开发时可用；不再默认、不再参与发布。`release` 由 QuailEgg 生成和维护，不接受人工 PR。
 
-功能分支从 `dev` 切出，禁止跨级 PR（功能分支直接提到 `main`/`release` 会被 CI 拦下）。
+功能分支从 `main` 切出，禁止直推 `main` / `release`。
 ## Pull Request 流程
 
 ### 1. Fork 并克隆仓库
@@ -26,7 +24,7 @@ cd NeoBot
 ### 2. 创建分支
 
 ```bash
-git switch dev
+git switch main
 git switch -c feat/your-feature-name
 ```
 
@@ -53,7 +51,7 @@ git commit -m "feat: 添加新功能描述"
 
 ### 4. 推送并创建 PR
 
-在 GitHub 上创建 Pull Request（默认目标是 `dev`），填写：
+在 GitHub 上创建 Pull Request（默认目标是 `main`），填写：
 - 标题
 - 变更说明
 - 关联 issue（如有）：用关闭关键字写进描述，例如 `Closes #59`。
@@ -68,8 +66,7 @@ PR 创建后还要过 **CI 硬门禁**（[.github/workflows/pr-gates.yml](.githu
   推送新提交后旧评论失效，需要重新评审。AI 自评必须由独立子代理完成、不带开发上下文；
 - 发现 bug 或 CI 因 bug 变红：**先发 issue**，修复 PR 描述里用 `Closes #NN` 关联；
   标题以 `fix` 开头的 PR 没关联 issue 会直接红；
-- PR 流向必须是 `功能分支 → dev`、`dev → main`、`main → release`；
-  版本号在 `dev` 上提升并随 `dev → main` 带入，`main → release` 的版本必须高于 release。
+- PR 目标只能是 `main`（或普通分支 `dev`）；发布由 QuailEgg 在 `main` 上创建 `release` 发布 PR 并自动完成。
 
 ## 开发规范
 

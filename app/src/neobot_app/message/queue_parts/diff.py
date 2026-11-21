@@ -8,6 +8,8 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
+from neobot_app.user_identity import trusted_qq_for_user
+
 from .common import QueueEntry, QueueEntryType, QueueMessage, RecallNotice
 
 
@@ -44,14 +46,31 @@ class _QueueDiffMixin:
         return None
 
     def _should_request_reply(self, entries: list[QueueEntry]) -> bool:
-        if self.bot_account is None:
-            return False
         for entry in reversed(entries):
             if entry.kind != QueueEntryType.MESSAGE or entry.message is None:
                 continue
             message = entry.message
             sender_id = getattr(message, "user_id", None)
-            if sender_id is not None and sender_id in self._reply_blacklist:
+            # 回复黑名单也是访问控制：openid/旧合成 ID 只按管理员命令写入的 trusted
+            # 映射翻成真实 QQ；agent 自己写的映射只影响展示，不能把人塞进/移出黑名单。
+            # 配置允许 openid 直接入黑名单，所以比较统一走字符串。
+            sender_text = str(sender_id) if sender_id is not None else ""
+            trusted_sender = trusted_qq_for_user(sender_id) if sender_id is not None else None
+            if sender_text and (
+                sender_text in self._reply_blacklist
+                or (
+                    trusted_sender is not None
+                    and str(trusted_sender) in self._reply_blacklist
+                )
+            ):
+                return False
+            # 官方消息以适配器权威结论为准（全量消息没有可用 at 段也能标 @）
+            mentioned_self = getattr(message, "mentioned_self", None)
+            if mentioned_self is not None:
+                return bool(mentioned_self)
+            # at 目标匹配任一 bot：消息级 self_id 优先，其次队列登记的 bot_accounts
+            bot_ids = self._bot_ids(message)
+            if not bot_ids:
                 return False
             if message.message:
                 for segment in message.message:
@@ -60,18 +79,19 @@ class _QueueDiffMixin:
                         continue
                     data = getattr(segment, "data", None) or {}
                     qq = str(data.get("qq") or "")
-                    if qq == str(self.bot_account):
+                    if qq and qq in {str(bot_id) for bot_id in bot_ids}:
                         return True
             raw = str(getattr(message, "raw_message", "") or "")
-            if f"[CQ:at,qq={self.bot_account}" in raw:
+            if any(f"[CQ:at,qq={bot_id}" in raw for bot_id in bot_ids):
                 return True
             return False
         return False
 
     def _wrap_at_in_diff_text(self, diff_text: str) -> str:
-        if self.bot_account is None:
+        bot_ids = self._bot_ids()
+        if not bot_ids:
             return f"<这是新的可能要回答的内容>\n{diff_text}\n</这是新的可能要回答的内容>"
-        pattern = rf"(@QQ:{self.bot_account}|@[^(\n]*\(QQ:{self.bot_account}\))"
+        pattern = self._at_mention_pattern(bot_ids)
         if re.search(pattern, diff_text):
             lines = diff_text.split("\n")
             wrapped_lines: list[str] = []
@@ -138,6 +158,10 @@ class _QueueDiffMixin:
                 f"notification:{entry.notification.source}:"
                 f"{entry.notification.content}:{entry.occurred_at or 0}"
             )
+        if entry.kind == QueueEntryType.TOOL_CALL and entry.tool_call is not None:
+            # call_id 唯一；缺失时退化到「名字+时间」，避免同一管线内被当成新条目反复注入
+            record = entry.tool_call
+            return f"tool_call:{record.call_id or record.name}:{entry.occurred_at or 0}"
         return f"{entry.kind.value}:{entry.occurred_at or 0}"
 
     @staticmethod
@@ -227,4 +251,6 @@ class _QueueDiffMixin:
             return self._poke_to_text(entry.poke)
         if entry.kind == QueueEntryType.NOTIFICATION and entry.notification is not None:
             return self._notification_to_text(entry.notification)
+        if entry.kind == QueueEntryType.TOOL_CALL and entry.tool_call is not None:
+            return self._tool_call_to_text(entry.tool_call)
         return ""

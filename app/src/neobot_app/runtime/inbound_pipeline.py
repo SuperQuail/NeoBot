@@ -27,7 +27,8 @@ class InboundPipeline:
         self._logger = logger or NullLogger()
 
     async def handle(self, message: IncomingMessage) -> None:
-        self._logger.info(
+        # 入队明细由 message.enqueued 记录；接收摘要留 DEBUG，避免同一消息两条 INFO
+        self._logger.debug(
             "收到消息",
             event="message.received",
             event_id=message.event_id,

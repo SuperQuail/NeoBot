@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.models import ConversationRef
@@ -43,6 +43,7 @@ class OneBotAdapter:
         host: Optional[str] = None,
         port: Optional[int] = None,
         access_token: str = "",
+        event_sink: Callable[[Dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._logger: Logger = logger if logger is not None else NullLogger()
         self._core = AdapterCore(
@@ -53,6 +54,9 @@ class OneBotAdapter:
             access_token=access_token,
         )
         self._dispatcher = EventDispatcher(self._logger)
+        # 门面（SwitchableAdapter）传入的事件汇入口：有 sink 时事件交给门面
+        # 自己的分发器，后端内建分发器不再参与，切换通道不会丢订阅。
+        self._event_sink = event_sink
         self._dispatch_task: Optional[asyncio.Task[None]] = None
         self._stopping = asyncio.Event()
         self._api: Optional[WebSocketAPI] = None
@@ -375,6 +379,7 @@ class OneBotAdapter:
         message: str | list[dict[str, Any]],
         timeout: float = 5.0,
         wait_response: bool = True,
+        proactive: bool = False,
     ) -> response.SendMsgResponse:
         """统一的消息发送接口；wait_response=False 时不等上游 echo 回执。"""
         if conversation.kind == "private":
@@ -394,7 +399,10 @@ class OneBotAdapter:
             if event is None:
                 continue
             try:
-                await self._dispatcher.publish(event)
+                if self._event_sink is not None:
+                    await self._event_sink(event)
+                else:
+                    await self._dispatcher.publish(event)
             except Exception as exc:
                 # 单条坏事件不得打死事件入口：记录后继续处理后续事件。
                 self._logger.error(

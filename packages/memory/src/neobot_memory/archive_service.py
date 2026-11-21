@@ -165,9 +165,12 @@ class ArchiveMemoryService:
         overflow_action: Any = DEFAULT_OVERFLOW_ACTION,
         overflow_summary_cooldown_seconds: Any = DEFAULT_OVERFLOW_COOLDOWN_SECONDS,
         exempt_tables: Iterable[str] | None = None,
+        key_mapper: Callable[[str, str], str] | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._logger = logger
+        #: 档案 key 归一（例如把 QQ 号/群号映射到 openid 主键）；None 表示原样存储。
+        self._key_mapper = key_mapper
         # 容量治理默认关闭：只有外部（bootstrap / 自动总结服务）显式配置后才会生效，
         # 从而保证「不接线 = 与现状完全一致」。
         self._max_total_chars = _normalize_max_total_chars(max_total_chars)
@@ -232,15 +235,23 @@ class ArchiveMemoryService:
         """
         self._overflow_cooldown_until.pop((table_name, key), None)
 
+    def _key(self, table_name: str, key: str) -> str:
+        """按注入的映射归一档案主键；未配置时原样返回。"""
+        if self._key_mapper is None:
+            return str(key)
+        return str(self._key_mapper(str(table_name), str(key)) or key)
+
     # ── 基本读写（签名语义保持不变，面板直接转调） ──────────────────
 
     async def get(self, table_name: str, key: str) -> Optional[ArchiveMemory]:
+        key = self._key(table_name, key)
         async with self._uow_factory() as uow:
             item = await uow.archive.get(table_name, key)
         self._logger.debug("存档记忆已获取", table_name=table_name, key=key, found=item is not None)
         return item
 
     async def exists(self, table_name: str, key: str) -> bool:
+        key = self._key(table_name, key)
         async with self._uow_factory() as uow:
             exists = await uow.archive.exists(table_name, key)
         self._logger.debug("存档记忆存在检查", table_name=table_name, key=key, exists=exists)
@@ -296,6 +307,7 @@ class ArchiveMemoryService:
     async def set_with_outcome(
         self, table_name: str, key: str, value: str, tags: list[str]
     ) -> ArchiveWriteOutcome:
+        key = self._key(table_name, key)
         """与 set 相同，但把超限信息（over_limit / 是否已调度压缩 / hint）一并返回。
 
         工具层（archive_crud）用它给模型回 over_limit=True + hint；面板/内部写路径
@@ -378,6 +390,7 @@ class ArchiveMemoryService:
         )
 
     async def delete(self, table_name: str, key: str) -> bool:
+        key = self._key(table_name, key)
         async with self._uow_factory() as uow:
             deleted = await uow.archive.delete(table_name, key)
             if deleted:
@@ -395,6 +408,7 @@ class ArchiveMemoryService:
         tags: list[str],
         expected_version: int,
     ) -> ArchiveMemory:
+        key = self._key(table_name, key)
         """带乐观锁的写入：version 不一致时抛 ArchiveVersionConflictError（面板 409）。
 
         注意这里不做容量治理判定：面板是运维兜底入口，管理员必须能写入并看到
@@ -572,6 +586,7 @@ class ArchiveMemoryService:
         写入时机由调用方保证：**压缩开始前**、拿到 chars_before 之后。
         失败 / 未达标时调用方必须用 ``delete_snapshot`` 删掉本次快照。
         """
+        key = self._key(table_name, key)
         text = str(value or "")
         chars = int(total_chars) if total_chars is not None else len(text)
         async with self._uow_factory() as uow:
@@ -620,6 +635,7 @@ class ArchiveMemoryService:
         include_value: bool = False,
     ) -> list[dict[str, Any]]:
         """列出某条档案最近若干份快照（默认不含全文，避免大档案塞爆响应）。"""
+        key = self._key(table_name, key)
         page = max(0, min(int(limit), MAX_ARCHIVE_SNAPSHOTS_PER_KEY))
         async with self._uow_factory() as uow:
             access = self._snapshot_access(uow)

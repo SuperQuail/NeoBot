@@ -73,33 +73,29 @@ def _ctx(service, args=None):
 
 
 @pytest.mark.asyncio
-async def test_help_list_renders_image() -> None:
+async def test_help_list_falls_back_to_text_when_renderer_unavailable() -> None:
+    """/help 列表渲染/发图不可用时回退纯文本（不再静默跳过）。"""
     from neobot_app.commands.builtin import _handle_help
 
     sent: list = []
     service = _FakeService(sent=sent)
     result = await _handle_help(_ctx(service))
-    assert result is None  # 已自行发送
-    assert len(sent) == 1
-    kind, markdown = sent[0]
-    assert "# 可用命令" in markdown
-    assert "`/add_admin <QQ号|@某人>`" in markdown
-    assert "权限" in markdown
+    assert result is not None
+    assert "可用命令" in result
+    assert sent == []
 
 
 @pytest.mark.asyncio
-async def test_help_detail_renders_params() -> None:
+async def test_help_detail_falls_back_to_text_when_renderer_unavailable() -> None:
+    """/help 详情渲染/发图不可用时同样回退纯文本。"""
     from neobot_app.commands.builtin import _handle_help
 
     sent: list = []
     service = _FakeService(sent=sent)
     result = await _handle_help(_ctx(service, ["add_admin"]))
-    assert result is None
-    kind, markdown = sent[0]
-    assert "`/add_admin`" in markdown
-    assert "## 参数" in markdown
-    assert "`QQ号|@某人`" in markdown
-    assert "权限" in markdown
+    assert result is not None
+    assert "命令 /add_admin" in result
+    assert sent == []
 
 
 @pytest.mark.asyncio
@@ -114,14 +110,16 @@ async def test_help_unknown_command_falls_back() -> None:
 
 
 @pytest.mark.asyncio
-async def test_help_list_text_fallback_on_converter_failure() -> None:
+async def test_help_list_falls_back_to_text_even_with_bad_converter() -> None:
+    """图片链路整体不可用（converter 也失败）时仍回退纯文本。"""
     from neobot_app.commands.builtin import _handle_help
 
     sent: list = []
     service = _FakeService(sent=sent, converter_ok=False)
     result = await _handle_help(_ctx(service))
     assert result is not None
-    assert "可用命令:" in result
+    assert "可用命令" in result
+    assert sent == []
 
 
 # ── 全局回复意愿凭据工具 ──

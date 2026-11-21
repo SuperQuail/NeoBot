@@ -1,0 +1,700 @@
+"""OfficialAdapter 生命周期：启动/停止/rebind、事件投递与 action 分发。
+
+全部使用假凭据库/假网关/假 HTTP，不联网。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import shutil
+import tempfile
+import time
+import uuid
+from datetime import datetime
+from pathlib import Path
+
+import pytest
+
+from neobot_contracts.models import ConversationRef
+
+
+from neobot_contracts.platform import OFFICIAL_ADAPTER_APP_NAME
+from neobot_contracts.ports.logging import NullLogger
+
+from neobot_adapter.official import adapter as adapter_module
+from neobot_adapter.official.auth import BindState, Credentials
+from neobot_adapter.official.settings import OfficialSettings
+
+
+@pytest.fixture
+def workdir():
+    """隔离落盘目录；pytest 的 tmp_path 用 0o700 建目录，本机沙箱下会拒绝访问。"""
+    path = Path(tempfile.gettempdir()) / f"neobot-official-{uuid.uuid4().hex}"
+    os.mkdir(path)
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+class FakeLogger:
+    def __init__(self) -> None:
+        self.debugs: list[tuple[str, dict]] = []
+        self.infos: list[tuple[str, dict]] = []
+        self.warnings: list[tuple[str, dict]] = []
+        self.errors: list[tuple[str, dict]] = []
+
+    def bind(self, **ctx: object) -> "FakeLogger":
+        return self
+
+    def debug(self, msg: str, **kw: object) -> None:
+        self.debugs.append((msg, kw))
+
+    def info(self, msg: str, **kw: object) -> None:
+        self.infos.append((msg, kw))
+
+    def warning(self, msg: str, **kw: object) -> None:
+        self.warnings.append((msg, kw))
+
+    def error(self, msg: str, **kw: object) -> None:
+        self.errors.append((msg, kw))
+
+    def exception(self, msg: str, **kw: object) -> None:
+        self.errors.append((msg, kw))
+
+
+class _FakeCredentialStore:
+    """类级凭据值，方便假扫码流程与适配器共享。"""
+
+    value: Credentials | None = None
+    instances: list["_FakeCredentialStore"] = []
+    deletes = 0
+
+    def __init__(self, data_dir) -> None:
+        self.data_dir = data_dir
+        type(self).instances.append(self)
+
+    def load(self) -> Credentials | None:
+        return type(self).value
+
+    def save(self, app_id: str, secret: str) -> None:
+        type(self).value = Credentials(app_id=app_id, client_secret=secret)
+
+    def delete(self) -> None:
+        type(self).value = None
+        type(self).deletes += 1
+
+
+class _FakeTokenProvider:
+    def __init__(self, settings, http=None) -> None:
+        self.settings = settings
+
+    async def get_token(self, *, force: bool = False) -> str:
+        return "fake-token"
+
+    def invalidate(self) -> None:
+        return None
+
+
+class _FakeApi:
+    instances: list["_FakeApi"] = []
+
+    def __init__(self, settings, token_provider, logger=None, *, http=None) -> None:
+        self.settings = settings
+        self.requests: list[tuple[str, str, dict]] = []
+        self.closed = False
+        self.fail_members: Exception | None = None
+        type(self).instances.append(self)
+
+    async def request(self, method: str, path: str, *, body=None, timeout: float = 10.0) -> dict:
+        self.requests.append((method, path, dict(body or {})))
+        route = path.split("?", 1)[0]
+        if route == "/users/@me":
+            return {
+                "code": 0,
+                "data": {
+                    "username": "BotNick",
+                    "share_url": "https://q.qq.com/qqbot/connect?robot_uin=1020304",
+                },
+            }
+        if method == "DELETE":
+            return {}
+        if route.endswith("/members"):
+            if self.fail_members is not None:
+                raise self.fail_members
+            return {
+                "members": [
+                    {
+                        "member_openid": "member-openid",
+                        "username": "小明",
+                        "member_role": "admin",
+                        "bot": False,
+                        "joined_at": "2026-01-02T03:04:05+08:00",
+                    }
+                ],
+                "next_cursor": "",
+            }
+        if route.endswith("/members/member-openid"):
+            return {
+                "member_openid": "member-openid",
+                "username": "小明",
+                "member_role": "admin",
+                "bot": False,
+                "joined_at": "2026-01-02T03:04:05+08:00",
+            }
+        if route.endswith("/info"):
+            return {
+                "group_openid": "group-openid",
+                "group_name": "测试群",
+                "group_member_num": 42,
+            }
+        return {"id": "ROBOT1.0_out", "ext_info": {"ref_idx": "REFIDX_out"}}
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _FakeGateway:
+    instances: list["_FakeGateway"] = []
+
+    def __init__(
+        self, settings, token_provider, on_event, logger=None, *, on_auth_exhausted=None, **kwargs
+    ) -> None:
+        self.settings = settings
+        self.on_event = on_event
+        self.on_auth_exhausted = on_auth_exhausted
+        self.connected = False
+        self.started = 0
+        self.stopped = 0
+        type(self).instances.append(self)
+
+    async def start(self) -> None:
+        self.started += 1
+        self.connected = True
+        await self.on_event(
+            {
+                "op": 0,
+                "t": "READY",
+                "id": "evt-ready",
+                "s": 1,
+                "d": {"session_id": "session-1", "user": {"id": "bot-openid"}},
+            }
+        )
+
+    async def stop(self) -> None:
+        self.stopped += 1
+        self.connected = False
+
+    async def wait_connected(self, timeout: float | None = None) -> bool:
+        return self.connected
+
+
+def _install_fakes(monkeypatch, *, credentials: Credentials | None) -> None:
+    _FakeCredentialStore.value = credentials
+    _FakeCredentialStore.instances = []
+    _FakeCredentialStore.deletes = 0
+    _FakeApi.instances = []
+    _FakeGateway.instances = []
+    monkeypatch.setattr(adapter_module, "CredentialStore", _FakeCredentialStore)
+    monkeypatch.setattr(adapter_module, "TokenProvider", _FakeTokenProvider)
+    monkeypatch.setattr(adapter_module, "OfficialApi", _FakeApi)
+    monkeypatch.setattr(adapter_module, "OfficialGateway", _FakeGateway)
+
+
+def _make_adapter(workdir, events: list[dict], logger=None) -> adapter_module.OfficialAdapter:
+    settings = OfficialSettings(app_id="", client_secret="", data_dir=workdir)
+    return adapter_module.OfficialAdapter(
+        settings,
+        logger=logger if logger is not None else NullLogger(),
+        event_sink=events.append,
+        data_dir=workdir,
+    )
+
+
+async def _wait_until(predicate, *, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() > deadline:
+            raise AssertionError("condition not met before timeout")
+        await asyncio.sleep(0.01)
+
+
+class _BlockingBindFlow:
+    """先报 pending，等测试 release 后成功并写入新凭据。"""
+
+    release: asyncio.Event
+    completed = 0
+
+    def __init__(self, settings, logger=None, http=None) -> None:
+        self.settings = settings
+
+    async def start(self, on_update=None) -> BindState:
+        state = BindState(
+            phase="pending",
+            url="https://q.qq.com/qqbot/openclaw/connect.html?task_id=t1&_wv=2&source=neobot",
+            svg="<svg/>",
+            expires_at=time.time() + 600,
+        )
+        if on_update is not None:
+            on_update(state)
+        await type(self).release.wait()
+        _FakeCredentialStore.value = Credentials(app_id="app-new", client_secret="new-secret")
+        final = BindState(phase="success")
+        if on_update is not None:
+            on_update(final)
+        type(self).completed += 1
+        return final
+
+
+class _ErrorBindFlow:
+    def __init__(self, settings, logger=None, http=None) -> None:
+        self.settings = settings
+
+    async def start(self, on_update=None) -> BindState:
+        state = BindState(phase="error", error="扫码失败")
+        if on_update is not None:
+            on_update(state)
+        return state
+
+
+async def test_start_with_stored_credentials_connects(workdir, monkeypatch) -> None:
+    _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
+    events: list[dict] = []
+    adapter = _make_adapter(workdir, events)
+
+    assert adapter.bound is True
+    assert adapter.requires_connection_wait is True
+    assert adapter.connected is False
+
+    await adapter.start()
+
+    assert adapter.connected is True
+    assert adapter.wait_for_connection(0.1) is True
+    assert adapter.robot_uin == 1020304
+    assert adapter.robot_nickname == "BotNick"
+    assert adapter.settings.app_id == "app-1"
+    meta_events = [e for e in events if e.get("meta_event_type") == "lifecycle"]
+    assert meta_events and meta_events[0]["sub_type"] == "connect"
+    assert meta_events[0]["self_id"] == 1020304
+
+    version = await adapter.call_api("get_version_info", {})
+    assert version["status"] == "ok"
+    assert version["data"]["app_name"] == OFFICIAL_ADAPTER_APP_NAME
+
+    login = await adapter.call_api("get_login_info", {})
+    assert login["data"] == {"user_id": 1020304, "nickname": "BotNick"}
+
+    await adapter.stop()
+    assert adapter.connected is False
+    assert _FakeGateway.instances[0].stopped == 1
+    assert _FakeApi.instances[0].closed is True
+
+
+async def test_start_without_credentials_runs_bind_flow(workdir, monkeypatch) -> None:
+    _install_fakes(monkeypatch, credentials=None)
+    _BlockingBindFlow.release = asyncio.Event()
+    _BlockingBindFlow.completed = 0
+    monkeypatch.setattr(adapter_module, "QrBindFlow", _BlockingBindFlow)
+    events: list[dict] = []
+    adapter = _make_adapter(workdir, events)
+
+    assert adapter.bound is False
+    assert adapter.requires_connection_wait is False
+    assert adapter.bind_state.phase == "idle"
+
+    await adapter.start()
+
+    assert adapter.connected is False
+    await _wait_until(lambda: adapter.bind_state.phase == "pending")
+    bind_task = adapter._bind_task
+    assert bind_task is not None
+
+    _BlockingBindFlow.release.set()
+    await asyncio.wait_for(bind_task, timeout=2)
+
+    assert _BlockingBindFlow.completed == 1
+    assert adapter.bound is True
+    assert adapter.settings.app_id == "app-new"
+    assert adapter.bind_state.phase == "success"
+    assert adapter.connected is True
+    await adapter.stop()
+
+
+async def test_stop_is_idempotent(workdir, monkeypatch) -> None:
+    _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
+    adapter = _make_adapter(workdir, [])
+
+    await adapter.start()
+    gateway = _FakeGateway.instances[0]
+    api = _FakeApi.instances[0]
+
+    await adapter.stop()
+    await adapter.stop()
+
+    assert gateway.stopped == 1
+    assert api.closed is True
+    assert adapter.connected is False
+
+
+async def test_rebind_switches_connection_after_bind_success(workdir, monkeypatch) -> None:
+    _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
+    _BlockingBindFlow.release = asyncio.Event()
+    _BlockingBindFlow.completed = 0
+    monkeypatch.setattr(adapter_module, "QrBindFlow", _BlockingBindFlow)
+    adapter = _make_adapter(workdir, [])
+    await adapter.start()
+    first_gateway = _FakeGateway.instances[0]
+
+    await adapter.rebind()
+    await _wait_until(lambda: adapter.bind_state.phase == "pending")
+    bind_task = adapter._bind_task
+    assert bind_task is not None
+    _BlockingBindFlow.release.set()
+    await asyncio.wait_for(bind_task, timeout=2)
+
+    assert adapter.settings.app_id == "app-new"
+    assert first_gateway.stopped == 1
+    assert len(_FakeGateway.instances) == 2
+    assert adapter.connected is True
+    await adapter.stop()
+
+
+async def test_rebind_failure_keeps_existing_connection(workdir, monkeypatch) -> None:
+    _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
+    monkeypatch.setattr(adapter_module, "QrBindFlow", _ErrorBindFlow)
+    adapter = _make_adapter(workdir, [])
+    await adapter.start()
+    gateway = _FakeGateway.instances[0]
+
+    await adapter.rebind()
+    bind_task = adapter._bind_task
+    assert bind_task is not None
+    await asyncio.wait_for(bind_task, timeout=2)
+
+    assert adapter.bind_state.phase == "error"
+    assert adapter.connected is True
+    assert gateway.stopped == 0
+    assert adapter.settings.app_id == "app-1"
+    await adapter.stop()
+
+
+async def test_auth_exhaustion_deletes_stored_credentials_and_restarts_bind(
+    workdir, monkeypatch
+) -> None:
+    _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
+    _BlockingBindFlow.release = asyncio.Event()
+    _BlockingBindFlow.completed = 0
+    monkeypatch.setattr(adapter_module, "QrBindFlow", _BlockingBindFlow)
+    logger = FakeLogger()
+    adapter = _make_adapter(workdir, [], logger=logger)
+    await adapter.start()
+    gateway = _FakeGateway.instances[0]
+
+    await gateway.on_auth_exhausted()
+
+    assert _FakeCredentialStore.deletes == 1
+    assert adapter.bound is False
+    await _wait_until(lambda: adapter.bind_state.phase == "pending")
+    assert adapter.bind_state.error == "连续登录失败，请用手机 QQ 重新扫码登录"
+    assert any("已删除失效的扫码凭据" in message for message, _kw in logger.errors)
+
+    bind_task = adapter._bind_task
+    assert bind_task is not None
+    _BlockingBindFlow.release.set()
+    await asyncio.wait_for(bind_task, timeout=2)
+
+    # 扫码成功后用新凭据重连，旧扫码凭据已被删除。
+    assert adapter.settings.app_id == "app-new"
+    assert adapter.connected is True
+    assert len(_FakeGateway.instances) == 2
+    assert gateway.stopped == 1
+    await adapter.stop()
+
+
+async def test_auth_exhaustion_with_config_credentials_keeps_config(
+    workdir, monkeypatch
+) -> None:
+    _install_fakes(monkeypatch, credentials=None)
+    _BlockingBindFlow.release = asyncio.Event()
+    _BlockingBindFlow.completed = 0
+    monkeypatch.setattr(adapter_module, "QrBindFlow", _BlockingBindFlow)
+    logger = FakeLogger()
+    adapter = adapter_module.OfficialAdapter(
+        OfficialSettings(
+            app_id="config-app", client_secret="config-secret", data_dir=workdir
+        ),
+        logger=logger,
+        event_sink=None,
+        data_dir=workdir,
+    )
+    await adapter.start()
+    gateway = _FakeGateway.instances[0]
+
+    await gateway.on_auth_exhausted()
+
+    # 配置/环境变量是用户资产：只提示、不删除。
+    assert _FakeCredentialStore.deletes == 0
+    assert adapter.settings.app_id == "config-app"
+    assert any("配置中的 AppID/AppSecret 失效" in message for message, _kw in logger.errors)
+    await _wait_until(lambda: adapter.bind_state.phase == "pending")
+    assert adapter.bind_state.error == "连续登录失败，请用手机 QQ 重新扫码登录"
+
+    # 扫码成功后新凭据覆盖运行期 settings，旧配置不会再把连接带回坏凭据。
+    bind_task = adapter._bind_task
+    assert bind_task is not None
+    _BlockingBindFlow.release.set()
+    await asyncio.wait_for(bind_task, timeout=2)
+
+    assert adapter.settings.app_id == "app-new"
+    assert adapter.connected is True
+    await adapter.stop()
+
+
+async def test_unsupported_actions_return_chinese_failure(workdir, monkeypatch) -> None:
+    _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
+    adapter = _make_adapter(workdir, [])
+    await adapter.start()
+
+    response = await adapter.call_api("set_group_card", {"group_id": 1, "user_id": 2, "card": "x"})
+
+    assert response["status"] == "failed"
+    assert "不支持" in response["message"]
+
+    recall = await adapter.call_api("delete_msg", {"message_id": 1})
+    assert recall["status"] == "failed"
+    assert "无法定位" in recall["message"]
+
+    ranges = await adapter.call_api("get_robot_uin_range", {})
+    assert ranges["data"] == []
+    groups = await adapter.call_api("get_group_list", {})
+    assert groups["status"] == "failed"
+    assert "群列表" in groups["message"]
+    await adapter.stop()
+
+
+async def test_inbound_event_is_published_and_serves_get_msg(workdir, monkeypatch) -> None:
+    _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
+    events: list[dict] = []
+    adapter = _make_adapter(workdir, events)
+    await adapter.start()
+
+    await adapter._on_event(
+        {
+            "op": 0,
+            "t": "C2C_MESSAGE_CREATE",
+            "id": "evt-message-1",
+            "s": 2,
+            "d": {
+                "id": "ROBOT1.0_in",
+                "content": "你好",
+                "timestamp": "2026-01-02T03:04:05+08:00",
+                "author": {"user_openid": "user-openid-1", "username": "Alice"},
+            },
+        }
+    )
+
+    messages = [e for e in events if e.get("post_type") == "message"]
+    assert len(messages) == 1
+    synthetic_id = messages[0]["message_id"]
+    got = await adapter.call_api("get_msg", {"message_id": synthetic_id})
+    assert got["status"] == "ok"
+    assert got["data"]["message_id"] == synthetic_id
+
+    # 被动回复：用刚收到消息的官方 msg_id 发一条私聊。
+    conversation = ConversationRef(kind="private", id=str(messages[0]["user_id"]))
+    result = await adapter.send(conversation, "回复")
+    assert result.status == "ok"
+    sent = _FakeApi.instances[0].requests[-1]
+    assert sent[1] == "/v2/users/user-openid-1/messages"
+    assert sent[2]["msg_id"] == "ROBOT1.0_in"
+    await adapter.stop()
+
+
+async def test_onebot_shaped_methods_and_core_proxy(workdir, monkeypatch) -> None:
+    from neobot_adapter.request._proxy import core_proxy
+
+    _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
+    adapter = _make_adapter(workdir, [])
+    await adapter.start()
+
+    # core 代理指向当前官方核心，request 子模块因此可用。
+    assert core_proxy.is_bound is True
+
+    groups = await adapter.get_group_list()
+    assert groups.status == "failed"
+    assert "群列表" in (groups.message or "")
+
+    stranger = await adapter.get_stranger_info(123)
+    assert stranger.status == "failed"
+
+    # 空目标解析不出 openid，发送应明确失败。
+    failed = await adapter.send_group_msg("", "你好")
+    assert failed.status == "failed"
+
+    await adapter.stop()
+    assert core_proxy.is_bound is False
+
+
+async def test_send_before_start_returns_failed(workdir, monkeypatch) -> None:
+    _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
+    adapter = _make_adapter(workdir, [])
+
+    result = await adapter.send(ConversationRef(kind="private", id="1"), "你好")
+
+    assert result.status == "failed"
+    assert "尚未连接" in (result.message or "")
+
+
+def test_config_credentials_take_priority_over_stored(workdir) -> None:
+    from neobot_adapter.official.auth import CredentialStore
+
+    CredentialStore(workdir).save("stored-app", "stored-secret")
+    adapter = adapter_module.OfficialAdapter(
+        OfficialSettings(app_id="config-app", client_secret="config-secret", data_dir=workdir),
+        data_dir=workdir,
+    )
+
+    credentials = adapter._load_credentials()
+    assert credentials is not None
+    assert credentials.app_id == "config-app"
+    assert credentials.client_secret == "config-secret"
+
+
+async def test_unbind_removes_stored_credentials(workdir) -> None:
+    from neobot_adapter.official.auth import CredentialStore
+
+    store = CredentialStore(workdir)
+    store.save("stored-app", "stored-secret")
+    adapter = adapter_module.OfficialAdapter(
+        OfficialSettings(app_id="", client_secret="", data_dir=workdir),
+        data_dir=workdir,
+    )
+    assert adapter.bound is True
+
+    await adapter.unbind()
+
+    assert not store.path.exists()
+    assert adapter.bound is False
+
+
+async def test_group_info_and_member_apis_use_official_endpoints(workdir, monkeypatch) -> None:
+    _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
+    adapter = _make_adapter(workdir, [])
+    await adapter.start()
+    group_id = "group-openid"
+    member_id = "member-openid"
+
+    info = await adapter.call_api("get_group_info", {"group_id": group_id})
+    assert info["status"] == "ok"
+    assert info["data"]["group_name"] == "测试群"
+    assert info["data"]["member_count"] == 42
+
+    members = await adapter.call_api("get_group_member_list", {"group_id": group_id})
+    assert members["status"] == "ok"
+    assert len(members["data"]) == 1
+    member = members["data"][0]
+    assert member["group_id"] == group_id
+    assert member["user_id"] == member_id
+    assert member["nickname"] == "小明"
+    assert member["role"] == "admin"
+    assert member["is_robot"] is False
+    assert member["join_time"] > 0
+
+    detail = await adapter.call_api("get_group_member_info", {"group_id": group_id, "user_id": member_id})
+    assert detail["status"] == "ok"
+    assert detail["data"]["role"] == "admin"
+
+    paths = [path for _method, path, _body in _FakeApi.instances[0].requests]
+    assert "/v2/groups/group-openid/info" in paths
+    assert any(path.startswith("/v2/groups/group-openid/members") for path in paths)
+    await adapter.stop()
+
+
+async def test_group_member_api_permission_error_is_explicit(workdir, monkeypatch) -> None:
+    from neobot_adapter.official.send import OfficialApiError
+
+    _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
+    adapter = _make_adapter(workdir, [])
+    await adapter.start()
+    _FakeApi.instances[0].fail_members = OfficialApiError("应用无接口访问权限", code=11253)
+    group_id = "group-openid"
+
+    result = await adapter.call_api("get_group_member_list", {"group_id": group_id})
+
+    assert result["status"] == "failed"
+    assert "11253" in result["message"]
+    await adapter.stop()
+
+
+async def test_delete_msg_uses_sent_message_context(workdir, monkeypatch) -> None:
+    _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
+    events: list[dict] = []
+    adapter = _make_adapter(workdir, events)
+    await adapter.start()
+    await adapter._on_event(_inbound_c2c())
+    message = next(event for event in events if event.get("post_type") == "message")
+    conversation = ConversationRef(kind="private", id=str(message["user_id"]))
+    sent = await adapter.send(conversation, "回复")
+    assert sent.status == "ok"
+
+    result = await adapter.call_api("delete_msg", {"message_id": sent.data.message_id})
+
+    assert result["status"] == "ok"
+    deletes = [path for method, path, _body in _FakeApi.instances[0].requests if method == "DELETE"]
+    assert deletes == ["/v2/users/user-openid-1/messages/ROBOT1.0_out"]
+    await adapter.stop()
+
+
+async def test_delete_msg_can_target_incoming_message(workdir, monkeypatch) -> None:
+    _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
+    events: list[dict] = []
+    adapter = _make_adapter(workdir, events)
+    await adapter.start()
+    await adapter._on_event(_inbound_c2c())
+    message = next(event for event in events if event.get("post_type") == "message")
+
+    result = await adapter.call_api("delete_msg", {"message_id": message["message_id"]})
+
+    assert result["status"] == "ok"
+    deletes = [path for method, path, _body in _FakeApi.instances[0].requests if method == "DELETE"]
+    assert deletes == ["/v2/users/user-openid-1/messages/ROBOT1.0_in"]
+    await adapter.stop()
+
+
+async def test_delete_msg_rejects_message_older_than_two_minutes(workdir, monkeypatch) -> None:
+    _install_fakes(monkeypatch, credentials=Credentials("app-1", "secret-1"))
+    adapter = _make_adapter(workdir, [])
+    synthetic = adapter.message_ids.next(
+        "ROBOT1.0_old",
+        context={"kind": "private", "openid": "user-openid", "at": time.time() - 121},
+    )
+
+    result = await adapter.call_api("delete_msg", {"message_id": synthetic})
+
+    assert result["status"] == "failed"
+    assert "2 分钟" in result["message"]
+
+
+def _inbound_c2c() -> dict:
+    return {
+        "op": 0,
+        "t": "C2C_MESSAGE_CREATE",
+        "id": "evt-message-1",
+        "s": 2,
+        "d": {
+            "id": "ROBOT1.0_in",
+            "content": "你好",
+            "timestamp": datetime.now().astimezone().isoformat(),
+            "author": {"user_openid": "user-openid-1", "username": "Alice"},
+        },
+    }
+
+
+def test_supports_action_capability_table(workdir) -> None:
+    adapter = adapter_module.OfficialAdapter(
+        OfficialSettings(app_id="", client_secret="", data_dir=workdir), data_dir=workdir
+    )
+    assert adapter.supports_action("set_group_ban") is True
+    assert adapter.supports_action("delete_msg") is True
+    assert adapter.supports_action("get_forward_msg") is False

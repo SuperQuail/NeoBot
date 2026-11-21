@@ -10,10 +10,10 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from neobot_app.bilibili._compat import call_client, get_field
+from neobot_app.bot_accounts import looks_like_real_qq
 from neobot_app.skills.base import SkillModule
 from neobot_app.utils.logger import get_module_logger
 
@@ -22,10 +22,6 @@ logger = get_module_logger("bilibili.link_skill")
 _LINK_MARKER = "[B站UID:{uid}]"
 #: 合并进 QQ user_profile 的 B站档案最多多少字符（防止一条关联把档案撑爆）。
 _MAX_MERGE_CHARS = 1500
-#: QQ 号：5~12 位纯数字。
-_QQ_RE = re.compile(r"^\d{5,12}$")
-
-
 def _json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
 
@@ -44,12 +40,12 @@ def _parse_uid(value: Any) -> tuple[int, str]:
 
 
 def _parse_qq(value: Any) -> tuple[str, str]:
-    """校验 QQ 号：5~12 位纯数字；返回 (qq, 错误文本)。"""
+    """校验 QQ 号：真实 QQ 号（5~11 位）；返回 (qq, 错误文本)。"""
     qq = str(value or "").strip()
     if not qq:
         return "", "缺少 qq_number"
-    if not _QQ_RE.match(qq):
-        return "", "qq_number 必须是 5~12 位纯数字"
+    if not looks_like_real_qq(qq, min_digits=5):
+        return "", "qq_number 必须是 5~11 位纯数字"
     return qq, ""
 
 

@@ -10,6 +10,28 @@ from neobot_chat.schema.types import ToolDefinition
 
 from neobot_app.reply.tool_parts.common import _SKILL_GUARD_BASE_TOOLS, _SKILL_INTERNAL_KEYS
 
+#: 官方 QQ 机器人协议没有等价能力的工具：官方通道下不暴露、也不允许执行。
+_OFFICIAL_HIDDEN_TOOLS = frozenset(
+    {
+        "react_emoji",
+        "search_qq_emoji",
+        "poke_user",
+        "chat_history__read_earlier_messages",
+        "cross_chat__cross_chat_query",
+        "user_profile__analyze_user_avatar",
+    }
+)
+#: 这些技能整包依赖 OneBot/NapCat 专属能力（群管理、好友管理、合并转发、任意 API 调用）。
+_OFFICIAL_HIDDEN_SKILLS = frozenset(
+    {"onebot", "group_management", "friend_management", "forward_message"}
+)
+
+
+def _official_tool_supported(name: str) -> bool:
+    if name in _OFFICIAL_HIDDEN_TOOLS:
+        return False
+    return not any(name.startswith(skill + "__") for skill in _OFFICIAL_HIDDEN_SKILLS)
+
 
 class _DispatchMixin:
     def _shared_agent_tools(self) -> Any:
@@ -34,6 +56,8 @@ class _DispatchMixin:
         任务工具模式只决定「任务型 Agent(解题/子 Agent)如何编排」;
         主回复管线始终直接调用业务工具,不因切到 PTC 而把工具换成单个 run_code。
         """
+        if self._official_platform and not _official_tool_supported(name):
+            return False
         if not self._policy_authorized(name):
             return False
         shared = self._shared_agent_tools()
@@ -61,6 +85,8 @@ class _DispatchMixin:
         )
 
     def authorization_error(self, name: str) -> str:
+        if self._official_platform and not _official_tool_supported(name):
+            return f"Error: QQ 官方机器人通道不支持工具 {name}（官方协议没有等价能力）"
         if self._allowed_tools and name not in (_SKILL_GUARD_BASE_TOOLS | self._allowed_tools):
             return f"Error: 工具 {name} 不在当前技能允许的工具列表内"
         shared = self._shared_agent_tools()
@@ -81,10 +107,15 @@ class _DispatchMixin:
             from neobot_app.agent_tools.contracts import ToolContext
             lookup = getattr(self._skill_manager, "get", None)
             shared = lookup("agent_tools") if callable(lookup) else None
-            if isinstance(shared, AgentToolsSkill) and self._conv_kind in {"group", "private"} and str(self._conv_id).isdigit():
+            if (
+                isinstance(shared, AgentToolsSkill)
+                and self._conv_kind in {"group", "private"}
+                and str(self._conv_id or "").strip()
+            ):
                 flow = f"{self._conv_kind}:{self._conv_id}"
                 context = ToolContext(owner=f"{flow}:main", chat_flow_id=flow)
                 safe = {"cancel", "send_reply", "split_reply", "wait", "send_long_reply",
+                        "send_official_markdown",
                         "credential__request", "credential__check", "skills__read_manifest",
                         "skills__read_resource", "skills__view_instructions", "check_background_tasks",
                         "cancel_task", "agents__list", "image_context__add_image", "image_parse__parse_image",
@@ -106,8 +137,6 @@ class _DispatchMixin:
             return self._execute_get_willingness_config()
         if name == "manage_willing_config":
             return await self._execute_manage_willing_config(args)
-        if name == "send_emoji":
-            return await self._execute_send_emoji(args)
         if name == "list_emojis":
             return self._execute_list_emojis(args)
         if name == "search_custom_emoji":
@@ -130,6 +159,10 @@ class _DispatchMixin:
             return await self._execute_mark_scheduled_task_complete(args)
         if name == "send_long_reply":
             return await self._execute_send_long_reply(args)
+        if name == "send_official_markdown":
+            return await self._execute_official_markdown(args)
+        if name == "official_group_manage":
+            return await self._execute_official_group_manage(args)
         # Markdown 技能读取（优先于 SkillManager 的 __ 路由）
         if name == "skills__read_manifest":
             return self._read_skill_manifest(args)
@@ -182,7 +215,7 @@ class _DispatchMixin:
         from neobot_app.agent_tools.contracts import ToolContext
         from neobot_app.agent_tools.invocation import CURRENT_INVOCATION, ToolInvocation
 
-        if self._conv_kind not in {"group", "private"} or not str(self._conv_id).isdigit():
+        if self._conv_kind not in {"group", "private"} or not str(self._conv_id or "").strip():
             from neobot_app.skills.agent_tools_skill import AgentToolsSkill
             lookup = getattr(self._skill_manager, "get", None)
             shared = lookup("agent_tools") if callable(lookup) else None

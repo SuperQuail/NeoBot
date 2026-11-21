@@ -657,6 +657,23 @@ await runtime.reload_plugin("ping")
 
 重载插件时，运行时会停止旧插件、清理已跟踪的订阅、Host 注册和 Agent 注册，清除模块缓存，然后重新导入插件并按需启动。
 
+### 主动消息（后台推送）
+
+定时任务、开播通知这类后台推送不是对某条入站消息的回复，官方 QQ 通道没有被动回复窗口，
+必须显式声明为主动消息，否则会被拒发：
+
+```python
+await ctx.send(conversation, "开播了", proactive=True)
+await ctx.send_private(user_id, "开播了", proactive=True)
+await ctx.send_group(group_id, "开播了", proactive=True)
+await ctx.send_image(conversation, path=image_path, proactive=True)
+```
+
+- `proactive` 只对官方通道生效：OneBot / local 后端忽略该语义，行为与普通发送一致；
+- 官方主动消息有频控，发送失败按普通发送失败处理（异常照常抛出，插件自行决定是否重试）；
+- 不传或传 `False` 保持普通回复路径，也不会向适配器多传关键字参数
+  （兼容只实现 `send(conversation, message)` 的第三方适配器）。
+
 ## 插件依赖
 
 插件可以在 `plugin.toml` 或 `Plugin(...)` 里声明前置插件，声明支持版本约束：

@@ -85,8 +85,11 @@ async def test_real_tool_and_sender_preserve_only_expected_content(raw, segments
     event.transition(ReplyState.BUILDING_PROMPT)
     event.transition(ReplyState.GENERATING)
     async def handler(**kwargs):
-        return await sender.send_reply(event, kwargs["text"], segments=kwargs["segments"], send_original=kwargs["send_original"])
+        segments = kwargs.get("segments")
+        if segments is None and original:
+            segments = [raw]
+        return await sender.send_reply(event, kwargs.get("text", ""), segments=segments)
     executor = ReplyToolExecutor(send_reply_handler=handler)
-    result = await executor.execute("send_reply", {"text": raw, "segments": segments, "send_original": original})
+    result = await executor.execute("send_reply", {"text": raw, "segments": segments})
     assert sent == expected
     assert "已发送" in result
