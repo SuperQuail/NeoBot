@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "version": "2.1.0-a14",
-  "created_at": "2026-11-14T10:34:36.532338487Z",
+  "version": "2.1.0-a15",
+  "created_at": "2026-11-21T10:20:14.612171461Z",
   "mode": "pr",
   "channel": "alpha",
-  "fingerprint": "sha256:237d49898ec996f89ab5551efeb471c6590973c0dc2d1fa20b2787ea7e035eab",
+  "fingerprint": "sha256:e9643604b9ce2b291b29b0a6d7f7228d3cc6a65cfac8e1f783849be615496359",
   "repo": {
     "host": "github.com",
     "owner": "SuperQuail",
@@ -18,95 +18,95 @@
       "uv run pytest --strict-markers -m \"not browser and not network and not slow and not llm\""
     ],
     "skipped": false,
-    "at": "2026-11-14T10:34:36.532338977Z"
+    "at": "2026-11-21T10:20:14.612171892Z"
   },
   "packages": [
     {
       "name": "python@neobot",
       "path": ".",
       "resolver": "python",
-      "current": "2.1.0-a13",
-      "next": "2.1.0-a14",
+      "current": "2.1.0-a14",
+      "next": "2.1.0-a15",
       "bump": "minor",
-      "tag": "v2.1.0a14",
+      "tag": "v2.1.0a15",
       "publish": false
     },
     {
       "name": "python@neobot-app",
       "path": "app",
       "resolver": "python",
-      "current": "2.1.0-a13",
-      "next": "2.1.0-a14",
+      "current": "2.1.0-a14",
+      "next": "2.1.0-a15",
       "bump": "minor",
-      "tag": "v2.1.0a14",
+      "tag": "v2.1.0a15",
       "publish": true
     },
     {
       "name": "python@neobot-contracts",
       "path": "packages/contracts",
       "resolver": "python",
-      "current": "2.1.0-a13",
-      "next": "2.1.0-a14",
+      "current": "2.1.0-a14",
+      "next": "2.1.0-a15",
       "bump": "minor",
-      "tag": "v2.1.0a14",
+      "tag": "v2.1.0a15",
       "publish": true
     },
     {
       "name": "python@neobot-adapter",
       "path": "packages/adapter",
       "resolver": "python",
-      "current": "2.1.0-a13",
-      "next": "2.1.0-a14",
+      "current": "2.1.0-a14",
+      "next": "2.1.0-a15",
       "bump": "minor",
-      "tag": "v2.1.0a14",
+      "tag": "v2.1.0a15",
       "publish": true
     },
     {
       "name": "python@neobot-chat",
       "path": "packages/chat",
       "resolver": "python",
-      "current": "2.1.0-a13",
-      "next": "2.1.0-a14",
+      "current": "2.1.0-a14",
+      "next": "2.1.0-a15",
       "bump": "minor",
-      "tag": "v2.1.0a14",
+      "tag": "v2.1.0a15",
       "publish": true
     },
     {
       "name": "python@neobot-memory",
       "path": "packages/memory",
       "resolver": "python",
-      "current": "2.1.0-a13",
-      "next": "2.1.0-a14",
+      "current": "2.1.0-a14",
+      "next": "2.1.0-a15",
       "bump": "minor",
-      "tag": "v2.1.0a14",
+      "tag": "v2.1.0a15",
       "publish": true
     },
     {
       "name": "python@neobot-modloader",
       "path": "packages/modloader",
       "resolver": "python",
-      "current": "2.1.0-a13",
-      "next": "2.1.0-a14",
+      "current": "2.1.0-a14",
+      "next": "2.1.0-a15",
       "bump": "minor",
-      "tag": "v2.1.0a14",
+      "tag": "v2.1.0a15",
       "publish": true
     },
     {
       "name": "python@neobot-storage",
       "path": "packages/storage",
       "resolver": "python",
-      "current": "2.1.0-a13",
-      "next": "2.1.0-a14",
+      "current": "2.1.0-a14",
+      "next": "2.1.0-a15",
       "bump": "minor",
-      "tag": "v2.1.0a14",
+      "tag": "v2.1.0a15",
       "publish": true
     }
   ],
   "releases": [
     {
-      "version": "2.1.0-a14",
-      "tag": "v2.1.0a14",
-      "previous_tag": "v2.1.0a13",
+      "version": "2.1.0-a15",
+      "tag": "v2.1.0a15",
+      "previous_tag": "v2.1.0a14",
       "packages": [
         "python@neobot",
         "python@neobot-adapter",
@@ -214,6 +214,19 @@
       "author": "Tang-Tian-dev"
     },
     {
+      "file": ".changes/code-unit-split.md",
+      "type": "fix",
+      "scope": "reply",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "反引号包住的行内代码/命令在分句前替换成占位符，整段不再被空格切断、空格也不丢；还原时去掉两侧反引号，引用型内容（`cancel`、`*(note)*`）保留反引号。系统提示词同步要求发命令时用反引号标注。",
+      "commit": "636089597f6b97c69ff8f51ae9ed896bcb9e175b",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/636089597f6b97c69ff8f51ae9ed896bcb9e175b",
+      "author": "loster12520"
+    },
+    {
       "file": ".changes/cot-valuable-reply.md",
       "type": "feat",
       "scope": "prompt",
@@ -285,6 +298,19 @@
       "author": "Tang-Tian-dev"
     },
     {
+      "file": ".changes/dashboard-temporal-fields.md",
+      "type": "feat",
+      "scope": "dashboard",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "面板配置表单新增 `datetime` / `date` / `time` 三种字段类型：本体（dataclass）与插件（Pydantic）配置都渲染对应的日期时间、日期、时间选择器，取值统一为 ISO 8601 字符串（`YYYY-MM-DDTHH:MM:SS` / `YYYY-MM-DD` / `HH:MM:SS`）。可选字段清空即从配置里删除该键（= 不设置）。面板按本地面钟编辑：编辑过的值按本地 naive 回写，时区偏移与亚秒会被丢弃；未编辑的字段保持原样。",
+      "commit": "63e3420aa8d08993e8c046d07a41f516b569b6fc",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/63e3420aa8d08993e8c046d07a41f516b569b6fc",
+      "author": "ABPolaris"
+    },
+    {
       "file": ".changes/dedupe-linked-groups.md",
       "type": "feat",
       "scope": "bot",
@@ -343,6 +369,19 @@
       "pull_number": 303,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/303",
       "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/emoji-scan-skip.md",
+      "type": "perf",
+      "scope": "emoji",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "表情包定时扫描改为先比对目录指纹（文件名 + 大小 + mtime_ns，目录下所有常规文件）：没有变化就跳过扫描，检查间隔从 5 分钟放宽到 15 分钟，并每 8 小时强制完整扫描一次兜底；扫描成功才盖章，失败下一轮重试。",
+      "commit": "43af9bedd52b431c00bda9cd569fd474eb1aa739",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/43af9bedd52b431c00bda9cd569fd474eb1aa739",
+      "author": "ABPolaris"
     },
     {
       "file": ".changes/explicit-proactive-messages.md",
@@ -1219,6 +1258,20 @@
       "author": "Tang-Tian-dev"
     },
     {
+      "file": ".changes/plugin-service-dependencies.md",
+      "type": "feat",
+      "scope": "modloader",
+      "bump": "minor",
+      "packages": [
+        "python@neobot-app",
+        "python@neobot-modloader"
+      ],
+      "body": "支持插件声明提供、必需与可选服务，统一检查服务依赖并联动插件生命周期。插件面板展示服务可用性、提供者和依赖诊断，提供依赖管理入口，沿用现有主题与配置操作流程。",
+      "commit": "07ba2519cec1b1d692aca22313d0f61da9c4114d",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/07ba2519cec1b1d692aca22313d0f61da9c4114d",
+      "author": "momomiso"
+    },
+    {
       "file": ".changes/prompt-assets-cot.md",
       "type": "feat",
       "bump": "minor",
@@ -1487,6 +1540,19 @@
       "author": "Tang-Tian-dev"
     },
     {
+      "file": ".changes/streaming-parser-panel.md",
+      "type": "fix",
+      "scope": "dashboard",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "修复直播订阅页在暗色主题下的可读性，以及切回插件时搜索框被误填、内嵌页面高度不足的问题。",
+      "commit": "716295704075ade9f2964f93bacb58228fd2e15b",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/716295704075ade9f2964f93bacb58228fd2e15b",
+      "author": "momomiso"
+    },
+    {
       "file": ".changes/strip-duplicate-text.md",
       "type": "fix",
       "scope": "bot",
@@ -1530,6 +1596,19 @@
       "pull_number": 305,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
       "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/verbose-logging.md",
+      "type": "feat",
+      "scope": "logging",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "新增 `[debug].verbose_logging`（auto/on/off，默认 auto）：默认不再把数据库 SQL、WebSocket 帧、图片解码等第三方库 DEBUG 写入日志文件，排障时可在面板或配置里打开；on/off 支持热重载，auto 跟随 Debug 模式并在软重启时重新解析。",
+      "commit": "bcd9e15967cb8ea604b15f0098b4c05b2ff1fa0d",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/bcd9e15967cb8ea604b15f0098b4c05b2ff1fa0d",
+      "author": "ABPolaris"
     }
   ],
   "previous_changes": [
@@ -1550,6 +1629,7 @@
     ".changes/explicit-proactive-messages.md",
     ".changes/expose-official-action.md",
     ".changes/fix-at-prefix.md",
+    ".changes/fix-known-issues.md",
     ".changes/fix-minigame-checksum.md",
     ".changes/fix-minigame-migration.md",
     ".changes/fix-official-mention.md",
