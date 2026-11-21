@@ -83,7 +83,8 @@
     root.requestAnimationFrame(() => {
       measuring = false;
       if (disposed) return;
-      if (context.layout === 'inline' && !context.suspended) {
+      // 暂停业务调用时页面仍可能可见，布局测量应继续。
+      if (context.layout === 'inline') {
         // 测量内容本身，不读取至少等于 iframe 高度的 scrollHeight，才能在删行后收缩。
         const body = root.document.body;
         const style = root.getComputedStyle(body);

@@ -5,8 +5,8 @@ covers:
   - app/src/neobot_app/image/
   - app/src/neobot_app/vision_detect/
   - app/src/neobot_app/message/image_pipeline.py
-verified_against: d525a5b
-verified_hash: e611b6cdd946
+verified_against: f3285e8e
+verified_hash: 2cb8485ff643
 ---
 
 # 14 表情包与图像解析：入站图片解析 · 表情包库 · 本地 YOLO 检测
@@ -36,7 +36,7 @@ verified_hash: e611b6cdd946
 **spec 与现实的差异提示**：
 
 1. `VisionDetectService.inspect_image` 自称「备用接口」，docstring 写着「未来在 `image/parser.py` 的 `_parse_single_image` 视觉模型调用之前插入检测」（`service.py:435-443`）—— **HEAD 上这条插入不存在，全仓零调用点**。本地检测只由 agent 显式调用 `vision_detect__detect` 触发，不参与入站图片解析。
-2. emoji 目录的「即时感知」不是文件监听：它是**读取时**比对 `(目录下文件名元组, 目录 mtime_ns)` 快照（`service.py:848-883`）。没有读操作就不会感知，写操作仍然靠 300s 定时刷新兜底。
+2. emoji 目录的「即时感知」不是文件监听：它是**读取时**比对 `(目录下文件名元组, 目录 mtime_ns)` 快照（`service.py:848-883`）。没有读操作就不会感知，写操作仍然靠 15 分钟一次的定时检查兜底（目录指纹没变时跳过扫描，每 8 小时强制全扫一次）。
 3. 运行期生效的推理阈值来自 `models.toml` 的 `[library]` 段，不是 `config.toml`：`agent.vision_detect.default_conf / default_iou / imgsz` 只是首次生成骨架的初值，`refresh()` 之后会被索引里的值覆盖（`service.py:140-149`）。
 
 ## 流程
@@ -260,7 +260,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["_scan_folder 入口 start 300s 循环 各写操作末尾 即时刷新 / service.py:501"] --> B{"emoji 目录存在"}
+    A["_scan_folder 入口 start 900s 循环（指纹未变则跳过） 各写操作末尾 即时刷新 / service.py:501"] --> B{"emoji 目录存在"}
     B -- 否 --> B1["warning 后记录快照返回"]
     B -- 是 --> C["_list_image_files 只收 png jpg jpeg gif webp bmp 按名字排序 / :817"]
     C --> D{"有图片文件"}
@@ -289,6 +289,7 @@ flowchart TD
 * `_parse_batch` 的并发默认 20（`max_concurrency`，`build_emoji_service` 没有覆盖它），单张超时 60s，`asyncio.gather` 全收不抛。
 * 去重删的是**后落盘名字**那一份（保留 mtime 更小者），并把它的 `.txt` 一并删除；日志里两条分支都写「保留较旧文件」，看日志时别被文件名绕晕。
 * 整段扫描被 `_scan_lock` 串行化（`_scan_safe`，`:841`），定时刷新与即时刷新不会并发。
+* 定时循环先比对 `_dir_fingerprint()`（文件名 + 大小 + mtime_ns，目录下所有常规文件）：没变化且未到 8 小时强制全扫周期就直接跳过。只有扫描成功且 DB 清理成功才 `_stamp_scan()` 盖章；目录缺失/读失败、DB 查询失败、解析或清理失败都不盖章，下一轮重试。
 </details>
 
 <details>
@@ -527,9 +528,9 @@ flowchart TD
 | 状态 | 谁置位 | 谁清理 | 失败时停在哪 |
 |---|---|---|---|
 | `EmojiService._entries` 编号映射 | `_scan_folder` 走 `_rebuild_mapping`；读接口走 `_merge_disk_entries_fast` | 目录无图片时 `_entries.clear()`；`_rebuild_mapping` 整体替换 | DB 查询或写入异常只记 error 日志，索引仍重建（编号可能暂时与库不一致） |
-| `_last_dir_snapshot` | `start()`、每次 `_scan_folder` 末尾、`_notify_disk_changed` | `stop()` 置 None | 为 None 时只记基线不触发刷新（服务未 start 的安全阀） |
+| `_last_dir_snapshot` / `_last_dir_fingerprint` / `_last_full_scan_at` | 扫描成功且 DB 清理成功才 `_stamp_scan` 盖章；`_notify_disk_changed` 只更新快照 | `stop()` 置空快照与指纹（全扫时间随实例重建） | 目录缺失/读失败/DB 查询失败/解析或清理失败都不盖章，下一轮重试；缺失目录指纹为 None，持续重试 |
 | `_disk_refresh_task` 即时刷新 | `_schedule_disk_refresh`（读接口触发） | 任务自身结束；`stop()` 先 shield 等 5s 再 cancel | 刷新异常只 error 日志，不影响读取 |
-| `_refresh_task` 300s 定时循环 | `start()` | `stop()` cancel 并 await | 单轮异常只 error，循环继续 |
+| `_refresh_task` 900s（15 分钟）定时检查 | `start()` | `stop()` cancel 并 await | 单轮异常只 error，循环继续；指纹未变且未到 8 小时强制全扫则跳过 |
 | `.txt` 侧文件（描述副本） | 视觉解析回写、`update_entry_description`、`add_image_bytes`（有 description 时） | `delete_entry`、去重删除时一并 unlink | `[解析失败]` 与 `[未配置视觉模型]` 也会落盘并被当成权威描述 |
 | `ImageParseService._pending[queue_key]` | `parse_message_images` | 任务 done 回调；`wait_for_queue` 开头 pop | 无人等待时靠 done 回调回收，集合空即删 key |
 | `ImageAnalysis` 描述缓存行 | `_parse_single_image`（`source=chat_image`） | 本图范围内没有 TTL 与清理 | set 失败只 warning，同一张图下次再调一次视觉模型 |

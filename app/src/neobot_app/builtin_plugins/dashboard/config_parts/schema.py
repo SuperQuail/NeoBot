@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import MISSING, fields, is_dataclass
+from datetime import date, datetime, time
 from enum import Enum
+from functools import lru_cache
 from types import UnionType
-from typing import Any, Union, get_args, get_origin
+from typing import Annotated, Any, Union, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel, SecretBytes, SecretStr
 
@@ -15,8 +17,24 @@ from neobot_app.config.model_params import extra_body_reserved_keys
 #: Union 的两种表现：typing.Union（Optional[int]）与 PEP 604（int | None）
 _UNION_ORIGINS = (Union, UnionType)
 
+#: 时间类字段的类型 -> 面板字段 kind（前端据此渲染日期/时间/日期时间控件）。
+#: 用精确类型做键：datetime 虽是 date 的子类，但两者语义与控件不同。
+_TEMPORAL_KINDS: dict[Any, str] = {datetime: "datetime", date: "date", time: "time"}
+
+
+def _strip_annotated(annotation: Any) -> Any:
+    """剥掉 ``Annotated[X, ...]`` 外壳，取回真正的类型。
+
+    Pydantic 把 ``Field(...)`` 记在 Annotated 里，``Optional[Annotated[datetime, ...]]``
+    是很常见的写法；不剥壳会让时间类字段落到 unknown（前端退化成 JSON 文本域）。
+    """
+    while get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    return annotation
+
 
 def _type_name(field_type: Any) -> str:
+    field_type = _strip_annotated(field_type)
     origin = get_origin(field_type)
     if origin in _UNION_ORIGINS:
         args = [item for item in get_args(field_type) if item is not type(None)]
@@ -25,6 +43,8 @@ def _type_name(field_type: Any) -> str:
         return "any"
     if origin in (list, dict):
         return origin.__name__
+    if field_type in _TEMPORAL_KINDS:
+        return _TEMPORAL_KINDS[field_type]
     if field_type in (int, float, bool, str):
         return field_type.__name__
     if is_dataclass(field_type):
@@ -32,13 +52,30 @@ def _type_name(field_type: Any) -> str:
     return "any"
 
 
+@lru_cache(maxsize=256)
+def _resolved_field_types(schema: type) -> dict[str, Any]:
+    """取 dataclass 的**解析后**字段类型。
+
+    ``from __future__ import annotations`` 打开时 ``fields()[i].type`` 是字符串
+    （``"datetime"``），直接拿去和类型对象比较会全部落空 —— 时间类字段会退化成
+    unknown、optional 判断也会失效。这里用 get_type_hints 还原；解析失败（循环引用、
+    未导入的名字）就整体回退到原始标注，保证单个坏字段不拖垮整张表单。
+    """
+    try:
+        return get_type_hints(schema)
+    except Exception:  # noqa: BLE001 - 解析失败是预期路径，回退原始标注
+        return {}
+
+
 def _is_optional(field_type: Any) -> bool:
+    field_type = _strip_annotated(field_type)
     return get_origin(field_type) in _UNION_ORIGINS and type(None) in get_args(field_type)
 
 
 def _inner_types(field_type: Any) -> tuple[Any, ...]:
+    field_type = _strip_annotated(field_type)
     if get_origin(field_type) in _UNION_ORIGINS:
-        return tuple(item for item in get_args(field_type) if item is not type(None))
+        return tuple(_strip_annotated(item) for item in get_args(field_type) if item is not type(None))
     return (field_type,)
 
 
@@ -67,6 +104,10 @@ def _jsonable(value: Any) -> Any:
         return {str(key): _jsonable(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_jsonable(item) for item in value]
+    if isinstance(value, (datetime, date, time)):
+        # 时间类字段的取值契约：前后端一律用 ISO 8601 字符串。
+        # 注意 datetime 是 date 的子类，必须排在上面的标量分支之前统一处理。
+        return value.isoformat()
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return str(value)
@@ -129,11 +170,14 @@ def _resolve_actual_schema(declared: Any, data: Any) -> Any:
     return declared
 
 
-_COERCIBLE_TYPES = (int, float, bool, str)
+_COERCIBLE_TYPES = (int, float, bool, str, datetime, date, time)
 
 
 def _coerce_leaf(value: Any, target: Any) -> Any:
     """把字符串值按声明类型转换；转不了就原样返回，交给校验定位报错。"""
+    if target in _TEMPORAL_KINDS and isinstance(value, str) and not value.strip():
+        # 日期/时间控件被清空后回传空串，语义就是「不设置」；交给 optional 校验处理。
+        return None
     if not isinstance(value, str) or target not in _COERCIBLE_TYPES:
         return value
     valid, converted = _validate_type(value, target)
@@ -150,11 +194,12 @@ def _coerce_payload(schema: type, data: Any) -> Any:
     if not is_dataclass(schema) or not isinstance(data, dict):
         return data
     coerced = dict(data)
+    hints = _resolved_field_types(schema)
     for field_obj in fields(schema):
         if field_obj.name not in coerced:
             continue
         raw = coerced[field_obj.name]
-        inner = _inner_types(field_obj.type)
+        inner = _inner_types(hints.get(field_obj.name, field_obj.type))
         target = inner[0] if inner else field_obj.type
         if is_dataclass(target):
             coerced[field_obj.name] = _coerce_payload(_resolve_actual_schema(target, raw), raw)
@@ -190,7 +235,7 @@ def _validate_payload(schema: type, data: Any, path: str, errors: list[dict[str,
             continue
         raw = data[field_obj.name]
         field_path = f"{path}.{field_obj.name}" if path else field_obj.name
-        field_type = field_obj.type
+        field_type = _resolved_field_types(schema).get(field_obj.name, field_obj.type)
         if raw is None and _is_optional(field_type):
             continue
         if field_obj.name == "extra_body" and isinstance(raw, dict):
@@ -255,9 +300,8 @@ def _validate_payload(schema: type, data: Any, path: str, errors: list[dict[str,
                         )
             continue
         if not _matches(raw, target):
-            errors.append(
-                {
-                    "path": field_path,
-                    "message": f"类型应为 {_type_name(target)}，实际为 {type(raw).__name__}",
-                }
-            )
+            if raw is None and target in _TEMPORAL_KINDS:
+                message = "该字段必填，不能清空"
+            else:
+                message = f"类型应为 {_type_name(target)}，实际为 {type(raw).__name__}"
+            errors.append({"path": field_path, "message": message})

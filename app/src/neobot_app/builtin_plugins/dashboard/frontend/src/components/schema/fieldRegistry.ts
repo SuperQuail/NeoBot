@@ -11,6 +11,7 @@ import ModelList from './ModelList';
 import ModelParamsField from './ModelParamsField';
 import ScalarField from './ScalarField';
 import JsonField from './JsonField';
+import TemporalField from './TemporalField';
 import type { FieldCallbacks } from './fieldTypes';
 
 type FieldComponent = ComponentType<{ descriptor: FieldDescriptor } & FieldCallbacks>;
@@ -26,6 +27,10 @@ export const fieldRegistry: Record<string, FieldComponent> = {
   json: JsonField,
   // 下拉候选型标量：由 ScalarField 内部再次分流到 ComboboxField
   enum: ScalarField,
+  // 时间类标量：同一组件按 kind 切换原生控件，取值统一 ISO 8601
+  date: TemporalField,
+  time: TemporalField,
+  datetime: TemporalField,
 };
 
 /** 未注册 kind 的兜底：按标量只读展示，避免字段凭空消失 */

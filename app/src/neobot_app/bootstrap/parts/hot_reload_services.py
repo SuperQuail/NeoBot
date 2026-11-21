@@ -8,6 +8,7 @@ from neobot_app.bootstrap._providers import build_vision_provider, resolve_visio
 from neobot_app.bootstrap._runtime import build_creator_image_service, build_self_heal_agent_wiring
 from neobot_app.bootstrap._services import build_tts_service
 from neobot_app.core import DATA_DIR
+from neobot_app.observability.logging import VerboseLoggingConsumer
 from neobot_app.runtime.provider_reload import ModelConsumerReload
 from .maintenance_agent import _make_maintenance_coro
 from .maintenance_schedule import DEFAULT_MAINTENANCE_INTERVAL_SECONDS
@@ -193,6 +194,11 @@ def _build_hot_reload_services(state: _BuildState) -> None:
     ):
         hot_reload_registry.unregister(_consumer.name)
         hot_reload_registry.register(_consumer)
+
+    # 日志过滤开关只依赖模块级布尔值，重载后立即生效（详见 observability/logging.py）。
+    # auto 跟随实际生效的 DebugRecorder（启动期构建、软重启复用），不是配置里的 enabled。
+    hot_reload_registry.unregister(VerboseLoggingConsumer.name)
+    hot_reload_registry.register(VerboseLoggingConsumer(recorder_active=state.debug_recorder is not None))
 
     # ── 沙箱维护 Agent（独立 AI 循环，不经过聊天流）──
     admin_accounts = getattr(getattr(config, "chat", None), "admin_accounts", None) or []

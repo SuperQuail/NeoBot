@@ -53,6 +53,21 @@ export interface SchemaFormProps {
 /** 密钥类字段名：渲染成密码框并给「显示/隐藏」按钮 */
 export const SECRET_RE = /token|password|secret|api[_-]?key|access[_-]?key|credential|authorization|cookie/i;
 
+/**
+ * 「叶子标量」类 kind：单值输入，没有递归结构。
+ *
+ * 时间类控件（date / time / datetime）在搜索过滤、草稿保留等判断上与 scalar 完全同构，
+ * 分散写三处 `kind === 'scalar' || kind === 'date' || ...` 迟早会漏一个，统一走这里。
+ */
+export const SCALAR_KINDS: readonly string[] = ['scalar', 'date', 'time', 'datetime'];
+
+export function isScalarKind(kind: string | undefined): boolean {
+  return !!kind && SCALAR_KINDS.includes(kind);
+}
+
+/** 时间类 kind：新行初值是 null（= 未设置）；空串会被后端当成非法时间拒绝 */
+const TEMPORAL_KINDS: readonly string[] = ['date', 'time', 'datetime'];
+
 export function defaultsFromFields(
   fields: FieldDescriptor[] = [],
   parentPath: FieldDescriptor['path'] = [],
@@ -63,6 +78,10 @@ export function defaultsFromFields(
     if (field.kind === 'group') initial = defaultsFromFields(field.fields, field.path);
     else if (field.kind === 'model_list' || field.kind === 'list') initial = [];
     else if (field.kind === 'dict') initial = {};
+    else if (TEMPORAL_KINDS.includes(field.kind)) {
+      // 声明了默认值就沿用；空串等于没设置（后端会拒绝空串）
+      initial = field.default === '' || field.default === undefined ? null : field.default;
+    }
     else {
       const fallback =
         field.type === 'bool' ? false : field.type === 'int' || field.type === 'float' ? 0 : '';

@@ -8,8 +8,8 @@ covers:
   - packages/chat/src/neobot_chat/models.py
   - packages/chat/src/neobot_chat/providers/
   - packages/chat/src/neobot_chat/schema/exceptions.py
-verified_against: b0c12261
-verified_hash: 5e4c325b217a
+verified_against: aa2ae076
+verified_hash: 398d5a655f35
 ---
 
 # 05 模型路由与降级：角色/编号路由 · 原生视觉回退 · 计费与统计
@@ -27,7 +27,7 @@ verified_hash: 5e4c325b217a
 3. **计费与统计**：`statistics/tracker.py:56 UsageTracker.record` 是唯一的用量落点，
    `statistics/billing.py:711 BillingService.compute_cost` 决定 `cost_source`，
    `statistics/reporter.py:27 generate_all_reports` 产出 5 张 Markdown 报表；
-   观测点落在 `observability/logging.py:247 configure_loguru` 与 `observability/debug.py:57 DebugRecorder`。
+   观测点落在 `observability/logging.py:177 configure_loguru` 与 `observability/debug.py:57 DebugRecorder`。
 
 **不画什么**：
 
@@ -468,10 +468,10 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["configure_loguru:247"] --> B["stdout sink DEBUG<br/>挂 _redacting_filter"]
+    A["configure_loguru:177"] --> B["stdout sink DEBUG<br/>挂 _redacting_filter"]
     A --> C["文件 sink neobot.log<br/>rotation 10MB, retention 7 days<br/>diagnose=False, 同挂脱敏 filter"]
-    A --> D["runtime_events sink:123<br/>DEBUG 级全量转 RuntimeEnvelope kind=log"]
-    A --> E["self-heal sink:150 ERROR 级<br/>排除 adapter_receiver / app.image_parse / app.self_heal"]
+    A --> D["runtime_events sink:99<br/>DEBUG 级全量转 RuntimeEnvelope kind=log"]
+    A --> E["self-heal sink:117 ERROR 级<br/>排除 adapter_receiver / app.image_parse / app.self_heal"]
     B --> F["排查入口"]
     C --> F
     D --> F
@@ -491,6 +491,11 @@ flowchart TD
   进程管理器、把实例输出重定向到文件再 tail 的前端）通常只收一路流，普通日志落在
   stderr 会被归成「错误通道」，级别色与归类语义都被带偏。真正的致命错误仍由 CLI 直接
   `print(file=sys.stderr)`，不受影响。
+* 第三方库 DEBUG 默认在 `_InterceptHandler.emit` 入口过滤：`[debug].verbose_logging`
+  为 `auto` 且进程启动时没有 DebugRecorder、或为 `off` 时，`aiosqlite` / `websockets` /
+  `PIL` / `httpcore` / `httpx` / `urllib3` 低于 INFO 的记录在进入 loguru 前丢弃；
+  这些库的 INFO 及以上、以及 `app.*` DEBUG 不受影响。`on` / `off` 可热重载，
+  `auto` 跟随实际生效的 DebugRecorder（详见 `04-功能文档/日志与诊断.md`「详细日志开关」）。
 * 日志脱敏（`logging.py:61` 的 `_redacting_filter`，`logging.py:51` 的 `redact_sensitive`）在
   **格式化前**改写共享 record：API Key、token、password、URL 内嵌凭据都被替换成 ***；
   异常 traceback 也重新渲染后挂回 `record["exception"]`，自修复 sink 仍能拿到结构化 traceback。

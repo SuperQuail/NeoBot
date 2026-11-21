@@ -2,7 +2,7 @@
 .preview-panel {
   display: flex;
   flex-direction: column;
-  background: #ffffff;
+  background: var(--panel, #ffffff);
   border: 1px solid var(--border-soft, #e6f0f7);
   border-radius: 12px;
   overflow: hidden;
@@ -15,7 +15,7 @@
   justify-content: space-between;
   gap: 12px;
   padding: 12px 16px;
-  background: #ffffff;
+  background: var(--panel, #ffffff);
   border-bottom: 1px solid var(--border-soft, #e6f0f7);
   flex-shrink: 0;
 }
@@ -40,7 +40,7 @@
 .preview-tag {
   font-size: 11px;
   color: var(--muted, #526e80);
-  background: #f1f5f9;
+  background: var(--panel-2, #f1f5f9);
   padding: 2px 8px;
   border-radius: 10px;
   font-weight: 500;
@@ -54,7 +54,7 @@
 .preview-modes {
   display: inline-flex;
   border: 1px solid var(--border, #d2e5f0);
-  background: #f1f5f9;
+  background: var(--panel-2, #f1f5f9);
   border-radius: 6px;
   padding: 2px;
   gap: 2px;
@@ -75,7 +75,7 @@
 }
 
 .preview-modes button[aria-pressed="true"] {
-  background: #ffffff;
+  background: var(--panel, #ffffff);
   color: var(--brand, #0369a1);
   font-weight: 600;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
@@ -87,7 +87,7 @@
   display: flex;
   flex-direction: column;
   min-height: 380px;
-  background: #f8fafc;
+  background: var(--panel-2, #f8fafc);
   overflow: hidden;
 }
 
@@ -105,12 +105,12 @@
   width: 56px;
   height: 56px;
   border-radius: 50%;
-  background: #ffffff;
+  background: var(--panel, #ffffff);
   border: 1px solid var(--border-soft, #e6f0f7);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #94a3b8;
+  color: var(--muted, #64748b);
   margin-bottom: 12px;
 }
 
@@ -136,7 +136,7 @@
   align-items: safe center;
   justify-content: safe center;
   overflow: auto;
-  background: #f8fafc;
+  background: var(--panel-2, #f8fafc);
   box-sizing: border-box;
 }
 
@@ -146,7 +146,7 @@
   overflow: clip;
   border-radius: 12px;
   box-shadow: 0 4px 20px -2px rgba(15, 23, 42, 0.12), 0 2px 6px -1px rgba(15, 23, 42, 0.08);
-  background: #ffffff;
+  background: var(--panel, #ffffff);
   flex-shrink: 0;
 }
 
@@ -176,7 +176,7 @@
   white-space: pre-wrap;
   word-break: break-all;
   overflow: auto;
-  background: #ffffff;
+  background: var(--panel, #ffffff);
   box-sizing: border-box;
 }
 
@@ -192,7 +192,7 @@
   font-size: 11px;
   font-weight: 550;
   color: var(--text, #1f3a4d);
-  background: rgba(255, 255, 255, 0.92);
+  background: var(--panel, #ffffff);
   backdrop-filter: blur(8px);
   border: 1px solid var(--border, #d2e5f0);
   border-radius: 20px;
@@ -203,7 +203,7 @@
 }
 
 .preview-zoom-btn:hover {
-  background: #ffffff;
+  background: var(--panel, #ffffff);
   border-color: var(--brand, #0369a1);
   color: var(--brand, #0369a1);
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.12);

@@ -161,7 +161,7 @@
 .select-control:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-  background: #f8fafc;
+  background: var(--panel-2, #f8fafc);
 }
 
 /* 下拉菜单浮层：替代系统原生灰底框 */
@@ -222,7 +222,7 @@
 
 .select-control-option[data-state='checked'] {
   color: var(--brand, #0369a1);
-  background: rgba(3, 105, 161, 0.08);
+  background: var(--brand-soft, #eef9ff);
   font-weight: 600;
 }
 

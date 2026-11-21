@@ -7,7 +7,15 @@ from typing import Any, get_args, get_origin
 
 from pydantic import BaseModel
 from .pydantic_fields import describe_pydantic_fields
-from .schema import _default_of, _inner_types, _is_optional, _jsonable, _type_name
+from .schema import (
+    _TEMPORAL_KINDS,
+    _resolved_field_types,
+    _default_of,
+    _inner_types,
+    _is_optional,
+    _jsonable,
+    _type_name,
+)
 
 
 def describe_dataclass(schema: type, instance: Any, path: tuple[str, ...] = ()) -> list[dict[str, Any]]:
@@ -17,10 +25,11 @@ def describe_dataclass(schema: type, instance: Any, path: tuple[str, ...] = ()) 
     descriptors: list[dict[str, Any]] = []
     if not is_dataclass(schema):
         return descriptors
+    hints = _resolved_field_types(schema)
     for field_obj in fields(schema):
         name = field_obj.name
         description = str(field_obj.metadata.get("description", "") or "")
-        field_type = field_obj.type
+        field_type = hints.get(name, field_obj.type)
         value = getattr(instance, name, None) if instance is not None else None
         inner = _inner_types(field_type)
         target = inner[0] if inner else field_type
@@ -95,6 +104,9 @@ def describe_dataclass(schema: type, instance: Any, path: tuple[str, ...] = ()) 
                 item["element_type"] = _type_name(element)
         elif get_origin(target) is dict:
             item["kind"] = "dict"
+        elif target in _TEMPORAL_KINDS:
+            # 日期 / 时间 / 日期时间：前端按 kind 渲染对应原生控件，取值走 ISO 8601
+            item["kind"] = _TEMPORAL_KINDS[target]
         descriptors.append(item)
     return descriptors
 
@@ -115,6 +127,6 @@ def _collect_scalar_fields(fields: list[dict[str, Any]]) -> list[dict[str, Any]]
     for field in fields:
         if field.get("kind") == "group":
             collected.extend(_collect_scalar_fields(field.get("fields") or []))
-        elif field.get("kind") in {"scalar", "list", "dict"}:
+        elif field.get("kind") in {"scalar", "list", "dict", "date", "time", "datetime"}:
             collected.append(field)
     return collected
