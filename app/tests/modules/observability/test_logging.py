@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging as stdlib_logging
 import sys
+from types import SimpleNamespace
 
 import loguru
+import pytest
 
 from neobot_app.observability.logging import (
     configure_loguru,
+    resolve_verbose_logging,
+    set_verbose_logging,
     _redacting_filter,
     redact_sensitive,
     register_self_heal_manager,
@@ -233,3 +238,137 @@ async def test_self_heal_sink_keeps_traceback_when_file_sink_enabled(tmp_path) -
     assert len(manager.items) == 1
     assert manager.items[0]["traceback"] is not None
     assert "sk-filetrace12345678xyz" not in str(manager.items[0])
+
+
+# ── 详细日志开关：第三方库 DEBUG 默认不落盘 ──────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _reset_verbose_logging():
+    """详细日志是模块级开关，用例之间必须复位，避免顺序依赖。"""
+    set_verbose_logging(False)
+    yield
+    set_verbose_logging(False)
+
+
+def test_third_party_debug_filtered_by_default(tmp_path) -> None:
+    log_dir = tmp_path / "logs"
+    configure_loguru(log_dir)
+    try:
+        stdlib_logging.getLogger("aiosqlite").debug("executing functools.partial(...)")
+        stdlib_logging.getLogger("aiosqlite").info("aiosqlite 连接关闭异常")
+    finally:
+        loguru.logger.remove()
+
+    content = (log_dir / "neobot.log").read_text(encoding="utf-8")
+    # DEBUG 被默认过滤，INFO 及以上仍保留（关闭异常要能看见）。
+    assert "executing functools.partial" not in content
+    assert "aiosqlite 连接关闭异常" in content
+
+
+def test_verbose_logging_on_keeps_third_party_debug(tmp_path) -> None:
+    log_dir = tmp_path / "logs"
+    configure_loguru(log_dir)
+    try:
+        set_verbose_logging(True)
+        stdlib_logging.getLogger("websockets.server").debug("> PING keepalive")
+    finally:
+        loguru.logger.remove()
+
+    content = (log_dir / "neobot.log").read_text(encoding="utf-8")
+    # 切换时留一条分界标记，文件体积突变时能看出原因。
+    assert "详细日志已开启" in content
+    assert "> PING keepalive" in content
+
+
+def test_app_debug_not_filtered_when_verbose_off(tmp_path) -> None:
+    """过滤只针对第三方库根名，NeoBot 自己的 DEBUG 不受影响。"""
+    log_dir = tmp_path / "logs"
+    configure_loguru(log_dir)
+    try:
+        loguru.logger.bind(module_name="app.reply").debug("应用层调试细节")
+    finally:
+        loguru.logger.remove()
+
+    assert "应用层调试细节" in (log_dir / "neobot.log").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("debug_cfg", "expected"),
+    [
+        (SimpleNamespace(enabled=True, verbose_logging="auto"), True),
+        (SimpleNamespace(enabled=False, verbose_logging="auto"), False),
+        (SimpleNamespace(enabled=False, verbose_logging="on"), True),
+        (SimpleNamespace(enabled=True, verbose_logging="off"), False),
+        # 大小写与空白宽容；None 视为 auto。
+        (SimpleNamespace(enabled=True, verbose_logging=" ON "), True),
+        (SimpleNamespace(enabled=True, verbose_logging=None), True),
+        # 未知取值按 auto 处理（配置校验只查类型，不查枚举）。
+        (SimpleNamespace(enabled=True, verbose_logging="nonsense"), True),
+        (SimpleNamespace(enabled=False, verbose_logging="nonsense"), False),
+        # 旧配置没有该字段 → auto。
+        (SimpleNamespace(enabled=False), False),
+    ],
+)
+def test_resolve_verbose_logging_modes(debug_cfg, expected) -> None:
+    assert resolve_verbose_logging(debug_cfg) is expected
+
+
+@pytest.mark.parametrize(
+    "root", ["aiosqlite", "websockets", "PIL", "httpcore", "httpx", "urllib3"]
+)
+def test_all_noisy_roots_drop_debug(tmp_path, root) -> None:
+    """噪声清单里的每个根名都要真正被过滤，漏一个就会继续放大日志。"""
+    log_dir = tmp_path / "logs"
+    configure_loguru(log_dir)
+    try:
+        stdlib_logging.getLogger(f"{root}.child").debug(f"{root}-debug-should-hide")
+    finally:
+        loguru.logger.remove()
+
+    assert f"{root}-debug-should-hide" not in (log_dir / "neobot.log").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_non_noisy_stdlib_debug_still_lands(tmp_path) -> None:
+    """过滤条件必须只匹配噪声根名；不能退化成「过滤所有第三方 DEBUG」。"""
+    log_dir = tmp_path / "logs"
+    configure_loguru(log_dir)
+    try:
+        stdlib_logging.getLogger("asyncio").debug("asyncio-debug-should-keep")
+    finally:
+        loguru.logger.remove()
+
+    assert "asyncio-debug-should-keep" in (log_dir / "neobot.log").read_text(encoding="utf-8")
+
+
+def test_set_verbose_logging_is_idempotent(tmp_path) -> None:
+    """重复设置同一状态不应重复写分界标记（否则每次启动都刷一条）。"""
+    log_dir = tmp_path / "logs"
+    configure_loguru(log_dir)
+    try:
+        set_verbose_logging(True)
+        set_verbose_logging(True)
+        set_verbose_logging(False)
+        set_verbose_logging(False)
+    finally:
+        loguru.logger.remove()
+
+    content = (log_dir / "neobot.log").read_text(encoding="utf-8")
+    assert content.count("详细日志已开启") == 1
+    assert content.count("详细日志已关闭") == 1
+
+
+def test_resolve_auto_follows_active_recorder() -> None:
+    """auto 跟随实际生效的 DebugRecorder，而不是配置里的 enabled。"""
+    auto_on = SimpleNamespace(enabled=True, verbose_logging="auto")
+    auto_off = SimpleNamespace(enabled=False, verbose_logging="auto")
+    force_on = SimpleNamespace(enabled=False, verbose_logging="on")
+    force_off = SimpleNamespace(enabled=True, verbose_logging="off")
+
+    assert resolve_verbose_logging(auto_on, recorder_active=False) is False
+    assert resolve_verbose_logging(auto_off, recorder_active=True) is True
+    # 显式 on/off 优先于 recorder 状态。
+    assert resolve_verbose_logging(force_on, recorder_active=False) is True
+    assert resolve_verbose_logging(force_off, recorder_active=True) is False

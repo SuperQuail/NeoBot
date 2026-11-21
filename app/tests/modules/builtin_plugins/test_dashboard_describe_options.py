@@ -99,3 +99,20 @@ def test_malformed_option_metadata_is_dropped() -> None:
     assert "option_groups" not in fields["groups"]
     # 非法分组逐项跳过，合法分组保留；选项值统一转成字符串。
     assert fields["mixed"]["option_groups"] == [{"label": "合法", "options": ["1", "low"]}]
+
+
+def test_debug_verbose_logging_exposes_three_modes() -> None:
+    """面板的「记录详细日志」是三选一下拉，不是自由文本。"""
+    from neobot_app.config.schemas.bot import Debug
+
+    item = _by_name(Debug)["verbose_logging"]
+
+    assert item["type"] == "str"
+    assert item["default"] == "auto"
+    assert item["options"] == ["auto", "on", "off"]
+    assert item["options_strict"] is True
+    assert item["option_labels"] == {
+        "auto": "跟随 Debug 模式",
+        "on": "总是记录",
+        "off": "从不记录",
+    }
