@@ -87,20 +87,17 @@ class PythonDependencyInstaller:
             )
 
         if not self._interactive():
-            self._logger.warning(
-                "当前环境没有可交互终端，跳过插件 PyPI 依赖安装"
-                f"（缺失: {', '.join(unique)}）"
-            )
-            return PythonDependencyInstallResult(
-                requirements=unique,
-                installed=False,
-                stderr="no interactive terminal",
-            )
+            return self._skip_without_terminal(unique)
 
         prompt = "检测到插件需要安装以下 PyPI 依赖：\n"
         prompt += "\n".join(f"  - {requirement}" for requirement in unique)
         prompt += "\n是否使用当前 Python 环境自动安装？[y/N] "
-        answer = self._input(prompt).strip().lower()
+        try:
+            answer = self._input(prompt).strip().lower()
+        except (EOFError, OSError):
+            # Windows 把 stdin 接到 NUL 这类字符设备时 isatty() 仍返回 True
+            # （bpo-28654），input() 读不到行直接抛 EOFError；按无终端跳过。
+            return self._skip_without_terminal(unique)
         if answer not in {"y", "yes"}:
             self._logger.info("用户取消安装插件 PyPI 依赖")
             return PythonDependencyInstallResult(requirements=unique, installed=False)
@@ -137,6 +134,19 @@ class PythonDependencyInstaller:
             stdout=completed.stdout,
             stderr=completed.stderr,
             command=tuple(command),
+        )
+
+    def _skip_without_terminal(
+        self, requirements: tuple[str, ...]
+    ) -> PythonDependencyInstallResult:
+        self._logger.warning(
+            "当前环境没有可交互终端，跳过插件 PyPI 依赖安装"
+            f"（缺失: {', '.join(requirements)}）"
+        )
+        return PythonDependencyInstallResult(
+            requirements=requirements,
+            installed=False,
+            stderr="no interactive terminal",
         )
 
     def _interactive(self) -> bool:
