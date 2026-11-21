@@ -213,6 +213,23 @@ def test_peak_valley_full_cache_hit_charges_hit_price_once(tmp_path) -> None:
     assert outcome.components["cache_miss"] == 0.0
 
 
+def test_peak_valley_without_miss_field_uses_input_minus_hit(tmp_path) -> None:
+    """未给 cache_miss_tokens 的混合用量：未命中 = input - hit，不会退化成整段未命中。"""
+    service = make_service(tmp_path)
+    outcome = service.preview(
+        script_name="deepseek_peak_valley",
+        ctx=context(
+            usage={"input_tokens": 1_000_000, "output_tokens": 0, "cache_hit_tokens": 600_000},
+            pricing=ModelPricing(
+                input_price_per_mtokens=2.0, cache_hit_price_per_mtokens=0.04
+            ),
+            occurred_at=datetime(2026, 9, 9, 2, 0, tzinfo=timezone.utc),
+        ),
+    )
+    assert outcome.cost_cny == pytest.approx((600_000 * 0.04 + 400_000 * 2.0) / 1e6)
+    assert outcome.components["cache_miss"] == pytest.approx(400_000 * 2.0 / 1e6)
+
+
 # ── A3：四种入口组合 ──────────────────────────────────────────────
 
 FUNC_BODY = "def compute_cost(ctx):\n    return 1.5\n"
