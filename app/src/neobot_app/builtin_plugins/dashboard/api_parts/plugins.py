@@ -343,9 +343,11 @@ class PluginsMixin:
             for item in checks
         ]
         available = [item for item in items if item["status"] == "available"]
-        failed = [item for item in items if item["status"] == "error"]
+        # 未能确认远端版本（unknown）与硬失败一样，都不能报「全部插件均为最新」
+        failed = [item for item in items if item["status"] in {"error", "unknown"}]
         if failed:
-            message = f"{len(failed)} 个插件检查更新失败：{failed[0]['name']} {failed[0]['error']}"
+            summary = f"{len(failed)} 个插件检查更新失败：{failed[0]['name']} {failed[0]['error'] or '原因未知'}"
+            message = f"{len(available)} 个插件可更新；{summary}" if available else summary
         elif available:
             message = f"{len(available)} 个插件可更新"
         else:
