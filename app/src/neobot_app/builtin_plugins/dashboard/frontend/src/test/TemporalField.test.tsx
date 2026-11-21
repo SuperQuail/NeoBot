@@ -11,6 +11,7 @@ import TemporalField, {
   toInputValue,
   toSubmitValue,
 } from '../components/schema/TemporalField';
+import { defaultsFromFields } from '../components/schema/fieldTypes';
 import type { FieldDescriptor } from '../api/types';
 
 function temporalDescriptor(
@@ -148,5 +149,46 @@ describe('TemporalField：渲染与提交', () => {
     expect(screen.getByLabelText('执行时间')).toBeDisabled();
     fireEvent.change(screen.getByLabelText('执行时间'), { target: { value: '2027-01-01' } });
     expect(onChange).not.toHaveBeenCalled();
+  });
+});
+
+describe('defaultsFromFields：新行的时间初值', () => {
+  // 后端可选时间字段留空 = null（不设置）；空串会被 Pydantic 当成非法时间拒绝。
+  it('date / time / datetime 新行初值是 null，不是空串', () => {
+    const fields = (['datetime', 'date', 'time'] as const).map((kind) =>
+      temporalDescriptor(kind, null, { name: kind, path: ['rows', kind] }),
+    );
+
+    expect(defaultsFromFields(fields, ['rows'])).toEqual({ datetime: null, date: null, time: null });
+  });
+
+  it('声明了默认值的时间字段沿用默认值，不被 null 覆盖', () => {
+    const descriptor = temporalDescriptor('datetime', null, {
+      name: 'run_at',
+      path: ['rows', 'run_at'],
+      default: '2026-01-01T00:00:00',
+    });
+
+    expect(defaultsFromFields([descriptor], ['rows'])).toEqual({
+      run_at: '2026-01-01T00:00:00',
+    });
+  });
+
+  it('新行未填 / 清空后提交的都是 null', () => {
+    const descriptor = temporalDescriptor('datetime', null, {
+      name: 'run_at',
+      path: ['rows', 'run_at'],
+      required: false,
+    });
+    const row = defaultsFromFields([descriptor], ['rows']);
+    expect(row.run_at).toBeNull();
+
+    const onChange = vi.fn();
+    render(<TemporalField descriptor={descriptor} value={row.run_at} onChange={onChange} />);
+    const input = screen.getByLabelText('执行时间');
+    fireEvent.change(input, { target: { value: '2026-11-16T23:39' } });
+    fireEvent.change(input, { target: { value: '' } });
+
+    expect(onChange).toHaveBeenLastCalledWith(null);
   });
 });

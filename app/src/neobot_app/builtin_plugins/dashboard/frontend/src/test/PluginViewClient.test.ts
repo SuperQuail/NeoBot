@@ -218,6 +218,16 @@ describe('公开插件页面客户端', () => {
     test.flushMeasure();
     expect(test.sent.find((item) => item.method === 'resize')?.params).toEqual({ height: 256 });
   });
+  it('切回可见的内联页时即使业务暂停也上报内容高度', async () => {
+    const test = fixture();
+    Object.assign(test.context, { layout: 'inline', suspended: true });
+    test.document.body.style.margin = '0';
+    test.document.body.getBoundingClientRect = () => ({ height: 950 }) as DOMRect;
+    await test.ready();
+    test.flushMeasure();
+    expect(test.sent.find((item) => item.method === 'resize')?.params).toEqual({ height: 950 });
+    await expect(test.sdk.action('list')).rejects.toThrow('暂停');
+  });
   it('只信任父窗口握手，不读取凭据，并接收主题与上下文更新', async () => {
     const test = fixture();
     const contextChanged = vi.fn();

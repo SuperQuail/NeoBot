@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
-from typing import Annotated, Optional
+from typing import Annotated, List, Optional
 
 import pytest
 import tomlkit
@@ -31,7 +31,10 @@ from neobot_app.builtin_plugins.dashboard.config_parts.toml import (
     _diff_document,
     _merge_into_document,
 )
-from neobot_app.builtin_plugins.dashboard.plugin_config import PluginConfigEditor
+from neobot_app.builtin_plugins.dashboard.plugin_config import (
+    PluginConfigEditor,
+    _jsonable as _plugin_jsonable,
+)
 
 
 @dataclass
@@ -47,6 +50,19 @@ class _PluginSettings(BaseModel):
     run_on: date
     window: time
     optional_at: Optional[datetime] = None
+
+
+@dataclass
+class _TableRow:
+    name: str = ""
+    at: Optional[datetime] = None
+
+
+@dataclass
+class _TableSettings:
+    """表数组字段（[[rows]]）：新增行里清空的可选时间字段。"""
+
+    rows: List[_TableRow] = field(default_factory=list)
 
 
 @pytest.mark.parametrize(
@@ -161,6 +177,51 @@ def test_dataclass_save_with_null_removes_existing_key() -> None:
     assert document["task"]["other"] == 1
 
 
+def test_new_row_with_empty_optional_time_is_not_written() -> None:
+    """新增行里清空的可选时间字段是 None：不能喂给 tomlkit，也不能落盘。
+
+    新增行是整行写入（没有「None = 删键」的 diff），之前 ``tomlkit.item`` 直接抛
+    ConvertError，接口变成 500。
+    """
+    document = tomlkit.parse('[[rows]]\nname = "a"\nat = 2026-11-16T23:39:55\n')
+
+    _merge_into_document(
+        document,
+        _diff_document(
+            document.unwrap(),
+            {
+                "rows": [
+                    {"name": "a", "at": datetime(2026, 11, 16, 23, 39, 55)},
+                    {"name": "b", "at": None},
+                ]
+            },
+            _TableSettings,
+        ),
+    )
+
+    # 读回：键不存在 = 未设置，既没落成字符串，也没抛错
+    assert document.unwrap()["rows"] == [
+        {"name": "a", "at": datetime(2026, 11, 16, 23, 39, 55)},
+        {"name": "b"},
+    ]
+
+
+def test_first_row_with_empty_optional_time_is_not_written() -> None:
+    """文件里还没有该表数组时，新增第一行同样不能把 None 写进 TOML。"""
+    document = tomlkit.parse("other = 1\n")
+
+    _merge_into_document(
+        document,
+        _diff_document(
+            document.unwrap(),
+            {"other": 1, "rows": [{"name": "b", "at": None}]},
+            _TableSettings,
+        ),
+    )
+
+    assert document.unwrap() == {"other": 1, "rows": [{"name": "b"}]}
+
+
 def test_plugin_save_with_null_removes_existing_key(tmp_path) -> None:
     """插件配置同一语义：不能抛 ConvertError，也不能把旧值留在文件里。"""
     path = tmp_path / "config.toml"
@@ -231,3 +292,34 @@ def test_plugin_save_drops_null_inside_object_list(tmp_path) -> None:
     written = path.read_text(encoding="utf-8")
     assert "at =" not in written
     assert 'note = "x"' in written
+
+
+# ---------------------------------------------------------------------------
+# 插件配置：读给面板一律 ISO 8601，写盘保留原生 TOML datetime
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (datetime(2026, 11, 16, 23, 39, 55), "2026-11-16T23:39:55"),
+        (date(2026, 11, 16), "2026-11-16"),
+        (time(23, 39, 55), "23:39:55"),
+    ],
+)
+def test_plugin_jsonable_uses_isoformat(value: object, expected: str) -> None:
+    """插件配置读给面板的值同样是 ISO 8601（``str()`` 的 datetime 用空格分隔）。"""
+    assert _plugin_jsonable(value) == expected
+
+
+def test_plugin_save_roundtrip_keeps_native_datetime(tmp_path) -> None:
+    """读给面板是 ISO 8601；存回去文件里仍是原生 TOML datetime，不降级成字符串。"""
+    path = tmp_path / "config.toml"
+    editor = PluginConfigEditor(path, defaults={"run_at": None})
+
+    editor.save(config={"run_at": datetime(2026, 11, 16, 23, 39, 55)})
+
+    text = path.read_text(encoding="utf-8")
+    assert "run_at = 2026-11-16T23:39:55\n" in text
+    assert isinstance(tomlkit.parse(text)["run_at"], datetime)
+    assert editor.read()["config"]["run_at"] == "2026-11-16T23:39:55"
