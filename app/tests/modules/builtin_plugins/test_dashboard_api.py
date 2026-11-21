@@ -1915,3 +1915,62 @@ def test_no_gaps_means_no_restart_hint() -> None:
 
     assert gaps == []
     assert message.endswith("0 项需重启")
+
+
+async def test_check_updates_reports_failures_instead_of_latest(panel) -> None:
+    """全部检查都失败时不能说「全部插件均为最新」（issue #257 的误判来源）。"""
+    from neobot_modloader import PluginUpdateCheck
+
+    server, control, base, _ = panel
+
+    async def failing_check_updates():
+        return [
+            PluginUpdateCheck(
+                name="demo",
+                current_version="1.0.0",
+                status="error",
+                error="下载失败: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed",
+            )
+        ]
+
+    control.check_updates = failing_check_updates
+    token, _ = await _login(base)
+    async with httpx.AsyncClient() as client:
+        response = await client.get(base + "/api/plugins/check-updates", headers={"X-Token": token})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] == 0
+    assert "1 个插件检查更新失败" in payload["message"]
+    assert "CERTIFICATE_VERIFY_FAILED" in payload["message"]
+
+
+async def test_check_updates_reports_unknown_and_partial_success(panel) -> None:
+    """unknown 也算检查失败；部分成功时「可更新」不能被吞掉。"""
+    from neobot_modloader import PluginUpdateCheck
+
+    server, control, base, _ = panel
+
+    async def partial_check_updates():
+        return [
+            PluginUpdateCheck(
+                name="demo", current_version="1.0.0", remote_version="1.1.0", status="available"
+            ),
+            PluginUpdateCheck(
+                name="demo2",
+                current_version="1.0.0",
+                status="unknown",
+                error="远端 plugin.toml 缺少 version",
+            ),
+        ]
+
+    control.check_updates = partial_check_updates
+    token, _ = await _login(base)
+    async with httpx.AsyncClient() as client:
+        response = await client.get(base + "/api/plugins/check-updates", headers={"X-Token": token})
+
+    payload = response.json()
+    assert payload["available"] == 1
+    assert "1 个插件可更新" in payload["message"]
+    assert "1 个插件检查更新失败" in payload["message"]
+    assert "缺少 version" in payload["message"]

@@ -12,7 +12,7 @@ covers:
   - app/src/neobot_app/builtin_plugins/dashboard/api_parts/plugins.py
   - app/src/neobot_app/builtin_plugins/dashboard/api_parts/_common.py
 verified_against: 21bfdff0
-verified_hash: 85f2ebde0ce9
+verified_hash: 9d66232c8e7b
 ---
 
 # 09b 面板接口面：api.py 的端点分组 · 权限级别 · 错误码语义
