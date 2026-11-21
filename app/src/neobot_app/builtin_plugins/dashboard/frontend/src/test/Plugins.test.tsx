@@ -94,6 +94,99 @@ beforeEach(() => {
 });
 
 describe('Plugins 页面', () => {
+  it('依赖管理只读不允许安装，仍可检查提供者', async () => {
+    auth.canManage = false;
+    vi.mocked(api.plugins).mockResolvedValue({
+      ...PLUGIN_LIST,
+      items: PLUGIN_LIST.items.map((p) =>
+        p.name === 'dashboard'
+          ? {
+              ...p,
+              services: [
+                {
+                  service: 'memory',
+                  kind: 'required',
+                  status: 'disabled',
+                  provider: 'memo',
+                  message: 'memo 尚未启用',
+                },
+              ],
+            }
+          : p,
+      ),
+    });
+    render(<Plugins />);
+    fireEvent.click(await screen.findByRole('button', { name: '依赖管理' }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('button', { name: '安装提供者插件' })).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole('button', { name: '管理提供者 memo' }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'memo' })).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: '启用插件' })).toBeDisabled();
+    expect(api.pluginToggle).not.toHaveBeenCalled();
+  });
+
+  it('检查更新后展示常驻入口，重新渲染不再次请求', async () => {
+    vi.mocked(api.pluginsCheckUpdates).mockResolvedValue({
+      ok: true,
+      status: 200,
+      error: null,
+      data: { message: '1 个插件可更新', items: [{ name: 'dashboard', status: 'available' }] },
+    } as Awaited<ReturnType<typeof api.pluginsCheckUpdates>>);
+    const view = render(<Plugins />);
+    await screen.findByRole('button', { name: '依赖管理' });
+    expect(api.pluginsCheckUpdates).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByLabelText('更多操作'));
+    fireEvent.click(screen.getByRole('button', { name: '检查全部更新' }));
+    fireEvent.click(await screen.findByRole('button', { name: '前往依赖管理' }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('dashboard · 依赖管理');
+    view.rerender(<Plugins />);
+    expect(api.pluginsCheckUpdates).toHaveBeenCalledTimes(1);
+  });
+
+  it('从依赖管理切换提供者时取消确认保留草稿', async () => {
+    vi.mocked(api.plugins).mockResolvedValue({
+      ...PLUGIN_LIST,
+      items: PLUGIN_LIST.items.map((p) =>
+        p.name === 'dashboard'
+          ? {
+              ...p,
+              services: [
+                {
+                  service: 'memory',
+                  kind: 'required',
+                  status: 'disabled',
+                  provider: 'memo',
+                  message: 'memo 尚未启用',
+                },
+              ],
+            }
+          : p,
+      ),
+    });
+    vi.mocked(api.pluginConfig).mockResolvedValue({
+      ok: true,
+      status: 200,
+      error: null,
+      data: { config: {}, source: '[config]', form_supported: true, source_available: true, schema: [] },
+    });
+    render(
+      <>
+        <Plugins />
+        <ConfirmHost />
+      </>,
+    );
+    const tab = await screen.findByRole('tab', { name: 'TOML' });
+    await waitFor(() => expect(tab).toBeEnabled());
+    fireEvent.click(tab);
+    fireEvent.change(screen.getByLabelText('TOML 配置'), { target: { value: '# 依赖管理前的草稿' } });
+    fireEvent.click(screen.getByRole('button', { name: '依赖管理' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '管理提供者 memo' }));
+    fireEvent.click(await screen.findByRole('button', { name: '取消' }));
+    expect(screen.getByLabelText('TOML 配置')).toHaveValue('# 依赖管理前的草稿');
+    expect(screen.getByRole('heading', { name: 'dashboard' })).toBeInTheDocument();
+    expect(api.pluginConfigSave).not.toHaveBeenCalled();
+  });
+
   it('配置模型不可用时禁用 TOML 并展示原因，保留表单编辑', async () => {
     const reason = '插件配置模型尚不可用，无法校验 TOML 原文；请先启用并加载插件，或使用表单模式';
     vi.mocked(api.pluginConfig).mockResolvedValue({

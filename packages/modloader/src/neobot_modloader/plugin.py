@@ -48,6 +48,9 @@ class Plugin:
         config: type[BaseModel] | None = None,
         command_prefix: str = "/",
         dependencies: Sequence[str] = (),
+        provides: Sequence[str] | None = None,
+        required: Sequence[str] | None = None,
+        optional: Sequence[str] | None = None,
         priority: int = 0,
         min_neobot_version: str | None = None,
         python_dependencies: Sequence[str] = (),
@@ -61,6 +64,16 @@ class Plugin:
         self.author = author
         self.config_model = config
         self.command_prefix = MessagePattern("_prefix_validation", command=True, prefix=command_prefix).prefix
+        from neobot_modloader.loading.manifest import read_services
+
+        service_values = {
+            kind: value
+            for kind, value in dict(provides=provides, required=required, optional=optional).items()
+            if value is not None
+        }
+        self._explicit_service_fields = frozenset(service_values)
+        for kind, values in read_services(service_values).items():
+            setattr(self, kind, values)
         self.dependencies = tuple(dependencies)
         self.priority = int(priority)
         self.min_neobot_version = min_neobot_version

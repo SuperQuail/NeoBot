@@ -6,6 +6,8 @@ covers:
   - packages/modloader/src/neobot_modloader/loader.py
   - packages/modloader/src/neobot_modloader/manager.py
   - packages/modloader/src/neobot_modloader/dependency.py
+  - packages/modloader/src/neobot_modloader/service.py
+  - packages/modloader/src/neobot_modloader/service_registry.py
   - packages/modloader/src/neobot_modloader/version.py
   - packages/modloader/src/neobot_modloader/state.py
   - packages/modloader/src/neobot_modloader/config_store.py
@@ -14,8 +16,8 @@ covers:
   - app/src/neobot_app/runtime/hot_reload_registry.py
   - app/src/neobot_app/runtime/plugin_config_reload.py
   - app/src/neobot_app/bootstrap/_skills.py
-verified_against: d525a5b
-verified_hash: 26a52ddce535
+verified_against: 326e21a
+verified_hash: a4b7b3425d9b
 ---
 
 # 08 插件系统：扫描 · 加载 · 启停 · 依赖 · 配置热重载
@@ -202,7 +204,14 @@ flowchart TD
 </details>
 
 <details>
-### 依赖未满足的自动禁用：五种 code 与沿依赖链的传播
+### 服务依赖如何进入加载顺序
+
+加载器把必需服务解析为提供者，再把提供者作为前置插件加入依赖图。宿主已经
+注册的实例优先，多个插件提供同名服务时按优先级降序、插件名升序选取。
+缺少提供者会产生 `service-missing`，宿主服务版本不匹配会产生 `service-version`。
+插件提供的服务在实例注册后校验版本。可选服务的状态只用于查询与诊断。
+
+### 依赖未满足的自动禁用与沿依赖链的传播
 
 ```mermaid
 flowchart TD

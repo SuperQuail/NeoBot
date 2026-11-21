@@ -4,6 +4,7 @@ version = "1.0.0"
 description = "按星期与会话限制发言时段，支持临时静默"
 author = "NeoBot"
 tags = ["official", "schedule"]
+required = ["speaking_policy"]
 hot_reload = true
 config_hot_reload = true
 

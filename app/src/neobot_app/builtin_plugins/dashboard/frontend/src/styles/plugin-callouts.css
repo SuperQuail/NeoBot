@@ -1,0 +1,17 @@
+.plugin-callouts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+  overflow-wrap: anywhere;
+}
+.plugin-callouts .inline-alert {
+  font-size: 12.5px;
+}
+
+.plugin-editor-scroll.is-source > .plugin-callouts {
+  flex-shrink: 0;
+  max-height: 40%;
+  overflow: auto;
+  margin: 12px 20px;
+}

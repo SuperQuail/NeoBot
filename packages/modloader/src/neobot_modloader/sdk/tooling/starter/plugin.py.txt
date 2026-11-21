@@ -8,6 +8,7 @@ class Config(BaseModel):
     greeting: str = Field(default="pong", title="回复内容", description="/ping 的回复文字")
 
 
+# 可在 plugin.toml 声明服务，例如 optional = ["tts_service"]，运行时通过 ctx.services.get 读取。
 plugin = Plugin("__PLUGIN_NAME__", version="0.1.0", config=Config)
 
 

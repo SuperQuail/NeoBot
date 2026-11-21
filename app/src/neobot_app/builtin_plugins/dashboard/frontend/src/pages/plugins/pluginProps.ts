@@ -52,6 +52,8 @@ export interface PluginListPanelProps {
 /** 右侧编辑器（工具条 + 详情 + 配置体 + 页脚） */
 export interface PluginEditorPanelProps extends PluginActionHandlers {
   selected?: Plugin;
+  updateAvailable?: boolean;
+  onOpenDependencies?: () => void;
   selectedPresent: boolean;
   selectedId: string;
   itemsCount: number;

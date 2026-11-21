@@ -13,6 +13,7 @@ from neobot_contracts.models import ConversationRef
 from neobot_contracts.ports.logging import Logger, NullLogger
 from neobot_contracts.ports.output import NullOutput, OutputPort
 from neobot_contracts.ports.screenshot import ScreenshotPort
+from neobot_modloader.service_registry import ServiceAccess
 from neobot_modloader.generation import RuntimeGeneration
 from neobot_modloader.loading.models import OFFICIAL_SOURCE, THIRD_PARTY_SOURCE
 from neobot_modloader.management import PluginControlFacade
@@ -453,6 +454,10 @@ class RuntimePluginContext(PluginMessaging):
         from neobot_modloader.agent_intent import request_agent_reply
 
         return request_agent_reply(background, preactivate=preactivate)
+
+    @property
+    def services(self) -> ServiceAccess:
+        return ServiceAccess(self._host.services)
 
     @property
     def plugin_host(self) -> Any:

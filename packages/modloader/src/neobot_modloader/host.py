@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import inspect
+
 from collections.abc import Callable
 from typing import Any
 
 from neobot_contracts.ports.output import NullOutput, OutputPort
 from neobot_contracts.ports.runtime_event import RuntimeEnvelope, RuntimeInterceptionRegistry
+from neobot_modloader.dependency import parse_dependencies
+from neobot_modloader.service_registry import DefaultServiceRegistry, ServiceUnavailable
 
 
 # ---------------------------------------------------------------------------
@@ -140,108 +143,69 @@ class DefaultCapabilityRegistry(_Registry):
 # ---------------------------------------------------------------------------
 
 
-class DefaultServiceRegistry:
-    """宿主服务注册表。
-
-    本体在装配阶段注册核心服务（config / adapter / 各管理器等），
-    插件通过 ctx.plugin_host.services 读取，无需让插件依赖具体装配代码。
-    未注册的名字返回 None 或抛出带可用名字清单的 KeyError。
-    """
-
-    def __init__(self) -> None:
-        self._entries: dict[str, dict[str, Any]] = {}
-
-    def register(
-        self,
-        name: str,
-        service: Any,
-        *,
-        description: str = "",
-        override: bool = False,
-    ) -> None:
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("服务名必须是非空字符串")
-        key = name.strip()
-        if key in self._entries and not override:
-            raise ValueError(f"服务已注册: {key!r}")
-        self._entries[key] = {"service": service, "description": str(description or "")}
-
-    def unregister(self, name: str) -> bool:
-        return self._entries.pop(str(name), None) is not None
-
-    def has(self, name: str) -> bool:
-        return str(name) in self._entries
-
-    def get(self, name: str, default: Any = None) -> Any:
-        entry = self._entries.get(str(name))
-        return default if entry is None else entry["service"]
-
-    def require(self, name: str) -> Any:
-        entry = self._entries.get(str(name))
-        if entry is None:
-            available = ", ".join(sorted(self._entries)) or "（无）"
-            raise KeyError(f"宿主服务未注册: {name!r}；可用服务: {available}")
-        return entry["service"]
-
-    def names(self) -> list[str]:
-        return list(self._entries)
-
-    def describe(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "name": key,
-                "description": entry["description"],
-                "available": entry["service"] is not None,
-            }
-            for key, entry in self._entries.items()
-        ]
-
-
 class _TrackedServiceRegistry:
-    def __init__(
-        self,
-        registry: DefaultServiceRegistry,
-        record_cleanup: Callable[[Callable[[], None]], None],
-    ) -> None:
+    def __init__(self, registry: DefaultServiceRegistry, record_cleanup: Callable[[Callable[[], None]], None], *, plugin: Any = None, logger: Any = None) -> None:
         self._registry = registry
         self._record_cleanup = record_cleanup
+        self._plugin = plugin
+        self._logger = logger
+        self.undeclared: set[str] = set()
+        self._owner = object()
+        self._constraints = {
+            spec.name: spec
+            for spec in parse_dependencies((*getattr(plugin, "required", ()), *getattr(plugin, "optional", ())))
+            if spec.specifier
+        }
 
     def register(
-        self,
-        name: str,
-        service: Any,
-        *,
-        description: str = "",
-        override: bool = False,
+        self, name: str, service: Any, *, description: str = "", override: bool = False, version: str | None = None
     ) -> None:
-        self._registry.register(name, service, description=description, override=override)
-        entry = self._registry.get(name)
-        self._record_cleanup(
-            lambda name=name, entry=entry: self._unregister_if_current(name, entry)
+        plugin = self._plugin
+        provider = plugin.name if plugin else "__host__"
+        if plugin and name not in getattr(plugin, "provides", ()):
+            self.undeclared.add(name)
+            if self._logger:
+                self._logger.warning(f"插件 {provider} 注册了未声明的服务: {name}")
+        entry = self._registry.register(
+            name,
+            service,
+            description=description,
+            override=override,
+            provider=provider,
+            version=version if version is not None else getattr(plugin, "version", ""),
+            priority=getattr(plugin, "priority", 0),
+            owner=self._owner,
         )
+        self._record_cleanup(lambda: self._registry.unregister(name, provider=provider, entry=entry))
 
     def unregister(self, name: str) -> bool:
-        return self._registry.unregister(name)
+        provider = self._plugin.name if self._plugin else "__host__"
+        entry = self._registry._candidates.get(name, {}).get(provider)
+        if entry is None or entry["owner"] is not self._owner:
+            return False
+        return self._registry.unregister(name, provider=provider, entry=entry)
 
     def has(self, name: str) -> bool:
-        return self._registry.has(name)
+        return self.get(name) is not None
 
     def get(self, name: str, default: Any = None) -> Any:
+        constraint = self._constraints.get(name)
+        if constraint is not None:
+            entry = self._registry.metadata(name)
+            if entry and constraint.matches(entry["version"]) is False:
+                return default
         return self._registry.get(name, default)
 
     def require(self, name: str) -> Any:
+        if name in self._constraints and not self.has(name):
+            raise ServiceUnavailable(f"所需服务不可用: {self._constraints[name]}")
         return self._registry.require(name)
 
     def names(self) -> list[str]:
         return self._registry.names()
 
     def describe(self) -> list[dict[str, Any]]:
-        return self._registry.describe()
-
-    def _unregister_if_current(self, name: str, entry: Any) -> bool:
-        if self._registry.get(name) is not entry:
-            return False
-        return self._registry.unregister(name)
+        return [dict(item, available=self.has(item["name"])) for item in self._registry.describe()]
 
 
 # ---------------------------------------------------------------------------
@@ -272,14 +236,14 @@ class DefaultLifecycleHooks:
 class TrackedPluginHostFacade:
     """插件作用域宿主门面，记录注册项以便卸载时清理。"""
 
-    def __init__(self, host: "PluginHostFacade", record_cleanup: Callable[[Callable[[], None]], None]) -> None:
+    def __init__(self, host: "PluginHostFacade", record_cleanup: Callable[[Callable[[], None]], None], *, plugin: Any = None, logger: Any = None) -> None:
         self._host = host
         self._record_cleanup = record_cleanup
         self._commands = _TrackedCommandRegistry(host.commands, record_cleanup)
         self._queries = _TrackedQueryRegistry(host.queries, record_cleanup)
         self._capabilities = _TrackedCapabilityRegistry(host.capabilities, record_cleanup)
         self._lifecycle = _TrackedLifecycleHooks(host.lifecycle, record_cleanup)
-        self._services = _TrackedServiceRegistry(host.services, record_cleanup)
+        self._services = _TrackedServiceRegistry(host.services, record_cleanup, plugin=plugin, logger=logger)
 
     @property
     def events(self) -> RuntimeInterceptionRegistry:
