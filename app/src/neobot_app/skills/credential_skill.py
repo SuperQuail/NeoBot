@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from neobot_app.bot_accounts import identity_text
 from neobot_app.credentials.model import (
     CRED_TYPE_ONE_TIME,
 )
@@ -138,7 +139,9 @@ class CredentialSkill(SkillModule):
         chat_flow = pipeline_key
         cred_type = str(args.get("credential_type") or CRED_TYPE_ONE_TIME)
         duration = args.get("duration_minutes")
-        requester_id = int(args.get("_requester_id") or 0)
+        # 申请者身份可能是数字 QQ，也可能是官方 openid：统一按字符串记录，
+        # 不要求 openid 用户先绑定 QQ（该字段只用于审计，不参与授权判定）。
+        requester_id = identity_text(args.get("_requester_id"))
         try:
             credential = self._credential_manager.create(
                 chat_flow=chat_flow,

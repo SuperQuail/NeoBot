@@ -223,11 +223,37 @@ async def test_skill_request_generates_code() -> None:
     skill = _skill(manager)
     result = json.loads(await skill.execute(
         "request",
-        {"action": "kick", "pipeline_key": "group:123", "user_id": BOT},
+        {
+            "action": "kick",
+            "pipeline_key": "group:123",
+            "_requester_id": str(BOT),
+        },
     ))
     assert result["ok"] is True
     assert result["code"]
     assert "发送" in result["message"]
+    credential = manager.get(result["code"])
+    assert credential is not None
+    assert credential.requester_id == str(BOT)
+
+
+async def test_skill_request_accepts_openid_requester() -> None:
+    """官方 openid 申请者按字符串记录，不要求先绑定 QQ。"""
+    manager = _manager()
+    skill = _skill(manager)
+    openid = "openid_user_abcdef1234567890"
+    result = json.loads(await skill.execute(
+        "request",
+        {
+            "action": "willing_global",
+            "pipeline_key": "group:openid_group_xyz",
+            "_requester_id": openid,
+        },
+    ))
+    assert result["ok"] is True
+    credential = manager.get(result["code"])
+    assert credential is not None
+    assert credential.requester_id == openid
 
 
 async def test_skill_request_requires_pipeline() -> None:

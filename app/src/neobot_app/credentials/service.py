@@ -129,7 +129,7 @@ class CredentialManager:
         *,
         chat_flow: str,
         action: str,
-        requester_id: int,
+        requester_id: int | str,
         cred_type: str,
         duration_minutes: int | None = None,
     ) -> Credential:
