@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -71,7 +72,8 @@ class PythonDependencyInstallerTest(unittest.TestCase):
             result = installer.confirm_and_install_sync(["pyfiglet"])
 
         self.assertTrue(result.installed)
-        self.assertEqual(run.call_args.args[0], ["uv", "pip", "install", "pyfiglet"])
+        # 回归 #327：uv 找不到目标环境，必须显式 --python 当前解释器
+        self.assertEqual(run.call_args.args[0], ["uv", "pip", "install", "--python", sys.executable, "pyfiglet"])
 
     def test_prefers_uv_pip_inside_uv_environment(self) -> None:
         installer = PythonDependencyInstaller(input_func=lambda prompt: "y")
@@ -85,7 +87,7 @@ class PythonDependencyInstallerTest(unittest.TestCase):
             result = installer.confirm_and_install_sync(["pyfiglet"])
 
         self.assertTrue(result.installed)
-        self.assertEqual(run.call_args.args[0], ["uv", "pip", "install", "pyfiglet"])
+        self.assertEqual(run.call_args.args[0], ["uv", "pip", "install", "--python", sys.executable, "pyfiglet"])
 
 
 class PythonDependencyInstallerSafetyTest(unittest.TestCase):
@@ -122,6 +124,24 @@ class PythonDependencyInstallerSafetyTest(unittest.TestCase):
         self.assertFalse(result.installed)
         run.assert_not_called()
         self.assertEqual(result.stderr, "no interactive terminal")
+
+    def test_eof_on_prompt_skips_install_instead_of_raising(self) -> None:
+        """Windows 把 stdin 接到 NUL 时 isatty() 仍为 True，input() 抛 EOFError（#326）。"""
+        for error in (EOFError, OSError):
+            with self.subTest(error=error.__name__):
+                logger = FakeLogger()
+
+                def explode(prompt: str) -> str:
+                    raise error("EOF when reading a line")
+
+                installer = PythonDependencyInstaller(logger=logger, input_func=explode)
+                with _interactive(installer), patch("subprocess.run") as run:
+                    result = installer.confirm_and_install_sync(["requests>=2"])
+
+                self.assertFalse(result.installed)
+                self.assertEqual(result.stderr, "no interactive terminal")
+                run.assert_not_called()
+                self.assertTrue(any("可交互终端" in item for item in logger.warnings))
 
     def test_install_command_has_timeout(self) -> None:
         from neobot_modloader.dependencies import INSTALL_TIMEOUT_SECONDS
@@ -163,6 +183,22 @@ class PythonDependencyInstallerAsyncTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result.installed)
         run.assert_not_called()
+
+    async def test_async_entry_skips_on_eof(self) -> None:
+        """面板安装/热重载走异步入口，stdin 读不到时同样按跳过处理。"""
+        logger = FakeLogger()
+
+        def explode(prompt: str) -> str:
+            raise EOFError("EOF when reading a line")
+
+        installer = PythonDependencyInstaller(logger=logger, input_func=explode)
+        with _interactive(installer), patch("subprocess.run") as run:
+            result = await installer.confirm_and_install(["requests>=2"])
+
+        self.assertFalse(result.installed)
+        self.assertEqual(result.stderr, "no interactive terminal")
+        run.assert_not_called()
+        self.assertTrue(any("可交互终端" in item for item in logger.warnings))
 
 
 if __name__ == "__main__":

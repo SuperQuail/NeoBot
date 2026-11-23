@@ -33,17 +33,27 @@ export default function PluginListPanel(props: PluginListPanelProps) {
           <h2>已安装</h2>
           <span>{items.length} 个插件</span>
         </div>
-        <div className="plugin-search">
+        <form
+          className="plugin-search"
+          role="search"
+          autoComplete="off"
+          onSubmit={(event) => event.preventDefault()}
+        >
           <Icon name="search" />
           <input
             ref={searchRef}
+            type="search"
+            name="plugin-search"
             aria-label="搜索插件"
             placeholder="搜索插件…"
             value={filter}
-            onChange={(event) => setFilter(event.target.value)}
+            onChange={(event) => {
+              // 切换配置时浏览器可能顺带回填用户名。只接收搜索框内的主动输入。
+              if (document.activeElement === event.currentTarget) setFilter(event.currentTarget.value);
+            }}
           />
           <kbd>Ctrl K</kbd>
-        </div>
+        </form>
         <div className="plugin-source-filter" role="group" aria-label="按来源筛选">
           {sourceFilters.map(([key, label]) => (
             <button
@@ -100,9 +110,19 @@ export default function PluginListPanel(props: PluginListPanelProps) {
                               {plugin.official ? '官方' : '第三方'}
                             </span>
                             {plugin.version || '未声明版本'}
-                            {plugin.auto_disabled && (
-                              <span className="source-badge" title={plugin.disabled_reason || '依赖未满足'}>
-                                依赖未满足
+                            {(plugin.auto_disabled ||
+                              plugin.dependency_status === 'blocked' ||
+                              plugin.dependency_status === 'warning') && (
+                              <span
+                                className="source-badge"
+                                title={
+                                  plugin.services?.find((slot) => slot.status !== 'loaded')?.message ||
+                                  plugin.service_conflicts?.[0]?.message ||
+                                  plugin.disabled_reason ||
+                                  '依赖未满足'
+                                }
+                              >
+                                {plugin.dependency_status === 'warning' ? '有告警' : '依赖未满足'}
                               </span>
                             )}
                           </small>

@@ -1,20 +1,19 @@
 """将插件的 Pydantic 模型映射到宿主已有控件，凭据保护沿用配置接口规则。"""
 
 from enum import Enum
-from typing import Annotated, Any, Literal, get_args, get_origin
+from typing import Any, Literal, get_args, get_origin
 
 from pydantic import BaseModel, SecretBytes, SecretStr
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
 from .normalize import _MISSING, _field_input_paths, _submitted_field
-from .schema import _inner_types, _jsonable, _type_name
+from .schema import _TEMPORAL_KINDS, _inner_types, _jsonable, _type_name
 from .secret_values import PluginSecretPolicy
 
 
 def _target(annotation: Any) -> Any:
-    if get_origin(annotation) is Annotated:
-        annotation = get_args(annotation)[0]
+    # _inner_types 会剥掉 Annotated 外壳，这里拿到的就是真实类型
     variants = _inner_types(annotation)
     return variants[0] if len(variants) == 1 else None
 
@@ -158,6 +157,10 @@ class _DescriptorBuilder:
             return descriptor
         if target in (SecretStr, SecretBytes):
             descriptor["type"] = "str"
+            return descriptor
+        if target in _TEMPORAL_KINDS:
+            # 日期 / 时间 / 日期时间控件；取值统一为 ISO 8601 字符串
+            descriptor["kind"] = _TEMPORAL_KINDS[target]
             return descriptor
         if descriptor["type"] == "any":
             # 递归模型、多分支联合和未知结构保持 JSON，不能用 String(object) 丢失信息。

@@ -7,7 +7,9 @@
   const observed = new Map();
   const contextListeners = new Set();
   const stepListeners = new Set();
-  const prefix = root.crypto.randomUUID();
+  // crypto.randomUUID 只在安全上下文提供；面板常用局域网 http 打开，退回普通随机串。
+  const prefix =
+    root.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   let counter = 0;
   let session = '';
   let context;
@@ -83,7 +85,8 @@
     root.requestAnimationFrame(() => {
       measuring = false;
       if (disposed) return;
-      if (context.layout === 'inline' && !context.suspended) {
+      // 暂停业务调用时页面仍可能可见，布局测量应继续。
+      if (context.layout === 'inline') {
         // 测量内容本身，不读取至少等于 iframe 高度的 scrollHeight，才能在删行后收缩。
         const body = root.document.body;
         const style = root.getComputedStyle(body);

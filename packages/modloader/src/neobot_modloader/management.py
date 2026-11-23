@@ -61,6 +61,10 @@ class PluginSnapshot:
     config_error: str | None = None
     #: 因命令重名被自动改名：((请求名, 实际名), ...)，面板插件详情展示
     command_renames: tuple[tuple[str, str], ...] = ()
+    services: tuple[dict[str, Any], ...] = ()
+    service_conflicts: tuple[dict[str, Any], ...] = ()
+    service_undeclared: tuple[str, ...] = ()
+    dependency_status: str = "ok"
 
     @property
     def official(self) -> bool:

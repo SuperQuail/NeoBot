@@ -1,6 +1,6 @@
 [project]
 name = "neobot-modloader"
-version = "2.1.0-a14"
+version = "2.1.0-a16"
 description = "Add your description here"
 readme = "README.md"
 authors = [
@@ -10,6 +10,7 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "aiosqlite>=0.20.0,<0.23",
+    "certifi>=2024.2.2,<2027",
     "httpx>=0.27.0,<0.29",
     "neobot-adapter",
     "neobot-contracts",

@@ -80,3 +80,5 @@ pnpm run dev -- --host 127.0.0.1
 | `src/test/`                                     | 用户行为回归、环境适配与统一 mock                    |
 
 Motion 负责业务页与通用组件动效，GSAP 仅随登录路由加载；增强编辑器使用按需加载的 CodeMirror。字体本地分发，不请求外部字体服务。依赖版本以 `package.json` 和 `pnpm-lock.yaml` 为准。
+
+服务依赖演示：`daily_notes` 展示必需、缺失可选及提供服务，检查全部更新可显示虚构更新；`sample_error` 展示缺失必需服务，`weather` 展示停用声明与冲突。服务名称均使用 demo 前缀，状态只依赖演示内存，不代表真实实例服务。

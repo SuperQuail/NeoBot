@@ -1724,7 +1724,7 @@ wheels = [
 
 [[package]]
 name = "neobot"
-version = "2.1.0a14"
+version = "2.1.0a16"
 source = { virtual = "." }
 dependencies = [
     { name = "drissionpage" },
@@ -1779,7 +1779,7 @@ dev = [
 
 [[package]]
 name = "neobot-adapter"
-version = "2.1.0a14"
+version = "2.1.0a16"
 source = { editable = "packages/adapter" }
 dependencies = [
     { name = "aiohttp" },
@@ -1804,7 +1804,7 @@ requires-dist = [
 
 [[package]]
 name = "neobot-app"
-version = "2.1.0a14"
+version = "2.1.0a16"
 source = { editable = "app" }
 dependencies = [
     { name = "aiohttp" },
@@ -1899,7 +1899,7 @@ requires-dist = [
 
 [[package]]
 name = "neobot-chat"
-version = "2.1.0a14"
+version = "2.1.0a16"
 source = { editable = "packages/chat" }
 dependencies = [
     { name = "httpx" },
@@ -1916,12 +1916,12 @@ requires-dist = [
 
 [[package]]
 name = "neobot-contracts"
-version = "2.1.0a14"
+version = "2.1.0a16"
 source = { editable = "packages/contracts" }
 
 [[package]]
 name = "neobot-memory"
-version = "2.1.0a14"
+version = "2.1.0a16"
 source = { editable = "packages/memory" }
 dependencies = [
     { name = "neobot-contracts" },
@@ -1932,10 +1932,11 @@ requires-dist = [{ name = "neobot-contracts", editable = "packages/contracts" }]
 
 [[package]]
 name = "neobot-modloader"
-version = "2.1.0a14"
+version = "2.1.0a16"
 source = { editable = "packages/modloader" }
 dependencies = [
     { name = "aiosqlite" },
+    { name = "certifi" },
     { name = "httpx" },
     { name = "neobot-adapter" },
     { name = "neobot-contracts" },
@@ -1947,6 +1948,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20.0,<0.23" },
+    { name = "certifi", specifier = ">=2024.2.2,<2027" },
     { name = "httpx", specifier = ">=0.27.0,<0.29" },
     { name = "neobot-adapter", editable = "packages/adapter" },
     { name = "neobot-contracts", editable = "packages/contracts" },
@@ -1957,7 +1959,7 @@ requires-dist = [
 
 [[package]]
 name = "neobot-storage"
-version = "2.1.0a14"
+version = "2.1.0a16"
 source = { editable = "packages/storage" }
 dependencies = [
     { name = "aiosqlite" },

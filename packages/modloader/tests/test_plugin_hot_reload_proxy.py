@@ -161,4 +161,5 @@ def test_installer_proxy_switching(tmp_path: Path, monkeypatch) -> None:
 
     installer.set_proxy(mode="system")
     installer._build_opener()
-    assert captured[-1] == ()
+    # 系统模式不注入 ProxyHandler（交给 urllib 默认的环境变量代理）
+    assert not any(isinstance(handler, urllib.request.ProxyHandler) for handler in captured[-1])

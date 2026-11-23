@@ -10,7 +10,7 @@ covers:
   - app/src/neobot_app/reply/vision_context.py
   - app/src/neobot_app/reply/flow_registry.py
 verified_against: b0c12261
-verified_hash: 62bed3e31df7
+verified_hash: 2faff8be01fd
 ---
 
 # 03 回复管线：状态机 / 冷却 / 静默看门狗 / 发送与后处理
@@ -298,3 +298,11 @@ flowchart LR
   并且一侧 CJK、另一侧字母数字的空格按排版删掉（`_normalize_cjk_latin_spaces`）。
   边界要留神：英文靠「句号/感叹号之后那个空格」断句（半角 `.` `!` `?` 不在分隔符集合里），
   所以**不能**把所有空格都设成不可切，否则 `Hello. World. Bye.` 再也不分句。
+* **反引号包住的命令不参与分句**：`split_into_sentences_w_remove_punctuation` 在分句前
+  把行内 `` `...` `` 换成占位符，整段不切分、空格不丢，还原时再去掉两侧反引号；
+  引用型内容（`` `cancel` ``、`` `*(note)*` ``）保留反引号，否则会变成裸控制词/注记被兜底丢弃。
+  是否保留反引号不能只看「注记清洗后为空」—— 清洗会把 `[ -f config.toml ]`、
+  `(cd /tmp && make)` 这类方括号/圆括号命令整段当注记清空。判据是「控制词，或清空后
+  仍含 CJK / `*` `_` `~` 记号」。占位符编号跳过正文里已有的 U+E000/U+E001；
+  保护之后残留的裸反引号（未闭合、跨行、单行三反引号）会清掉；行首（允许缩进，
+  列表里的代码块也是合法 Markdown）三个以上是围栏，原样保留。

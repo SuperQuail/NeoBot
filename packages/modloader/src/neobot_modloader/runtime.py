@@ -24,7 +24,17 @@ from neobot_modloader.dependency import (
 from neobot_modloader.dependencies import PythonDependencyInstaller
 from neobot_modloader.generation import UNSET, RuntimeGeneration
 from neobot_modloader.hooks import PluginHookBus
-from neobot_modloader.host import TrackedPluginHostFacade
+from neobot_modloader.host import TrackedPluginHostFacade, PluginHostFacade
+from neobot_modloader.service import (
+    ServiceManifest,
+    declarations,
+    dependents,
+    prerequisite_names,
+    reconcile_selection,
+    refresh_selection,
+    service_issues,
+    service_report,
+)
 from neobot_modloader.hot_reload import PluginHotReloader
 from neobot_modloader.installer import PluginInstaller, PluginUpdateCheck
 from neobot_modloader.loading.manifest import (
@@ -139,7 +149,12 @@ class PluginRuntime:
             record_ai_reply_block=record_ai_reply_block,
             output=self.output,
         )
-        self.host = host
+        self._service_declarations: dict[str, ServiceManifest] = {}
+        self._service_providers: dict[str, Any] = {}
+        #: 扫描（同步）期间的提供者选择变化，交给下一次异步入口补联动恢复。
+        self._pending_selection: dict[str, Any] | None = None
+        self.host = host or PluginHostFacade()
+        self.host.services.ready = self._service_provider_ready
         enabled_resolver = self._resolve_enabled_state if self._state_store is not None else None
         self.loader = loader or FilesystemPluginLoader(
             logger=self._get_logger("modloader.loader"),
@@ -310,10 +325,18 @@ class PluginRuntime:
                 official_names.add(result.name)
             elif result.name in official_names:
                 continue
+            entry = declarations(self, result.name)
+            if entry is not None:
+                result = replace(
+                    result,
+                    provides=getattr(entry, "provides", ()),
+                    required=getattr(entry, "required", ()),
+                    optional=getattr(entry, "optional", ()),
+                )
             results.append(result)
         # 跨目录（官方 / 第三方）统一再做一次依赖解析：官方插件与第三方插件可以互相
         # 依赖，依赖未满足的插件在这里被标注「自动禁用」原因，供面板与加载路径复用。
-        return order_discovery_results(results)
+        return order_discovery_results(results, hosts=self._host_services())
 
     def _disabled_plugin_names(self) -> set[str]:
         """当前被用户停用的插件名（用于区分「依赖缺失」与「前置插件已停用」）。
@@ -325,6 +348,19 @@ class PluginRuntime:
         if store is None:
             return set()
         return {name for name, entry in store.entries().items() if entry.enabled is False}
+
+    def _host_services(self) -> dict[str, dict[str, Any]]:
+        return {
+            item["name"]: item
+            for item in self.host.services.describe()
+            if item["provider"] == "__host__" and item["available"]
+        }
+
+    def _service_provider_ready(self, provider: str) -> bool:
+        if provider == "__host__":
+            return True
+        record = self.manager.get_record(provider)
+        return bool(record and record.state in _READY_STATES and record.error is None)
 
     def _dependency_issues(
         self,
@@ -388,11 +424,10 @@ class PluginRuntime:
         return tuple(dependency.name for dependency in parsed)
 
     def _remember_auto_disabled(self, name: str, dependencies: Sequence[str], reason: str) -> None:
-        self._auto_disabled[name] = (self._dependency_names(dependencies), reason)
+        self._auto_disabled[name] = ((*self._dependency_names(dependencies), *prerequisite_names(self, name)), reason)
 
     def dependency_report(self, name: str) -> dict[str, Any]:
         """插件依赖现状（供面板展示：声明、问题、反向依赖）。"""
-        registry = self.manager.registry_view
         record = self.manager.get_record(name)
         raw: Sequence[str] = ()
         if record is not None:
@@ -410,7 +445,8 @@ class PluginRuntime:
             "name": name,
             "dependencies": [str(item) for item in raw],
             "issues": self._dependency_issues(name, raw) if record is not None else [],
-            "dependents": registry.dependents_of(name),
+            "dependents": dependents(self, name),
+            **(service_report(self, entry) if (entry := declarations(self, name)) else {}),
             "auto_disabled": auto is not None,
             "disabled_reason": auto[1] if auto else None,
         }
@@ -447,7 +483,15 @@ class PluginRuntime:
                 self.loader.clear_module_cache(result.module_names)
                 continue
             deduped.append(result)
-        results = order_results(deduped)
+        for item in deduped:
+            if isinstance(item, (LoadedPlugin, DisabledPlugin)):
+                self._service_declarations[item.name] = ServiceManifest.from_entry(item)
+        for item in self.discover_all():
+            if isinstance(item, DiscoveredPlugin):
+                self._service_declarations.setdefault(item.name, ServiceManifest.from_entry(item))
+        refresh_selection(self)
+        previous_providers = self._service_providers
+        results = order_results(deduped, hosts=self._host_services(), service_candidates=list(self._service_declarations.values()))
         loaded_count = 0
         error_count = 0
         # 同步扫描整体无 await，检查-注册在事件循环内原子；scan guard 防止多线程重复进入。
@@ -497,17 +541,53 @@ class PluginRuntime:
                     existing.add(result.name)
                 else:
                     error_count += 1
+                    # 注册失败不能继续占住服务名：回滚声明，复查（重新加载）可重试
+                    self._service_declarations.pop(result.name, None)
+        # 自动禁用 / 注册失败都会改变选择：同步阶段先重建，联动恢复交给异步入口
+        refresh_selection(self)
+        if previous_providers != self._service_providers and self._pending_selection is None:
+            self._pending_selection = previous_providers
         self.logger.info(f"插件扫描完成: loaded={loaded_count}, errors={error_count}")
 
     async def load_registered(self) -> None:
         for name in list(self.manager.names()):
             async with self._named_operation(name):
+                record = self.manager.get_record(name)
+                issues = service_issues(self, record.plugin)
+                if issues:
+                    self.logger.warning(f"插件服务依赖未满足，跳过加载 ({name}): {'; '.join(issues)}")
+                    continue
                 await self.manager.load_plugin(name)
+        await self._reconcile_pending_selection()
+
+    async def _reconcile_pending_selection(self) -> None:
+        """扫描期选择变化在第一个异步入口补联动：按新提供者恢复被自动禁用的使用方。"""
+        previous, self._pending_selection = self._pending_selection, None
+        if previous is not None:
+            await reconcile_selection(self, previous)
 
     async def start_all(self) -> None:
         for name in list(self.manager.names()):
             async with self._named_operation(name):
-                await self.manager.start_plugin(name)
+                outcome = await self._start_plugin_locked(name)
+                if not outcome.ok:
+                    record = self.manager.get_record(name)
+                    if record and (
+                        service_issues(self, record.plugin) or self._dependency_issues(name, record.plugin.dependencies)
+                    ):
+                        self._remember_auto_disabled(name, record.plugin.dependencies, outcome.error or "服务未就绪")
+                        # on_load 可能已经发布服务。前置启动失败时先回收这些实例，
+                        # 后续消费者不能再通过已加载的中间插件取得它们。
+                        if record.state is PluginState.LOADED:
+                            await self._stop_plugin_locked(name)
+        # 部分宿主组件在同步扫描结束后才装配。启动最后恢复这些服务的等待者。
+        if self._auto_disabled:
+            host_keys = {f"service:{service}" for service in self._host_services()}
+            for key in host_keys.intersection(
+                prerequisite for prerequisites, _ in self._auto_disabled.values() for prerequisite in prerequisites
+            ):
+                await self._cascade_restore_dependents(key)
+        await self._reconcile_pending_selection()
         if self._hot_reloader is not None:
             await self._hot_reloader.start()
 
@@ -536,8 +616,12 @@ class PluginRuntime:
             )
 
         result: LoadedPlugin | PluginLoadError | None = None
+        previous_providers = self._service_providers
         try:
             async with self._path_operation(plugin_path) as operation:
+                install = self.auto_install_dependencies if auto_install_dependencies is None else auto_install_dependencies
+                # 先装后导：插件顶层 import 第三方依赖时，导入失败就走不到依赖安装。
+                attempted = install and await self._install_path_dependencies(plugin_path)
                 result = self.loader.load_one(plugin_path)
                 if isinstance(result, LoadedPlugin):
                     await operation.bind(result.name)
@@ -545,7 +629,8 @@ class PluginRuntime:
                     plugin_path,
                     result,
                     start=start,
-                    auto_install_dependencies=auto_install_dependencies,
+                    # 已经问过一次（无论装没装上），不再让激活阶段重复提问。
+                    auto_install_dependencies=False if attempted else auto_install_dependencies,
                 )
                 if outcome.ok:
                     operation.commit()
@@ -561,8 +646,11 @@ class PluginRuntime:
                 self.loader.clear_module_cache(result.module_names)
             self._prune_operation_lock(exc.name)
             return PluginOperationResult(ok=False, name=exc.name, error=str(exc), path=plugin_path)
+        await reconcile_selection(self, previous_providers)
         if not outcome.ok:
             self._prune_operation_lock(outcome.name)
+        elif start:
+            await self._cascade_restore_dependents(outcome.name)
         return outcome
 
     async def _load_plugin_path_locked(
@@ -703,6 +791,8 @@ class PluginRuntime:
             )
         if not result.ok:
             self._prune_operation_lock(name)
+        else:
+            await self._cascade_restore_dependents(name)
         return result
 
     async def _start_plugin_locked(self, name: str) -> PluginOperationResult:
@@ -719,6 +809,7 @@ class PluginRuntime:
         if record.state is PluginState.RUNNING and record.error is None:
             return PluginOperationResult(ok=True, name=name, state=PluginState.RUNNING.value, path=path)
         issues = self._dependency_issues(name, tuple(getattr(record.plugin, "dependencies", ()) or ()))
+        issues.extend(service_issues(self, record.plugin))
         if issues:
             return PluginOperationResult(
                 ok=False,
@@ -794,8 +885,7 @@ class PluginRuntime:
         _cascade_restore_dependents 自动拉起，用户不需要手动重新启用。
         """
         outcomes: list[PluginOperationResult] = []
-        registry = self.manager.registry_view
-        for dependent in registry.dependents_of(name, transitive=True):
+        for dependent in dependents(self, name, transitive=True):
             record = self.manager.get_record(dependent)
             if record is None:
                 continue
@@ -814,6 +904,8 @@ class PluginRuntime:
         """按拓扑顺序恢复完整依赖闭包，前置在声明中的位置不影响联动。"""
         outcomes: list[PluginOperationResult] = []
         pending: dict[str, tuple[str, ...]] = {}
+        for dependent, (previous, reason) in list(self._auto_disabled.items()):
+            self._auto_disabled[dependent] = (tuple(dict.fromkeys((*previous, *prerequisite_names(self, dependent)))), reason)
         frontier = {name}
         while frontier:
             next_frontier = {
@@ -847,6 +939,13 @@ class PluginRuntime:
                     if record is not None and record.state in _READY_STATES and record.error is None:
                         self._auto_disabled.pop(dependent, None)
                         continue
+                    if record is not None and service_issues(self, record.plugin) == []:
+                        outcome = await self._start_plugin_locked(dependent)
+                        if outcome.ok:
+                            self._auto_disabled.pop(dependent, None)
+                        else:
+                            outcomes.append(outcome)
+                        continue
                     if record is not None:
                         outcomes.append(
                             self._operation_result_from_record(dependent, expected_states=set(_READY_STATES))
@@ -875,6 +974,7 @@ class PluginRuntime:
         _expected: tuple[Any, PluginState] | None = None,
     ) -> PluginOperationResult:
         # 重载会短暂摘掉插件；失败但旧代仍就绪时，也必须恢复已经停掉的依赖方。
+        previous_providers = self._service_providers
         try:
             await self._cascade_stop_dependents(name, reason=f"前置插件正在重载: {name}")
             async with self._named_operation(name):
@@ -913,6 +1013,7 @@ class PluginRuntime:
                 error=str(exc),
                 path=self._loaded_paths.get(name),
             )
+        await reconcile_selection(self, previous_providers)
         if not result.ok:
             self._prune_operation_lock(name)
         record = self.manager.get_record(name)
@@ -936,6 +1037,25 @@ class PluginRuntime:
             return
         # 运行期确认与安装必须 await，不能阻塞事件循环等待输入或 pip 子进程。
         await self.dependency_installer.confirm_and_install(missing)
+
+    async def _install_path_dependencies(self, plugin_path: Path) -> bool:
+        """导入前装好 manifest 声明的依赖（#327），返回是否已经问过安装。
+
+        只覆盖 plugin.toml；只写在 Plugin(python_dependencies=...) 里的依赖仍在导入后安装。
+        """
+        manifest = plugin_path / "plugin.toml"
+        if not manifest.is_file():
+            return False
+        try:
+            requirements = read_python_dependencies(read_manifest(manifest))
+            missing = missing_python_dependencies(requirements)
+        except Exception:
+            # 清单或依赖串有问题时交给加载器报错，这里不抢先失败。
+            return False
+        if not missing:
+            return False
+        await self.dependency_installer.confirm_and_install(list(missing))
+        return True
 
     async def _reload_plugin_result_locked(
         self,
@@ -1014,6 +1134,17 @@ class PluginRuntime:
 
         if old_record is None:
             return await self._activate_loaded_plugin(result, start=start, auto_install_dependencies=False)
+
+        issues = service_issues(self, result)
+        if issues:
+            self.loader.clear_module_cache(result.module_names)
+            return PluginOperationResult(
+                ok=False,
+                name=name,
+                state=old_state.value,
+                path=plugin_path,
+                error="; ".join(issues),
+            )
 
         try:
             removed = await self._remove_manager_record(name, expected=old_record, force=False)
@@ -1235,6 +1366,8 @@ class PluginRuntime:
         self._manifest_configs[name] = old_defaults
         try:
             self.manager.register(old_record.plugin, old_record.context)
+            self._service_declarations[name] = ServiceManifest.from_entry(old_record.plugin)
+            refresh_selection(self)
         except Exception as exc:
             self._loaded_modules.pop(name, None)
             self._loaded_paths.pop(name, None)
@@ -1464,7 +1597,14 @@ class PluginRuntime:
                 )
             )
 
-        return sorted(snapshots, key=lambda item: item.name.lower())
+        enriched = []
+        for snapshot in snapshots:
+            entry = declarations(self, snapshot.name)
+            report = service_report(self, entry) if entry else {}
+            if snapshot.dependency_issues or snapshot.auto_disabled:
+                report["dependency_status"] = "blocked"
+            enriched.append(replace(snapshot, **report, dependents=tuple(dependents(self, snapshot.name))))
+        return sorted(enriched, key=lambda item: item.name.lower())
 
     def plugin_config_model(self, name: str) -> Any | None:
         """返回插件声明的配置模型（pydantic BaseModel），未声明时返回 None。
@@ -1515,6 +1655,10 @@ class PluginRuntime:
             self._auto_disabled.pop(name, None)
             self._loaded_sources.pop(name, None)
             self._loaded_flags.pop(name, None)
+            # 停用的声明要让出服务名：重建选择并按新的提供者恢复被联动停用的使用方。
+            previous_providers = self._service_providers
+            refresh_selection(self)
+            await reconcile_selection(self, previous_providers)
             return PluginOperationResult(
                 ok=True,
                 name=name,
@@ -1604,6 +1748,10 @@ class PluginRuntime:
         if self._state_store is not None:
             self._state_store.forget(name)
         self._memory_enabled.pop(name, None)
+        previous_providers = self._service_providers
+        self._service_declarations.pop(name, None)
+        refresh_selection(self)
+        await reconcile_selection(self, previous_providers)
         self._loaded_sources.pop(name, None)
         self._loaded_paths.pop(name, None)
         return PluginOperationResult(
@@ -1671,8 +1819,11 @@ class PluginRuntime:
             if isinstance(result, DiscoveredPlugin) and result.enabled:
                 missing.extend(result.missing_python_dependencies)
         if missing:
-            # 启动装配期的同步入口：无交互终端时内部直接跳过，不再抛 EOFError
-            self.dependency_installer.confirm_and_install_sync(missing)
+            # 启动装配期的同步入口：确认/安装失败只记日志，不能中断后续装配
+            try:
+                self.dependency_installer.confirm_and_install_sync(missing)
+            except Exception as exc:
+                self.logger.warning(f"插件 PyPI 依赖确认失败，已跳过安装: {exc}")
 
     async def _activate_loaded_plugin(
         self,
@@ -1710,10 +1861,15 @@ class PluginRuntime:
             )
 
         issues = self._dependency_issues(loaded.name, loaded.dependencies)
+        issues += service_issues(self, loaded)
         if issues:
             # 前置插件未满足：自动禁用（不是错误），前置插件就绪后可再启用
             reason = "; ".join(issues)
+            # 先登记自动禁用再刷新：这条声明立刻让出服务名，回落提供者可以接管
             self._remember_auto_disabled(loaded.name, loaded.dependencies, reason)
+            if self.manager.get_record(loaded.name) is None:
+                self._service_declarations[loaded.name] = ServiceManifest.from_entry(loaded)
+                refresh_selection(self)
             self.logger.warning(f"插件依赖未满足，已自动禁用 ({loaded.name}): {reason}")
             self.loader.clear_module_cache(loaded.module_names)
             return PluginOperationResult(
@@ -2153,6 +2309,7 @@ class PluginRuntime:
                 TrackedPluginHostFacade(
                     self.host,
                     lambda cleanup, name=loaded.name: self.manager.record_cleanup(name, cleanup),
+                    plugin=loaded.plugin, logger=logger,
                 )
                 if self.host is not None
                 else None
@@ -2203,6 +2360,9 @@ class PluginRuntime:
 
             prepare_runtime_storage(self, loaded.name, self._path_for_loaded(loaded))
             self.manager.register(loaded.plugin, context)
+            # 注册成功后才写声明：失败时不留幽灵提供者，下一轮复查可以直接重试。
+            self._service_declarations[loaded.name] = ServiceManifest.from_entry(loaded)
+            refresh_selection(self)
             self._loaded_modules[loaded.name] = loaded.module_names
             self._loaded_paths[loaded.name] = self._path_for_loaded(loaded)
             self._loaded_sources[loaded.name] = loaded.source

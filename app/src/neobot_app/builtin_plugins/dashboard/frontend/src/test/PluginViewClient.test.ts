@@ -7,7 +7,10 @@ afterEach(() => {
   for (const dispose of disposers.splice(0)) dispose();
 });
 
-function fixture(mode: 'live' | 'demo' = 'live') {
+function fixture(
+  mode: 'live' | 'demo' = 'live',
+  crypto: Record<string, unknown> = { randomUUID: () => 'client' },
+) {
   const document = window.document.implementation.createHTMLDocument('插件页面');
   const listeners = new Map<string, Set<(event: unknown) => void>>();
   const sent: Array<{ requestId: string; method: string; params: unknown }> = [];
@@ -20,7 +23,7 @@ function fixture(mode: 'live' | 'demo' = 'live') {
   const root: Record<string, unknown> = {
     document,
     parent,
-    crypto: { randomUUID: () => 'client' },
+    crypto,
     console,
     innerWidth: 1024,
     innerHeight: 768,
@@ -218,6 +221,16 @@ describe('公开插件页面客户端', () => {
     test.flushMeasure();
     expect(test.sent.find((item) => item.method === 'resize')?.params).toEqual({ height: 256 });
   });
+  it('切回可见的内联页时即使业务暂停也上报内容高度', async () => {
+    const test = fixture();
+    Object.assign(test.context, { layout: 'inline', suspended: true });
+    test.document.body.style.margin = '0';
+    test.document.body.getBoundingClientRect = () => ({ height: 950 }) as DOMRect;
+    await test.ready();
+    test.flushMeasure();
+    expect(test.sent.find((item) => item.method === 'resize')?.params).toEqual({ height: 950 });
+    await expect(test.sdk.action('list')).rejects.toThrow('暂停');
+  });
   it('只信任父窗口握手，不读取凭据，并接收主题与上下文更新', async () => {
     const test = fixture();
     const contextChanged = vi.fn();
@@ -258,6 +271,13 @@ describe('公开插件页面客户端', () => {
     expect(anchor.focus).toHaveBeenCalledTimes(mode === 'demo' ? 0 : 1);
     expect(test.sent.some((item) => item.method === 'action')).toBe(false);
     unregister();
+  });
+
+  it('局域网 http 等非安全上下文缺少 crypto.randomUUID 时仍能建立桥接', async () => {
+    const test = fixture('demo', {});
+    await test.ready();
+    expect(test.sent[0].method).toBe('ready');
+    expect(test.sent[0].requestId).toMatch(/^[\w-]+-1$/);
   });
 
   it('关闭时拒绝在途请求并移除观察器、样式和事件监听', async () => {

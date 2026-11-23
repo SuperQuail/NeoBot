@@ -343,10 +343,13 @@ class PluginsMixin:
             for item in checks
         ]
         available = [item for item in items if item["status"] == "available"]
-        return _json_ok(
-            {
-                "items": items,
-                "available": len(available),
-                "message": (f"{len(available)} 个插件可更新" if available else "全部插件均为最新"),
-            }
-        )
+        # 未能确认远端版本（unknown）与硬失败一样，都不能报「全部插件均为最新」
+        failed = [item for item in items if item["status"] in {"error", "unknown"}]
+        if failed:
+            summary = f"{len(failed)} 个插件检查更新失败：{failed[0]['name']} {failed[0]['error'] or '原因未知'}"
+            message = f"{len(available)} 个插件可更新；{summary}" if available else summary
+        elif available:
+            message = f"{len(available)} 个插件可更新"
+        else:
+            message = "全部插件均为最新"
+        return _json_ok({"items": items, "available": len(available), "message": message})

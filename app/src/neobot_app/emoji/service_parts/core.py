@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import asyncio
 import threading
+import time
 
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,10 @@ class _CoreMixin:
         "尽可能简洁，最多50个字。"
     )
     _EMOJI_DIR_NAME = "emoji"
-    _REFRESH_INTERVAL_SECONDS = 300
+    #: 定时检查目录指纹的间隔（秒）：目录没变化时连扫描都不做。
+    _REFRESH_INTERVAL_SECONDS = 900
+    #: 即使目录指纹没变，也每 8 小时强制完整扫描一次（兜住外部改库、mtime 精度等漏检）。
+    _FULL_SCAN_INTERVAL_SECONDS = 8 * 60 * 60
     #: 候选曝光分：被选进候选池但未发送时的一次记数
     _CANDIDATE_EXPOSURE = 0.5
 
@@ -57,6 +61,16 @@ class _CoreMixin:
         # 外部直接修改 emoji 目录(手动放置/文件操作 agent 写入)的即时感知:
         # 读取入口检测目录快照变化 → 同步快速合并新文件 + 后台全量刷新
         self._last_dir_snapshot: tuple[tuple[str, ...], int] | None = None
+        # 定时扫描用的目录指纹：上次“成功扫描”时的 (文件名, 大小, mtime_ns)。
+        # 只放内存：启动时 start() 必然全扫一次重建索引，持久化没有意义。
+        self._last_dir_fingerprint: tuple[tuple[str, int, int], ...] | None = None
+        # 上次（成功或强制跑过）完整扫描的 monotonic 时间，用于 _FULL_SCAN_INTERVAL_SECONDS。
+        # 初值必须取构造时刻：monotonic 是开机时长，填 0.0 会让开机已 ≥8 小时的宿主
+        # 第一轮就判定「强制全扫到期」，每轮清空不可读名单、永远不盖章。
+        self._last_full_scan_at: float = time.monotonic()
+        # 已确认读不出来的文件：文件名 → (大小, mtime_ns)。签名没变就不再重试，
+        # 否则永久损坏/被锁的文件会让指纹永不上章，定时扫描每 15 分钟全扫一次。
+        self._unreadable_files: dict[str, tuple[int, int]] = {}
         self._disk_sync_lock = threading.Lock()
         self._disk_refresh_task: asyncio.Task[None] | None = None
         self._scan_lock = asyncio.Lock()
@@ -135,3 +149,4 @@ class _CoreMixin:
         # 停止后置空快照:迟到读取只记录基线,不再触发新的后台刷新
         with self._disk_sync_lock:
             self._last_dir_snapshot = None
+            self._last_dir_fingerprint = None

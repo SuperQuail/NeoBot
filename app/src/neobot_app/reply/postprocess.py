@@ -175,7 +175,95 @@ def _normalize_cjk_latin_spaces(text: str) -> str:
     return _CJK_LATIN_SPACE_RE.sub("", text)
 
 
+#: 反引号包住的命令/代码在分句前替换成私有区占位符。
+#: 分句器只把「，,。;空格」当句子边界，占位符里不含任何分隔符，所以命令里的空格
+#: 不会被当成断句点；分完再还原，并把两侧的反引号去掉，只发字面内容。
+#: 只处理行内反引号片段；完整围栏原样保留，这里只清掉写坏后残留的裸反引号。
+_CODE_PLACEHOLDER_OPEN = "\ue000"
+_CODE_PLACEHOLDER_CLOSE = "\ue001"
+_INLINE_CODE_UNIT_RE = re.compile(r"`[^`\n]+`")
+#: 保护之后仍然残留的反引号：反引号没闭合、跨行、或单行三反引号写坏时留下的裸记号。
+#: 行首（允许缩进 —— 列表里的代码块是合法 Markdown）3 个以上是围栏，原样保留；
+#: 剩下的成不了对，发出去就是漏给用户的裸反引号。
+_BACKTICK_RUN_RE = re.compile(r"`+")
+#: 注记包裹记号：`*(note)*` / `_note_` / `~~note~~`。
+_NOTE_MARKERS = ("*", "_", "~")
+
+
+def _keep_delimiters(content: str) -> bool:
+    """引用型内容保留反引号，它们靠反引号免于被当成指令或注记。
+
+    - `` `cancel` ``：去掉反引号就是裸控制词，会被输出兜底整条丢掉；
+    - `` `*(note)*` `` / `` `（待确认）` ``：去掉反引号就是一条单纯的注记，
+      会被注记清洗抹掉。
+
+    不能只凭「注记清洗后为空」判定：注记清洗会把 `[ -f config.toml ]`、
+    `(cd /tmp && make)` 这类方括号/圆括号写法的命令整段当注记清空，于是普通命令
+    被误留下反引号、内容照旧被空格拆条。命令里既没有 CJK，也没有注记记号，
+    两者至少满足一个才算注记。
+    """
+    if is_control_token_only(content):
+        return True
+    if _remove_notes_with_provenance(content)[0].strip():
+        return False
+    return any(_is_cjk(char) for char in content) or any(marker in content for marker in _NOTE_MARKERS)
+
+
+def _protect_code_units(text: str) -> tuple[str, dict[str, str]]:
+    """把反引号包住的命令换成占位符：整段不参与分句，还原时再去掉两侧反引号。"""
+    placeholder_to_code: dict[str, str] = {}
+    source = str(text or "")
+    next_index = 0
+
+    def placeholder() -> str:
+        nonlocal next_index
+        # 正文自带 U+E000/U+E001 时编号会撞车，还原就会把正文顶掉，所以跳过已出现的编号。
+        candidate = f"{_CODE_PLACEHOLDER_OPEN}{next_index}{_CODE_PLACEHOLDER_CLOSE}"
+        while candidate in source:
+            next_index += 1
+            candidate = f"{_CODE_PLACEHOLDER_OPEN}{next_index}{_CODE_PLACEHOLDER_CLOSE}"
+        next_index += 1
+        return candidate
+
+    def replace(match: re.Match[str]) -> str:
+        content = match.group(0)[1:-1]
+        # 保留反引号的片段也换成占位符：这样保护之后剩下的反引号一定是写坏的围栏，
+        # 清掉它们不会误伤 `cancel` / 注记的保护壳。
+        unit = placeholder()
+        placeholder_to_code[unit] = match.group(0) if _keep_delimiters(content) else content
+        return unit
+
+    protected = _INLINE_CODE_UNIT_RE.sub(replace, source)
+
+    def drop_stray(match: re.Match[str]) -> str:
+        run = match.group(0)
+        line_start = protected.rfind("\n", 0, match.start()) + 1
+        # 围栏只要求本行前面是空白：output_guard.fence_after_segment 同样认缩进围栏。
+        at_line_start = not protected[line_start:match.start()].strip()
+        return run if at_line_start and len(run) >= 3 else ""
+
+    return _BACKTICK_RUN_RE.sub(drop_stray, protected), placeholder_to_code
+
+
+def _restore_code_units(segments: list[str], placeholder_to_code: dict[str, str]) -> list[str]:
+    """还原占位符（内容已不带反引号）；同一条消息里的多个片段各自还原。"""
+    if not placeholder_to_code:
+        return segments
+    restored: list[str] = []
+    for segment in segments:
+        for placeholder, code in placeholder_to_code.items():
+            segment = segment.replace(placeholder, code)
+        restored.append(segment)
+    return restored
+
+
 def split_into_sentences_w_remove_punctuation(text: str, *, rng: Any = random) -> list[str]:
+    """把一段回复切成若干条消息；反引号包住的代码/命令保持完整。"""
+    protected, placeholder_to_code = _protect_code_units(str(text or ""))
+    return _restore_code_units(_split_protected_text(protected, rng=rng), placeholder_to_code)
+
+
+def _split_protected_text(text: str, *, rng: Any = random) -> list[str]:
     raw_text = _normalize_cjk_latin_spaces(
         str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     )
@@ -183,7 +271,7 @@ def split_into_sentences_w_remove_punctuation(text: str, *, rng: Any = random) -
     if len(hard_parts) > 1:
         messages: list[str] = []
         for part in hard_parts:
-            messages.extend(split_into_sentences_w_remove_punctuation(part, rng=rng))
+            messages.extend(_split_protected_text(part, rng=rng))
         return messages
 
     text = re.sub(r"\n\s*\n+", "\n", raw_text)

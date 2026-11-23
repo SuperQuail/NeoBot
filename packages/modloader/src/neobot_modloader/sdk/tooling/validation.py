@@ -10,7 +10,7 @@ from typing import Any
 
 from packaging.requirements import Requirement
 
-from neobot_modloader.loading.manifest import read_dependencies, read_manifest, read_python_dependencies
+from neobot_modloader.loading.manifest import read_dependencies, read_manifest, read_python_dependencies, read_services
 from neobot_modloader.plugins.registration import validate_plugin_name
 from neobot_modloader.sdk.contract import validate_contract
 from neobot_modloader.sdk.migrations import read_migrations
@@ -103,6 +103,7 @@ def check_project(path: Path, *, output: Path | None = None) -> ToolReport:
         read_test_suite(root, metadata)
         validate_plugin_name(metadata.get("name") or root.name)
         read_dependencies(metadata.get("dependencies", []))
+        read_services(metadata)
         for index, requirement in enumerate(read_python_dependencies(metadata)):
             try:
                 Requirement(requirement)

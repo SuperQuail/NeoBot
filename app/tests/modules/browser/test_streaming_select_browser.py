@@ -8,6 +8,38 @@ from playwright.async_api import async_playwright, expect
 
 
 @pytest.mark.browser
+async def test_subscription_surfaces_follow_dashboard_theme():
+    plugins = Path(__file__).resolve().parents[3] / "src/neobot_app/builtin_plugins"
+    root = plugins / "streaming_parser/web/subscriptions"
+    markup = re.sub(r"<script[^>]*>.*?</script>", "", (root / "index.html").read_text(encoding="utf-8"), flags=re.S)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await page.set_content(markup)
+            await page.add_style_tag(path=plugins / "dashboard/frontend/public/assets/plugin-view-ui.css")
+            for stylesheet in ("style.css", "settings.css", "preview.css", "records.css"):
+                await page.add_style_tag(path=root / stylesheet)
+            for panel, inset in [("rgb(25, 48, 76)", "rgb(18, 42, 67)"), ("rgb(255, 255, 255)", "rgb(248, 250, 252)")]:
+                await page.evaluate(
+                    """([panel, inset]) => {
+                    document.documentElement.style.setProperty('--panel', panel);
+                    document.documentElement.style.setProperty('--panel-2', inset);
+                }""",
+                    [panel, inset],
+                )
+                for selector, color in [
+                    (".preview-panel", panel),
+                    (".toggle-card", panel),
+                    (".group-settings-card", inset),
+                    (".health-strip", inset),
+                ]:
+                    await expect(page.locator(selector).first).to_have_css("background-color", color, timeout=1500)
+        finally:
+            await browser.close()
+
+
+@pytest.mark.browser
 async def test_streaming_select_sync_and_readonly_in_real_browser():
     root = Path(__file__).resolve().parents[3] / "src/neobot_app/builtin_plugins/streaming_parser/web/subscriptions"
     markup = re.sub(r"<script[^>]*>.*?</script>", "", (root / "index.html").read_text(encoding="utf-8"), flags=re.S)

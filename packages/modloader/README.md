@@ -745,6 +745,26 @@ async def _load(ctx):
 - `PluginControlFacade.dependencies(name)`：面板侧的依赖报告
   （声明、未满足项、反向依赖、自动禁用原因）。
 
+## 服务依赖
+
+在 `plugin.toml` 顶层或 `Plugin(...)` 中声明 `provides`、`required`、`optional`：
+
+```toml
+provides = ["weather"]
+required = ["http>=1.0"]
+optional = ["cache"]
+```
+
+`provides` 声明可提供的服务，`ctx.services.provide("weather", instance)` 注册实际实例；
+`required` 是必需服务，缺失或不可用会自动禁用使用方；`optional` 缺失不会阻止加载。
+使用 `ctx.services.require("http")` 取得必需服务，`ctx.services.get("cache")` 读取可选服务。
+提供者在 `on_startup` 注册的服务应在使用方启动后获取。
+
+服务依赖与 `dependencies` 共用加载顺序和启停联动。服务名、版本、提供者、可用状态
+随插件快照和 `PluginControlFacade.dependencies(name)` 返回，供面板直接展示。
+旧插件可继续使用 `ctx.plugin_host.services`，未声明服务字段时保留原有行为。
+完整规则及示例见[服务声明与注入](../../docs/07-插件开发.md#服务声明与注入)。
+
 ## 插件管理 API
 
 Dashboard 或其他管理型插件可以通过生命周期注入拿到受控管理门面：

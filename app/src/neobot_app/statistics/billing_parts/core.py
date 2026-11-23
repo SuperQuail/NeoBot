@@ -20,6 +20,24 @@ from .constants import (
     _DEEPSEEK_OFF_PEAK_RATIO,
 )
 
+
+def _split_cache_tokens(input_tokens: Any, cache_hit_tokens: Any, cache_miss_tokens: Any) -> tuple[Any, Any]:
+    """把输入 token 拆成（命中, 未命中）；供应商不给缓存字段时全部按未命中。
+
+    DeepSeek 的 prompt_tokens **已含**缓存命中部分（prompt_tokens = hit + miss）：
+    整个 prompt 命中缓存时 prompt_cache_miss_tokens 报 0，此时不能再把整段输入
+    按未命中价计一遍，否则命中 token 会被命中价与未命中价各算一次。
+    """
+    hit = max(cache_hit_tokens or 0, 0)
+    miss = max(cache_miss_tokens or 0, 0)
+    total = max(input_tokens or 0, 0)
+    if miss > 0:
+        return hit, miss
+    if hit > 0:
+        return hit, max(total - hit, 0)
+    return 0, total
+
+
 def builtin_deepseek_peak_valley(ctx: Mapping[str, Any]) -> dict[str, Any]:
     """DeepSeek 峰谷计价（**内置**脚本）。
 
@@ -44,8 +62,11 @@ def builtin_deepseek_peak_valley(ctx: Mapping[str, Any]) -> dict[str, Any]:
 
     usage = ctx.get("usage") or {}
     pricing = ctx.get("pricing") or {}
-    hit = usage.get("cache_hit_tokens") or 0
-    miss = usage.get("cache_miss_tokens") or usage.get("input_tokens") or 0
+    hit, miss = _split_cache_tokens(
+        usage.get("input_tokens"),
+        usage.get("cache_hit_tokens"),
+        usage.get("cache_miss_tokens"),
+    )
     out = usage.get("output_tokens") or 0
     parts = {
         "cache_hit": hit * float(pricing.get("cache_hit_price_per_mtokens") or 0.0) / 1e6,
@@ -74,11 +95,11 @@ def builtin_cost(
     cache_miss_tokens: int,
     pricing: Any,
 ) -> float:
-    """内建线性计费公式（**逐字**保留改造前 tracker.py 的实现）。"""
-    effective_cache_miss = cache_miss_tokens if cache_miss_tokens > 0 else input_tokens
+    """内建线性计费公式（改造前 tracker.py 的三项求和，缓存命中/未命中按同一规则拆分）。"""
+    hit, miss = _split_cache_tokens(input_tokens, cache_hit_tokens, cache_miss_tokens)
     return (
-        cache_hit_tokens * float(getattr(pricing, "cache_hit_price_per_mtokens", 0.0) or 0.0)
-        + effective_cache_miss * float(getattr(pricing, "input_price_per_mtokens", 0.0) or 0.0)
+        hit * float(getattr(pricing, "cache_hit_price_per_mtokens", 0.0) or 0.0)
+        + miss * float(getattr(pricing, "input_price_per_mtokens", 0.0) or 0.0)
         + output_tokens * float(getattr(pricing, "output_price_per_mtokens", 0.0) or 0.0)
     ) / 1_000_000.0
 

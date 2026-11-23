@@ -1,3 +1,4 @@
+import PluginDependencyCallouts from './PluginDependencyCallouts';
 // pages/plugins/PluginEditorPanel.tsx —— 插件编辑器（工具条 / 详情 / 配置体 / 页脚）
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../../api/endpoints';
@@ -107,8 +108,6 @@ export default function PluginEditorPanel(props: PluginEditorPanelProps) {
   const retryState = useRef({ dirty, operation, onRetryRead });
   retryState.current = { dirty, operation, onRetryRead };
   const missingSelection = !!selected && !selectedPresent;
-  const dependencyIssues = selected?.dependency_issues?.join('；') || '';
-  const disabledReason = selected?.disabled_reason || '';
   const runtimeError = selected?.error || '';
   const configWarning = selected?.config_error || '';
   const validationIssues = errors
@@ -119,11 +118,6 @@ export default function PluginEditorPanel(props: PluginEditorPanelProps) {
     if (configError) messages.push(configError);
     if (validationIssues) messages.push(...validationIssues.split('\n'));
     if (missingSelection) messages.push('插件已不在列表中。当前编辑内容已保留，恢复插件后再保存。');
-    if (disabledReason) {
-      messages.push(`已因前置插件未满足自动禁用：${disabledReason}。启用对应前置插件后会自动恢复。`);
-    } else if (dependencyIssues) {
-      messages.push(`前置插件未满足：${dependencyIssues}`);
-    }
     if (runtimeError) messages.push(`运行错误：${runtimeError}`);
     if (configWarning) messages.push(`配置告警：${configWarning}（已回落到默认值运行）`);
     if (!messages.length) return;
@@ -164,16 +158,7 @@ export default function PluginEditorPanel(props: PluginEditorPanelProps) {
         </>
       ),
     });
-  }, [
-    selectedId,
-    missingSelection,
-    dependencyIssues,
-    disabledReason,
-    runtimeError,
-    configWarning,
-    configError,
-    validationIssues,
-  ]);
+  }, [selectedId, missingSelection, runtimeError, configWarning, configError, validationIssues]);
   const pluginPagePaused = pluginPage && (dirty || editingSession);
   useEffect(() => {
     if (!pluginPagePaused) return;
@@ -294,6 +279,14 @@ export default function PluginEditorPanel(props: PluginEditorPanelProps) {
                     onOpenChange={(open) => setManualPlugin(open ? selectedId : '')}
                   />
                 )}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={!!operation || !selectedPresent}
+                  onClick={props.onOpenDependencies}
+                >
+                  依赖管理
+                </Button>
                 <Button size="sm" variant="ghost" onClick={() => setInfoOpen(true)}>
                   插件信息
                   <Icon name="chevron" size={14} />
@@ -466,6 +459,11 @@ export default function PluginEditorPanel(props: PluginEditorPanelProps) {
               }
               key={selectedId}
             >
+              <PluginDependencyCallouts
+                plugin={selected}
+                updateAvailable={props.updateAvailable}
+                onManage={() => props.onOpenDependencies?.()}
+              />
               <div
                 id="plugin-page-panel"
                 role="tabpanel"
@@ -637,8 +635,33 @@ export default function PluginEditorPanel(props: PluginEditorPanelProps) {
                 {!!selected.dependencies?.length && (
                   <div className="plugin-info-item">
                     <dt>前置插件</dt>
-                    <dd>{selected.dependencies.join('、')}</dd>
+                    <dd>
+                      <ul>
+                        {selected.dependencies.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    </dd>
                   </div>
+                )}
+                {(['required', 'optional', 'provides'] as const).map(
+                  (kind) =>
+                    selected.services?.some((slot) => slot.kind === kind) && (
+                      <div className="plugin-info-item" key={kind}>
+                        <dt>
+                          {kind === 'required' ? '必需服务' : kind === 'optional' ? '可选服务' : '提供服务'}
+                        </dt>
+                        <dd>
+                          <ul>
+                            {selected.services
+                              .filter((slot) => slot.kind === kind)
+                              .map((slot) => (
+                                <li key={slot.service}>{slot.message}</li>
+                              ))}
+                          </ul>
+                        </dd>
+                      </div>
+                    ),
                 )}
                 {!!selected.dependents?.length && (
                   <div className="plugin-info-item">
@@ -660,6 +683,40 @@ export default function PluginEditorPanel(props: PluginEditorPanelProps) {
                   </div>
                 )}
               </dl>
+              {!!surface.data?.contract?.views?.length && (
+                <div className="plugin-info-notes">
+                  <strong>插件页面</strong>
+                  <ul>
+                    {surface.data.contract.views.map((view) => (
+                      <li key={view.id}>{view.title}</li>
+                    ))}
+                  </ul>
+                  <Button
+                    onClick={() => {
+                      setInfoOpen(false);
+                      setPagePlugin(selectedId);
+                    }}
+                  >
+                    打开插件页面
+                  </Button>
+                </div>
+              )}
+              {!!surface.data?.contract?.actions?.length && (
+                <div className="plugin-info-notes">
+                  <strong>声明的操作</strong>
+                  <ul>
+                    {surface.data.contract.actions.map((action) => (
+                      <li key={action.id}>
+                        {action.title}
+                        {action.description ? `：${action.description}` : ''}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="muted small">
+                    可用性由插件当前状态与权限决定，操作入口见插件页面或使用说明。
+                  </p>
+                </div>
+              )}
               {!!selected.command_renames?.length && (
                 <div className="plugin-info-notes">
                   <strong>命令名称调整</strong>

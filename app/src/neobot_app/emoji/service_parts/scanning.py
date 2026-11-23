@@ -19,30 +19,47 @@ class _ScanningMixin:
         # 但扫描结束若用最新目录快照盖章，下一次读取会误判「没有变化」而永久漏掉
         # 这个文件（A 群保存、B 群扫描并发时就是这样丢新表情包的）。
         snapshot_before = self._dir_snapshot()
+        # 指纹取在扫描前：扫描过程可能补写/生成 .txt，下一轮会多扫一次；
+        # 这是为了不让「扫描期间新增的文件」被误标为已处理，代价可接受。
+        fingerprint_before = self._dir_fingerprint()
         if not self._emoji_dir.exists():
             self._logger.warning(f"表情包目录不存在: {self._emoji_dir}")
+            # 目录缺失不盖章（指纹置 None，下一轮继续重试），也不清理数据库：
+            # 挂载暂时丢失时误删记录比晚几分钟清理更糟。
             with self._disk_sync_lock:
-                self._last_dir_snapshot = self._dir_snapshot()
+                self._last_dir_snapshot = snapshot_before
+            self._mark_scan_failed()
             return
 
         image_files = self._list_image_files()
+        if image_files is None:
+            # 读目录失败与空目录不是一回事：保留索引，不盖章，下一轮重试。
+            self._mark_scan_failed()
+            return
         if not image_files:
             if not self._empty_scan_reported:
                 self._logger.info("表情包目录为空", directory=str(self._emoji_dir))
                 self._empty_scan_reported = True
             self._entries.clear()
-            with self._disk_sync_lock:
-                self._last_dir_snapshot = snapshot_before
-            await self._cleanup_stale_emoji_records({})
+            if await self._cleanup_stale_emoji_records({}):
+                self._stamp_scan(snapshot_before, fingerprint_before)
+            else:
+                self._mark_scan_failed()
             return
         self._empty_scan_reported = False
 
         hash_to_path: dict[str, Path] = {}
         path_to_hash: dict[Path, str] = {}
         duplicates_removed = 0
+        unreadable_files = 0
         for file_path in image_files:
+            stamp = self._file_stamp(file_path)
+            if stamp is not None and self._unreadable_files.get(file_path.name) == stamp:
+                # 已知不可读且签名没变：同一进程内不再重试，重试也是白解码一遍。
+                continue
             try:
                 prepared = await prepare_local_image_async(file_path)
+                self._unreadable_files.pop(file_path.name, None)
                 if prepared.file_hash in hash_to_path:
                     existing = hash_to_path[prepared.file_hash]
                     # 保留较旧的文件
@@ -60,10 +77,19 @@ class _ScanningMixin:
                     hash_to_path[prepared.file_hash] = file_path
                     path_to_hash[file_path] = prepared.file_hash
             except Exception as exc:
+                unreadable_files += 1
+                if stamp is not None:
+                    self._unreadable_files[file_path.name] = stamp
                 self._logger.warning(f"无法读取表情包文件 {file_path.name}: {exc}")
 
         if not hash_to_path:
+            # 所有文件都读不出来：不盖章，下一轮重试。
+            self._mark_scan_failed()
             return
+        # 本轮新读不出来的文件不盖章。但已知不可读、签名又没变的文件上面就跳过了，不会
+        # 算进来，所以它下一轮就盖章：真正重试要等签名变化或下一次 8 小时强制全扫
+        # （瞬时失败也一并等这么久，换来的是坏文件不再把每轮扫描拖成全扫）。
+        scan_ok = unreadable_files == 0
 
         existing: dict[str, str] = {}
         use_counts: dict[str, int] = {}
@@ -123,6 +149,7 @@ class _ScanningMixin:
                     use_counts[file_hash] = record.use_count
 
             if lookup_failures:
+                scan_ok = False
                 self._logger.error(
                     "表情包数据库查询失败，本轮部分描述无法读取",
                     failed_count=lookup_failures,
@@ -156,6 +183,7 @@ class _ScanningMixin:
                         existing[file_hash] = analysis_text
                     await uow.commit()
             except Exception as exc:
+                scan_ok = False
                 self._logger.error(f"保存表情包解析结果失败: {exc}")
 
         self._rebuild_mapping(
@@ -165,19 +193,27 @@ class _ScanningMixin:
             use_counts,
             records_by_hash,
         )
-        if to_parse or duplicates_removed or snapshot_before != self._last_dir_snapshot:
+        # 是否值得记一条“扫描完成”必须在盖章前算：盖章会把快照更新掉。
+        changed = to_parse or duplicates_removed or snapshot_before != self._last_dir_snapshot
+        cleanup_ok = await self._cleanup_stale_emoji_records(hash_to_path)
+        if scan_ok and cleanup_ok:
+            self._stamp_scan(snapshot_before, fingerprint_before)
+        else:
+            self._mark_scan_failed()
+        if scan_ok and cleanup_ok and changed:
             self._logger.info(
                 "表情包目录扫描完成",
                 file_count=len(path_to_hash),
                 parsed_count=parsed_count,
                 duplicates_removed=duplicates_removed,
             )
-        with self._disk_sync_lock:
-            self._last_dir_snapshot = snapshot_before
-        await self._cleanup_stale_emoji_records(hash_to_path)
 
-    async def _cleanup_stale_emoji_records(self, disk_files: dict[str, Path]) -> None:
-        """删除数据库中文件已不存在的表情包记录，更新文件已重命名的记录。"""
+    async def _cleanup_stale_emoji_records(self, disk_files: dict[str, Path]) -> bool:
+        """删除数据库中文件已不存在的表情包记录，更新文件已重命名的记录。
+
+        返回 False 表示清理失败（已被记录日志吞掉），调用方不要给本轮扫描盖章，
+        让下一轮重试；否则一次瞬时 DB 故障会把陈旧记录封印到下次目录变化。
+        """
         disk_hashes = set(disk_files.keys())
         try:
             async with self._uow_factory() as uow:
@@ -208,6 +244,8 @@ class _ScanningMixin:
                 await uow.commit()
         except Exception as exc:
             self._logger.error(f"表情包数据库清理失败: {exc}")
+            return False
+        return True
 
     async def _parse_batch(
         self,
@@ -263,8 +301,8 @@ class _ScanningMixin:
             )
         return results
 
-    def _list_image_files(self) -> list[Path]:
-        """列出表情包目录下的所有图片文件"""
+    def _list_image_files(self) -> list[Path] | None:
+        """列出表情包目录下的所有图片文件；读目录失败返回 None（区别于空目录）。"""
         extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
         files: list[Path] = []
         try:
@@ -273,4 +311,5 @@ class _ScanningMixin:
                     files.append(child)
         except OSError as exc:
             self._logger.error(f"扫描表情包目录失败: {exc}")
+            return None
         return files

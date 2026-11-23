@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "version": "2.1.0-a14",
-  "created_at": "2026-11-14T10:34:36.532338487Z",
+  "version": "2.1.0-a16",
+  "created_at": "2026-11-21T12:04:06.78154594Z",
   "mode": "pr",
   "channel": "alpha",
-  "fingerprint": "sha256:237d49898ec996f89ab5551efeb471c6590973c0dc2d1fa20b2787ea7e035eab",
+  "fingerprint": "sha256:6c642a9b00c6e5fb898cf249798123f944b73d51de1124c387328c8f22f6eeb7",
   "repo": {
     "host": "github.com",
     "owner": "SuperQuail",
@@ -18,95 +18,95 @@
       "uv run pytest --strict-markers -m \"not browser and not network and not slow and not llm\""
     ],
     "skipped": false,
-    "at": "2026-11-14T10:34:36.532338977Z"
+    "at": "2026-11-21T12:04:06.781546682Z"
   },
   "packages": [
     {
       "name": "python@neobot",
       "path": ".",
       "resolver": "python",
-      "current": "2.1.0-a13",
-      "next": "2.1.0-a14",
+      "current": "2.1.0-a15",
+      "next": "2.1.0-a16",
       "bump": "minor",
-      "tag": "v2.1.0a14",
+      "tag": "v2.1.0a16",
       "publish": false
     },
     {
       "name": "python@neobot-app",
       "path": "app",
       "resolver": "python",
-      "current": "2.1.0-a13",
-      "next": "2.1.0-a14",
+      "current": "2.1.0-a15",
+      "next": "2.1.0-a16",
       "bump": "minor",
-      "tag": "v2.1.0a14",
+      "tag": "v2.1.0a16",
       "publish": true
     },
     {
       "name": "python@neobot-contracts",
       "path": "packages/contracts",
       "resolver": "python",
-      "current": "2.1.0-a13",
-      "next": "2.1.0-a14",
+      "current": "2.1.0-a15",
+      "next": "2.1.0-a16",
       "bump": "minor",
-      "tag": "v2.1.0a14",
+      "tag": "v2.1.0a16",
       "publish": true
     },
     {
       "name": "python@neobot-adapter",
       "path": "packages/adapter",
       "resolver": "python",
-      "current": "2.1.0-a13",
-      "next": "2.1.0-a14",
+      "current": "2.1.0-a15",
+      "next": "2.1.0-a16",
       "bump": "minor",
-      "tag": "v2.1.0a14",
+      "tag": "v2.1.0a16",
       "publish": true
     },
     {
       "name": "python@neobot-chat",
       "path": "packages/chat",
       "resolver": "python",
-      "current": "2.1.0-a13",
-      "next": "2.1.0-a14",
+      "current": "2.1.0-a15",
+      "next": "2.1.0-a16",
       "bump": "minor",
-      "tag": "v2.1.0a14",
+      "tag": "v2.1.0a16",
       "publish": true
     },
     {
       "name": "python@neobot-memory",
       "path": "packages/memory",
       "resolver": "python",
-      "current": "2.1.0-a13",
-      "next": "2.1.0-a14",
+      "current": "2.1.0-a15",
+      "next": "2.1.0-a16",
       "bump": "minor",
-      "tag": "v2.1.0a14",
+      "tag": "v2.1.0a16",
       "publish": true
     },
     {
       "name": "python@neobot-modloader",
       "path": "packages/modloader",
       "resolver": "python",
-      "current": "2.1.0-a13",
-      "next": "2.1.0-a14",
+      "current": "2.1.0-a15",
+      "next": "2.1.0-a16",
       "bump": "minor",
-      "tag": "v2.1.0a14",
+      "tag": "v2.1.0a16",
       "publish": true
     },
     {
       "name": "python@neobot-storage",
       "path": "packages/storage",
       "resolver": "python",
-      "current": "2.1.0-a13",
-      "next": "2.1.0-a14",
+      "current": "2.1.0-a15",
+      "next": "2.1.0-a16",
       "bump": "minor",
-      "tag": "v2.1.0a14",
+      "tag": "v2.1.0a16",
       "publish": true
     }
   ],
   "releases": [
     {
-      "version": "2.1.0-a14",
-      "tag": "v2.1.0a14",
-      "previous_tag": "v2.1.0a13",
+      "version": "2.1.0-a16",
+      "tag": "v2.1.0a16",
+      "previous_tag": "v2.1.0a15",
       "packages": [
         "python@neobot",
         "python@neobot-adapter",
@@ -214,6 +214,19 @@
       "author": "Tang-Tian-dev"
     },
     {
+      "file": ".changes/code-unit-split.md",
+      "type": "fix",
+      "scope": "reply",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "反引号包住的行内代码/命令在分句前替换成占位符，整段不再被空格切断、空格也不丢；还原时去掉两侧反引号，引用型内容（`cancel`、`*(note)*`）保留反引号。系统提示词同步要求发命令时用反引号标注。",
+      "commit": "636089597f6b97c69ff8f51ae9ed896bcb9e175b",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/636089597f6b97c69ff8f51ae9ed896bcb9e175b",
+      "author": "loster12520"
+    },
+    {
       "file": ".changes/cot-valuable-reply.md",
       "type": "feat",
       "scope": "prompt",
@@ -285,6 +298,19 @@
       "author": "Tang-Tian-dev"
     },
     {
+      "file": ".changes/dashboard-temporal-fields.md",
+      "type": "feat",
+      "scope": "dashboard",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "面板配置表单新增 `datetime` / `date` / `time` 三种字段类型：本体（dataclass）与插件（Pydantic）配置都渲染对应的日期时间、日期、时间选择器，取值统一为 ISO 8601 字符串（`YYYY-MM-DDTHH:MM:SS` / `YYYY-MM-DD` / `HH:MM:SS`）。可选字段清空即从配置里删除该键（= 不设置）。面板按本地面钟编辑：编辑过的值按本地 naive 回写，时区偏移与亚秒会被丢弃；未编辑的字段保持原样。",
+      "commit": "63e3420aa8d08993e8c046d07a41f516b569b6fc",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/63e3420aa8d08993e8c046d07a41f516b569b6fc",
+      "author": "ABPolaris"
+    },
+    {
       "file": ".changes/dedupe-linked-groups.md",
       "type": "feat",
       "scope": "bot",
@@ -343,6 +369,32 @@
       "pull_number": 303,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/303",
       "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/emoji-fingerprint-unreadable.md",
+      "type": "fix",
+      "scope": "emoji",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "表情包扫描按文件签名（名 + 大小 + mtime_ns）记住读不出来的文件：同名同签名就不再重试、也不再让本轮判失败，于是第二轮就能给目录指纹盖章，不再被一个永久损坏/被杀软锁住的文件拖成每 15 分钟全量重扫；文件被替换（签名变化）时立刻重试，8 小时强制全扫也会先清空这份记忆再试一次。强制全扫的周期按「跑过」算（失败也推进 `_last_full_scan_at`），该时间戳初值改取构造时刻——monotonic 是开机时长，原来的 0.0 会让开机 ≥8 小时的宿主每轮都判定强制到期。代价：瞬时读失败要等签名变化或该次强制全扫才恢复（最长 8 小时）。",
+      "commit": "104f33a7ad576b14045ee4d06d41f837fae5af28",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/104f33a7ad576b14045ee4d06d41f837fae5af28",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/emoji-scan-skip.md",
+      "type": "perf",
+      "scope": "emoji",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "表情包定时扫描改为先比对目录指纹（文件名 + 大小 + mtime_ns，目录下所有常规文件）：没有变化就跳过扫描，检查间隔从 5 分钟放宽到 15 分钟，并每 8 小时强制完整扫描一次兜底；扫描成功才盖章，失败下一轮重试。",
+      "commit": "43af9bedd52b431c00bda9cd569fd474eb1aa739",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/43af9bedd52b431c00bda9cd569fd474eb1aa739",
+      "author": "ABPolaris"
     },
     {
       "file": ".changes/explicit-proactive-messages.md",
@@ -860,6 +912,19 @@
       "author": "Tang-Tian-dev"
     },
     {
+      "file": ".changes/modloader-service-providers.md",
+      "type": "fix",
+      "scope": "modloader",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-modloader"
+      ],
+      "body": "修复插件服务依赖的两条遗留缺陷：停用的高优先级提供者不再占住服务名（热加载与启动扫描路径都覆盖，自动禁用后立即联动回落），使用方自动回落到下一个可用提供者并保持运行；注册失败不再留下幽灵提供者（启动扫描失败会回滚声明），失败后可立即重试。另补 load_registered 跳过原因日志、面板对「已停用」提供者的诊断、插件升级工具识别宿主服务，并同步 docs/07 语义与 08b 流程图。",
+      "commit": "f9e85f07863d5f9687a82e9c13f9279468cd5dff",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/f9e85f07863d5f9687a82e9c13f9279468cd5dff",
+      "author": "Tang-Tian-dev"
+    },
+    {
       "file": ".changes/official-adapter-review.md",
       "type": "fix",
       "scope": "bot",
@@ -1219,6 +1284,61 @@
       "author": "Tang-Tian-dev"
     },
     {
+      "file": ".changes/plugin-deps-noninteractive.md",
+      "type": "fix",
+      "scope": "modloader",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app",
+        "python@neobot-modloader"
+      ],
+      "body": "无终端环境下插件 PyPI 依赖确认读到 EOF（Windows 把 stdin 接到 NUL 时 isatty() 仍返回 True）时按「没有可交互终端」跳过安装并记 warning，不再抛 EOFError；启动装配期确认失败只记日志、继续装配，面板安装改为返回可读的「缺少 PyPI 依赖」错误而不是 500。",
+      "commit": "d546c386ea863cf1c1645af6fb6158dca7b1502a",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/d546c386ea863cf1c1645af6fb6158dca7b1502a",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/plugin-deps-order.md",
+      "type": "fix",
+      "scope": "modloader",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-modloader"
+      ],
+      "body": "插件 PyPI 依赖安装命令显式带 `--python \u003c当前解释器\u003e`（uv 不再因宿主 cwd 是数据目录而找不到目标环境）；面板安装/重载插件时先读 `plugin.toml` 装缺失依赖再导入模块，顶层 import 第三方库的插件不再因导入早于安装而永远装不上。",
+      "commit": "4e3e29be7ce7c747f2698476a01c4e9d3ae59324",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/4e3e29be7ce7c747f2698476a01c4e9d3ae59324",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/plugin-install-ssl.md",
+      "type": "fix",
+      "scope": "modloader",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app",
+        "python@neobot-modloader"
+      ],
+      "body": "插件下载器原先只信系统证书库，而宿主其它请求走 httpx（只信 certifi），两套根证书不一致；Windows 证书库缺根证书时，安装/更新插件会报 `CERTIFICATE_VERIFY_FAILED`，其它功能却一切正常。现在下载器在系统证书库之外叠加 certifi 根证书，证书校验失败的报错也带上 `SSL_CERT_FILE` / 代理的设置提示；面板「检查更新」把 `error` / `unknown` 都算作失败，部分成功时同时报「N 个可更新」与失败数量、首个错误，不再一律回「全部插件均为最新」；`certifi` 同时声明为 modloader 的显式依赖。",
+      "commit": "88be9c58bee26a6f1e91d7f570c57cddeb446ea6",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/88be9c58bee26a6f1e91d7f570c57cddeb446ea6",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/plugin-service-dependencies.md",
+      "type": "feat",
+      "scope": "modloader",
+      "bump": "minor",
+      "packages": [
+        "python@neobot-app",
+        "python@neobot-modloader"
+      ],
+      "body": "支持插件声明提供、必需与可选服务，统一检查服务依赖并联动插件生命周期。插件面板展示服务可用性、提供者和依赖诊断，提供依赖管理入口，沿用现有主题与配置操作流程。",
+      "commit": "07ba2519cec1b1d692aca22313d0f61da9c4114d",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/07ba2519cec1b1d692aca22313d0f61da9c4114d",
+      "author": "momomiso"
+    },
+    {
       "file": ".changes/prompt-assets-cot.md",
       "type": "feat",
       "bump": "minor",
@@ -1356,6 +1476,19 @@
       "author": "Tang-Tian-dev"
     },
     {
+      "file": ".changes/reply-backtick-brackets.md",
+      "type": "fix",
+      "scope": "reply",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "反引号包住的方括号/圆括号命令（`[ -f config.toml ]`、`(cd /tmp \u0026\u0026 make)`）不再被误判成注记：反引号照常去掉、命令整段不再被空格拆条；正文自带 U+E000/U+E001 时占位符不再串号，未闭合与单行三反引号围栏不再把裸反引号发给用户。",
+      "commit": "19c60121561dc0924b6ad909642795bfa5fedd63",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/19c60121561dc0924b6ad909642795bfa5fedd63",
+      "author": "Tang-Tian-dev"
+    },
+    {
       "file": ".changes/reply-contract-corrections.md",
       "type": "fix",
       "bump": "patch",
@@ -1487,6 +1620,32 @@
       "author": "Tang-Tian-dev"
     },
     {
+      "file": ".changes/streaming-parser-pages.md",
+      "type": "fix",
+      "scope": "dashboard",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "修复局域网 http 等非安全上下文打开面板时「使用说明」与「插件页面」整页渲染报错的问题：`crypto.randomUUID` 只在安全上下文提供，宿主页与插件页面桥接脚本改为在它缺失时退回随机串生成会话标识，不再抛出 `crypto.randomUUID is not a function`。",
+      "commit": "13970ad730838c609db67b383ce6820083aa7019",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/13970ad730838c609db67b383ce6820083aa7019",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/streaming-parser-panel.md",
+      "type": "fix",
+      "scope": "dashboard",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "修复直播订阅页在暗色主题下的可读性，以及切回插件时搜索框被误填、内嵌页面高度不足的问题。",
+      "commit": "716295704075ade9f2964f93bacb58228fd2e15b",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/716295704075ade9f2964f93bacb58228fd2e15b",
+      "author": "momomiso"
+    },
+    {
       "file": ".changes/strip-duplicate-text.md",
       "type": "fix",
       "scope": "bot",
@@ -1530,6 +1689,45 @@
       "pull_number": 305,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/305",
       "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/usage-stats.md",
+      "type": "fix",
+      "scope": "statistics",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "修正用量计费在「整段 prompt 命中缓存」时的重复计费：供应商返回的 prompt_tokens 已含缓存命中部分，\n命中 token 不再同时按未命中价再计一遍；内建公式与内置峰谷脚本共用同一套命中/未命中拆分，\n面板金额与报表合计回到与实际账单一致的口径。",
+      "commit": "22a9179985ae01f2703a7029d5a0e50630162293",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/22a9179985ae01f2703a7029d5a0e50630162293",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/verbose-logging-config.md",
+      "type": "fix",
+      "scope": "logging",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "修复 `[debug].verbose_logging` 的布尔取值与 httpx 降级顺序：`verbose_logging = true`/`false`（含配置加载后的 `\"True\"`/`\"False\"`）现在分别等同 `on`/`off`，不再落入 auto；`off` 时 `httpx`/`aiohttp.access` 的逐请求 INFO 不再写入日志文件，与「从不记录」文案一致。",
+      "commit": "f891003b31df531f526c60665615011071c8fc6c",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/f891003b31df531f526c60665615011071c8fc6c",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/verbose-logging.md",
+      "type": "feat",
+      "scope": "logging",
+      "bump": "patch",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "新增 `[debug].verbose_logging`（auto/on/off，默认 auto）：默认不再把数据库 SQL、WebSocket 帧、图片解码等第三方库 DEBUG 写入日志文件，排障时可在面板或配置里打开；on/off 支持热重载，auto 跟随 Debug 模式并在软重启时重新解析。",
+      "commit": "bcd9e15967cb8ea604b15f0098b4c05b2ff1fa0d",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/bcd9e15967cb8ea604b15f0098b4c05b2ff1fa0d",
+      "author": "ABPolaris"
     }
   ],
   "previous_changes": [
@@ -1539,17 +1737,21 @@
     ".changes/at-wildcard-ambiguity.md",
     ".changes/change.md",
     ".changes/channels-nav-under.md",
+    ".changes/code-unit-split.md",
     ".changes/cot-valuable-reply.md",
     ".changes/cross-chat-fixes.md",
     ".changes/cross-chat-session.md",
     ".changes/dashboard-prompt-folding.md",
+    ".changes/dashboard-temporal-fields.md",
     ".changes/dedupe-linked-groups.md",
     ".changes/dedupe-queue-replace.md",
     ".changes/drop-legacy-release.md",
     ".changes/embedded.md",
+    ".changes/emoji-scan-skip.md",
     ".changes/explicit-proactive-messages.md",
     ".changes/expose-official-action.md",
     ".changes/fix-at-prefix.md",
+    ".changes/fix-known-issues.md",
     ".changes/fix-minigame-checksum.md",
     ".changes/fix-minigame-migration.md",
     ".changes/fix-official-mention.md",
@@ -1603,6 +1805,7 @@
     ".changes/parse-model-fallbacks.md",
     ".changes/persist-full-tool.md",
     ".changes/plugin-command-openid.md",
+    ".changes/plugin-service-dependencies.md",
     ".changes/prompt-assets-cot.md",
     ".changes/prompt-registry-refactor.md",
     ".changes/qq-id-id.md",
@@ -1621,9 +1824,11 @@
     ".changes/reply-tool-ids.md",
     ".changes/require-explicit-admins.md",
     ".changes/self-heal-limits.md",
+    ".changes/streaming-parser-panel.md",
     ".changes/strip-duplicate-text.md",
     ".changes/trusted-agent.md",
-    ".changes/unify-identity-ids.md"
+    ".changes/unify-identity-ids.md",
+    ".changes/verbose-logging.md"
   ],
   "qegg": {
     "version": "0.13.0"

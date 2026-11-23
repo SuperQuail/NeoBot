@@ -2,6 +2,8 @@
 flow: 08b-plugin-runtime
 covers:
   - packages/modloader/src/neobot_modloader/runtime.py
+  - packages/modloader/src/neobot_modloader/service.py
+  - packages/modloader/src/neobot_modloader/service_registry.py
   - packages/modloader/src/neobot_modloader/hot_reload.py
   - app/src/neobot_app/runtime/local_control.py
   - packages/modloader/src/neobot_modloader/development.py
@@ -30,8 +32,8 @@ covers:
   - scripts/plugin_ecosystem.py
   - scripts/plugin_demo.py
   - scripts/plugin_demo/
-verified_against: 5d26dec8
-verified_hash: 6030b417bb3c
+verified_against: 34ad0d91
+verified_hash: b67fe666ad8c
 ---
 
 # 08b 插件运行时：门面动作矩阵 · 热重载回滚 · 安装器 · 钩子总线
@@ -418,7 +420,7 @@ flowchart TD
 flowchart TD
     A["inbound_event：hook_bus.dispatch 构造，stage=post_type / hooks.py:206"] --> E
     B["output：RuntimeOutput.write / observability/output.py:40，kind=output stage=channel"] --> E
-    C["log：loguru sink / observability/logging.py:123，kind=log stage=日志级别"] --> E
+    C["log：loguru sink / observability/logging.py _loguru_runtime_sink，kind=log stage=日志级别"] --> E
     D["reply_lifecycle：sender 发送前后 / reply/sender.py:184 与 reply/debug.py:33"] --> E
     E["dispatch_envelope / hooks.py:266"] --> F{"envelope.consumed"}
     F -- 是 --> X1["break：后续拦截器不再执行"]

@@ -26,8 +26,50 @@ _runtime_delivery = AsyncLogDelivery()
 _self_heal_delivery = AsyncLogDelivery()
 _SELF_HEAL_EXCLUDE_MODULES = ("adapter_receiver", "app.image_parse", "app.self_heal")
 _STDLIB_FIELDS = set(stdlib_logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
-# 逐请求/逐连接的第三方 INFO 只对排障有用：控制台与面板不显示，DEBUG 文件仍保留。
+# 逐请求/逐连接的第三方 INFO 只对排障有用：控制台与面板不显示，开启详细日志后才进 DEBUG 文件。
 _PER_REQUEST_INFO_LOGGERS = frozenset({"aiohttp.access", "httpx"})
+#: 默认不把 DEBUG 写进日志文件的第三方 logger 根名。WebSocket 帧、SQL 回显、
+#: 图片解码与 HTTP 头在排障时有用，但平时会以数量级放大日志；需要时用
+#: ``[debug].verbose_logging`` 打开（见 ``resolve_verbose_logging``）。
+_NOISY_LOGGER_ROOTS = frozenset({"aiosqlite", "websockets", "PIL", "httpcore", "httpx", "urllib3"})
+_verbose_logging = False
+
+
+def resolve_verbose_logging(debug_cfg: Any, *, recorder_active: bool | None = None) -> bool:
+    """把 ``[debug].verbose_logging`` 的 auto/on/off（或布尔值）解析成布尔值。
+
+    auto 跟随**实际生效的** DebugRecorder（``recorder_active``），而不是只读配置：
+    recorder 是进程启动时构建的核心对象，软重启不会重建它；只看 ``enabled`` 会让
+    「日志说在跟随 Debug 模式、调试包却还是旧状态」。调用方拿不到实际状态时才回退到
+    配置值。布尔值与 on/off 等价；配置加载器会把 TOML 布尔转成 ``"True"``/``"False"``，
+    所以 true/false 文本也按显式开关处理。未知取值按 auto 处理（配置校验只查类型，不查枚举）。
+    """
+    raw = getattr(debug_cfg, "verbose_logging", "auto")
+    if isinstance(raw, bool):
+        return raw
+    mode = str(raw or "auto").strip().lower()
+    if mode in {"on", "true"}:
+        return True
+    if mode in {"off", "false"}:
+        return False
+    if mode != "auto":
+        loguru.logger.warning(f"未知的 debug.verbose_logging 取值 {mode!r}，按 auto 处理")
+    if recorder_active is None:
+        return bool(getattr(debug_cfg, "enabled", False))
+    return bool(recorder_active)
+
+
+def set_verbose_logging(enabled: bool) -> None:
+    """切换详细日志：第三方库 DEBUG 是否写进日志文件。运行期可安全调用。"""
+    global _verbose_logging
+    enabled = bool(enabled)
+    if enabled == _verbose_logging:
+        return
+    _verbose_logging = enabled
+    # 留一条分界标记：文件体积突然变化时能直接看出是哪次切换造成的。
+    loguru.logger.warning(
+        f"详细日志已{'开启' if enabled else '关闭'}：第三方库 DEBUG {'将' if enabled else '不再'}写入日志文件"
+    )
 
 
 def set_runtime_event_dispatcher(dispatcher: Any) -> None:
@@ -95,6 +137,16 @@ class _InterceptHandler(stdlib_logging.Handler):
     """接入第三方 stdlib 日志，同时保留 extra、原始调用位置与异常。"""
 
     def emit(self, record: stdlib_logging.LogRecord) -> None:
+        # 逐请求 INFO 按等效 DEBUG 归类：先过滤后降级会让 off 时它们绕过开关落盘。
+        per_request_info = record.name in _PER_REQUEST_INFO_LOGGERS and record.levelno == stdlib_logging.INFO
+        # 过滤放在 stdlib -> loguru 的入口，先于任何 sink 的格式化/脱敏。
+        # 当前控制台/面板/自修复的最低级别都 >= INFO，所以等价于「只影响日志文件」；
+        # 若以后把这些出口降到 DEBUG，本开关会一并影响它们（见「日志与诊断」文档）。
+        if not _verbose_logging and (
+            per_request_info
+            or (record.levelno < stdlib_logging.INFO and record.name.partition(".")[0] in _NOISY_LOGGER_ROOTS)
+        ):
+            return
         try:
             level = loguru.logger.level(record.levelname).name
         except ValueError:
@@ -105,7 +157,7 @@ class _InterceptHandler(stdlib_logging.Handler):
             and record.levelno == stdlib_logging.INFO
         ):
             level = "DEBUG"
-        if record.name in _PER_REQUEST_INFO_LOGGERS and record.levelno == stdlib_logging.INFO:
+        if per_request_info:
             level = "DEBUG"
         if (
             record.name == "websockets.server"
@@ -214,3 +266,38 @@ class LoguruLoggerAdapter:
 class LoguruLoggerFactory:
     def get_logger(self, module: str) -> Logger:
         return LoguruLoggerAdapter(loguru.logger.bind(module_name=module))
+
+
+class VerboseLoggingConsumer:
+    """``debug.verbose_logging`` 的热重载消费者。
+
+    只声明自己这个字段：``on``/``off`` 改完重载即生效；``auto`` 跟随的是
+    **实际生效的 DebugRecorder**（进程启动时构建，软重启复用），不是配置里的
+    ``enabled`` —— 否则会出现「过滤已切换、调试包还是旧状态」的半生效。
+    """
+
+    name = "verbose_logging"
+    config_paths = ("debug.verbose_logging",)
+
+    def __init__(self, *, recorder_active: bool) -> None:
+        self._recorder_active = bool(recorder_active)
+
+    @property
+    def hot_reload_policies(self) -> tuple[Any, ...]:
+        from neobot_app.config.hot_reload import HotReloadRule
+
+        return (
+            HotReloadRule(
+                "debug.verbose_logging",
+                True,
+                "日志过滤是模块级开关，重载后立即生效；auto 跟随实际生效的 DebugRecorder",
+            ),
+        )
+
+    async def apply_config(self, config: Any) -> None:
+        set_verbose_logging(
+            resolve_verbose_logging(
+                getattr(config, "debug", None),
+                recorder_active=self._recorder_active,
+            )
+        )
