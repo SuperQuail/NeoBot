@@ -295,7 +295,7 @@ BLOCKS: tuple[Block, ...] = (
         "cot_no_bluffing",
         Stage.SYSTEM_PREFIX,
         CHAT_SCOPES,
-        order=60,
+        order=55,
         requires=(
             config_flag("prompt_optimizations.cot_enabled"),
             config_flag("prompt_optimizations.no_bluffing"),
