@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "version": "2.1.0-a16",
-  "created_at": "2026-11-21T12:04:06.78154594Z",
+  "version": "2.1.0-a17",
+  "created_at": "2026-11-25T12:32:36.962954115Z",
   "mode": "pr",
   "channel": "alpha",
-  "fingerprint": "sha256:6c642a9b00c6e5fb898cf249798123f944b73d51de1124c387328c8f22f6eeb7",
+  "fingerprint": "sha256:6876a7c51b6e7b5da235275338ad132493257edd7e63bd25efa24044872185ee",
   "repo": {
     "host": "github.com",
     "owner": "SuperQuail",
@@ -18,95 +18,95 @@
       "uv run pytest --strict-markers -m \"not browser and not network and not slow and not llm\""
     ],
     "skipped": false,
-    "at": "2026-11-21T12:04:06.781546682Z"
+    "at": "2026-11-25T12:32:36.962954505Z"
   },
   "packages": [
     {
       "name": "python@neobot",
       "path": ".",
       "resolver": "python",
-      "current": "2.1.0-a15",
-      "next": "2.1.0-a16",
+      "current": "2.1.0-a16",
+      "next": "2.1.0-a17",
       "bump": "minor",
-      "tag": "v2.1.0a16",
+      "tag": "v2.1.0a17",
       "publish": false
     },
     {
       "name": "python@neobot-app",
       "path": "app",
       "resolver": "python",
-      "current": "2.1.0-a15",
-      "next": "2.1.0-a16",
+      "current": "2.1.0-a16",
+      "next": "2.1.0-a17",
       "bump": "minor",
-      "tag": "v2.1.0a16",
+      "tag": "v2.1.0a17",
       "publish": true
     },
     {
       "name": "python@neobot-contracts",
       "path": "packages/contracts",
       "resolver": "python",
-      "current": "2.1.0-a15",
-      "next": "2.1.0-a16",
+      "current": "2.1.0-a16",
+      "next": "2.1.0-a17",
       "bump": "minor",
-      "tag": "v2.1.0a16",
+      "tag": "v2.1.0a17",
       "publish": true
     },
     {
       "name": "python@neobot-adapter",
       "path": "packages/adapter",
       "resolver": "python",
-      "current": "2.1.0-a15",
-      "next": "2.1.0-a16",
+      "current": "2.1.0-a16",
+      "next": "2.1.0-a17",
       "bump": "minor",
-      "tag": "v2.1.0a16",
+      "tag": "v2.1.0a17",
       "publish": true
     },
     {
       "name": "python@neobot-chat",
       "path": "packages/chat",
       "resolver": "python",
-      "current": "2.1.0-a15",
-      "next": "2.1.0-a16",
+      "current": "2.1.0-a16",
+      "next": "2.1.0-a17",
       "bump": "minor",
-      "tag": "v2.1.0a16",
+      "tag": "v2.1.0a17",
       "publish": true
     },
     {
       "name": "python@neobot-memory",
       "path": "packages/memory",
       "resolver": "python",
-      "current": "2.1.0-a15",
-      "next": "2.1.0-a16",
+      "current": "2.1.0-a16",
+      "next": "2.1.0-a17",
       "bump": "minor",
-      "tag": "v2.1.0a16",
+      "tag": "v2.1.0a17",
       "publish": true
     },
     {
       "name": "python@neobot-modloader",
       "path": "packages/modloader",
       "resolver": "python",
-      "current": "2.1.0-a15",
-      "next": "2.1.0-a16",
+      "current": "2.1.0-a16",
+      "next": "2.1.0-a17",
       "bump": "minor",
-      "tag": "v2.1.0a16",
+      "tag": "v2.1.0a17",
       "publish": true
     },
     {
       "name": "python@neobot-storage",
       "path": "packages/storage",
       "resolver": "python",
-      "current": "2.1.0-a15",
-      "next": "2.1.0-a16",
+      "current": "2.1.0-a16",
+      "next": "2.1.0-a17",
       "bump": "minor",
-      "tag": "v2.1.0a16",
+      "tag": "v2.1.0a17",
       "publish": true
     }
   ],
   "releases": [
     {
-      "version": "2.1.0-a16",
-      "tag": "v2.1.0a16",
-      "previous_tag": "v2.1.0a15",
+      "version": "2.1.0-a17",
+      "tag": "v2.1.0a17",
+      "previous_tag": "v2.1.0a16",
       "packages": [
         "python@neobot",
         "python@neobot-adapter",
@@ -831,6 +831,19 @@
       "commit_url": "https://github.com/SuperQuail/NeoBot/commit/6919c44f4232f18c3f646ddadf458a1bd9861991",
       "pull_number": 290,
       "pull_url": "https://github.com/SuperQuail/NeoBot/pull/290",
+      "author": "Tang-Tian-dev"
+    },
+    {
+      "file": ".changes/log-size-budget.md",
+      "type": "feat",
+      "scope": "logging",
+      "bump": "minor",
+      "packages": [
+        "python@neobot-app"
+      ],
+      "body": "新增 `[debug].log_max_total_mb`（默认 500 MB）日志目录体积预算：`data/logs` 总量超限后按最旧优先删除轮转文件，当前 `neobot.log` 永不删除；启动时立即检查一次，之后在文件 sink 的写入路径上按小时节流检查。原有的 10 MB 轮转与 7 天保留不变。",
+      "commit": "3399afa2362df12163f35f5ce06957af89b82d19",
+      "commit_url": "https://github.com/SuperQuail/NeoBot/commit/3399afa2362df12163f35f5ce06957af89b82d19",
       "author": "Tang-Tian-dev"
     },
     {
@@ -1747,6 +1760,7 @@
     ".changes/dedupe-queue-replace.md",
     ".changes/drop-legacy-release.md",
     ".changes/embedded.md",
+    ".changes/emoji-fingerprint-unreadable.md",
     ".changes/emoji-scan-skip.md",
     ".changes/explicit-proactive-messages.md",
     ".changes/expose-official-action.md",
@@ -1782,6 +1796,7 @@
     ".changes/mentions-linkqq.md",
     ".changes/mentions.md",
     ".changes/migrate-legacy-official.md",
+    ".changes/modloader-service-providers.md",
     ".changes/official-adapter-review.md",
     ".changes/official-addressing-unify.md",
     ".changes/official-at-upgrade.md",
@@ -1805,6 +1820,9 @@
     ".changes/parse-model-fallbacks.md",
     ".changes/persist-full-tool.md",
     ".changes/plugin-command-openid.md",
+    ".changes/plugin-deps-noninteractive.md",
+    ".changes/plugin-deps-order.md",
+    ".changes/plugin-install-ssl.md",
     ".changes/plugin-service-dependencies.md",
     ".changes/prompt-assets-cot.md",
     ".changes/prompt-registry-refactor.md",
@@ -1815,6 +1833,7 @@
     ".changes/rebuild-a10-mappings.md",
     ".changes/relic-init.md",
     ".changes/remove-chat-fallbacks.md",
+    ".changes/reply-backtick-brackets.md",
     ".changes/reply-contract-corrections.md",
     ".changes/reply-cross-activation.md",
     ".changes/reply-dedupe-guard.md",
@@ -1824,10 +1843,13 @@
     ".changes/reply-tool-ids.md",
     ".changes/require-explicit-admins.md",
     ".changes/self-heal-limits.md",
+    ".changes/streaming-parser-pages.md",
     ".changes/streaming-parser-panel.md",
     ".changes/strip-duplicate-text.md",
     ".changes/trusted-agent.md",
     ".changes/unify-identity-ids.md",
+    ".changes/usage-stats.md",
+    ".changes/verbose-logging-config.md",
     ".changes/verbose-logging.md"
   ],
   "qegg": {
