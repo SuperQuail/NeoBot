@@ -117,6 +117,15 @@ class Debug:
         default=False,
         metadata={"description": "在控制台日志中显示模块名称（默认关闭，修改后重启进程生效）"},
     )
+    log_max_total_mb: int = field(
+        default=500,
+        metadata={
+            "description": (
+                "日志目录体积预算（MB，默认 500）：data/logs 总量超过后按最旧优先删除轮转文件，"
+                "当前 neobot.log 不会删除；0 表示不限制。写入路径每小时最多检查一次"
+            )
+        },
+    )
 
 
 @dataclass
