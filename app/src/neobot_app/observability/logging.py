@@ -271,6 +271,8 @@ def configure_loguru(
 ) -> None:
     """集中注册四个出口：Rich stdout、DEBUG 文件、运行时事件与 ERROR 自修复。"""
     global _log_budget_dir
+    # 重新装配时目录以本次为准；log_dir=None 表示不写文件，预算随之停用。
+    _log_budget_dir = log_dir
     loguru.logger.remove()
     set_console_show_module(console_show_module)
     loguru.logger.configure(extra={}, patcher=normalize_record)
@@ -285,7 +287,6 @@ def configure_loguru(
     )
     if log_dir is not None:
         log_dir.mkdir(parents=True, exist_ok=True)
-        _log_budget_dir = log_dir
         loguru.logger.add(
             log_dir / "neobot.log",
             format=_file_sink_format,
