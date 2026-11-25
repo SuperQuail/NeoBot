@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging as stdlib_logging
 import sys
+import time
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,85 @@ _PER_REQUEST_INFO_LOGGERS = frozenset({"aiohttp.access", "httpx"})
 #: ``[debug].verbose_logging`` 打开（见 ``resolve_verbose_logging``）。
 _NOISY_LOGGER_ROOTS = frozenset({"aiosqlite", "websockets", "PIL", "httpcore", "httpx", "urllib3"})
 _verbose_logging = False
+
+#: [debug].log_max_total_mb 的默认值：日志目录体积预算 500 MB。
+LOG_MAX_TOTAL_MB_DEFAULT = 500
+#: 体积预算在写入路径上节流检查：每写一条日志只多一次时钟比较。
+_BUDGET_CHECK_INTERVAL_SECONDS = 3600.0
+_LOG_CURRENT_NAME = "neobot.log"
+_LOG_FILE_PREFIX = "neobot"
+_log_budget_dir: Path | None = None
+_log_budget_bytes = 0
+_log_budget_checked_at = 0.0
+
+
+def enforce_log_size_budget(log_dir: Path, max_total_bytes: int) -> int:
+    """按最旧优先删除轮转日志，直到目录总量回到预算内，返回删除数。
+
+    当前写入中的 neobot.log 永不删除；max_total_bytes <= 0 表示不限制。
+    只统计文件名以 neobot 开头的条目，目录里的其它文件不碰。
+    """
+    if max_total_bytes <= 0:
+        return 0
+    try:
+        entries = list(log_dir.iterdir())
+    except OSError:
+        return 0
+    files: list[tuple[float, int, Path]] = []
+    total = 0
+    for path in entries:
+        try:
+            if not path.is_file() or not path.name.startswith(_LOG_FILE_PREFIX):
+                continue
+            info = path.stat()
+        except OSError:
+            continue
+        files.append((info.st_mtime, info.st_size, path))
+        total += info.st_size
+    if total <= max_total_bytes:
+        return 0
+    removed = 0
+    for _, size, path in sorted(files):
+        if path.name == _LOG_CURRENT_NAME:
+            continue
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        total -= size
+        removed += 1
+        if total <= max_total_bytes:
+            break
+    return removed
+
+
+def set_log_size_budget(max_total_mb: int | None) -> None:
+    """登记日志目录体积预算（MB）；0/None/负数表示不限制。
+
+    设置时立刻清一次（启动就能把历史堆积压回预算），之后由文件 sink 每小时检查。
+    """
+    global _log_budget_bytes, _log_budget_checked_at
+    try:
+        megabytes = int(max_total_mb or 0)
+    except (TypeError, ValueError):
+        megabytes = 0
+    _log_budget_bytes = max(megabytes, 0) * 1024 * 1024
+    _log_budget_checked_at = 0.0
+    if _log_budget_bytes and _log_budget_dir is not None:
+        _log_budget_checked_at = time.monotonic()
+        enforce_log_size_budget(_log_budget_dir, _log_budget_bytes)
+
+
+def _maybe_enforce_log_budget() -> None:
+    """文件 sink 每条记录调用一次：至多每小时扫一次目录执行预算。"""
+    global _log_budget_checked_at
+    if _log_budget_bytes <= 0 or _log_budget_dir is None:
+        return
+    now = time.monotonic()
+    if _log_budget_checked_at and now - _log_budget_checked_at < _BUDGET_CHECK_INTERVAL_SECONDS:
+        return
+    _log_budget_checked_at = now
+    enforce_log_size_budget(_log_budget_dir, _log_budget_bytes)
 
 
 def resolve_verbose_logging(debug_cfg: Any, *, recorder_active: bool | None = None) -> bool:
@@ -174,6 +254,8 @@ class _InterceptHandler(stdlib_logging.Handler):
 
 
 def _file_sink_format(record: dict[str, Any]) -> str:
+    # 轮转只负责切文件，总量由体积预算兜底；检查按小时节流，不逐条扫目录。
+    _maybe_enforce_log_budget()
     record["extra"]["_neobot_text"] = plain_record(record_payload(record))
     # 函数 format 避免 Loguru 自动追加 {exception}，各出口只渲染安全异常一次。
     return "{extra[_neobot_text]}\n"
@@ -188,6 +270,9 @@ def configure_loguru(
     console_show_module: bool = False,
 ) -> None:
     """集中注册四个出口：Rich stdout、DEBUG 文件、运行时事件与 ERROR 自修复。"""
+    global _log_budget_dir
+    # 重新装配时目录以本次为准；log_dir=None 表示不写文件，预算随之停用。
+    _log_budget_dir = log_dir
     loguru.logger.remove()
     set_console_show_module(console_show_module)
     loguru.logger.configure(extra={}, patcher=normalize_record)

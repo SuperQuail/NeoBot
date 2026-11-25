@@ -12,10 +12,12 @@ from neobot_app.bootstrap._usage import build_usage_components
 from neobot_app.core import DATA_DIR, SRC_DATA_DIR
 from neobot_app.database.identity_data_migration import official_only_mode
 from neobot_app.observability.logging import (
+    LOG_MAX_TOTAL_MB_DEFAULT,
     LoguruLoggerFactory,
     configure_loguru,
     resolve_verbose_logging,
     set_console_show_module,
+    set_log_size_budget,
     set_verbose_logging,
 )
 from neobot_app.prompt.store import PromptStore, sync_default_prompts
@@ -37,6 +39,7 @@ def _build_core_services(state: _BuildState) -> None:
     bind_user_identity(DATA_DIR)
     debug_cfg = getattr(config, "debug", None)
     set_console_show_module(getattr(debug_cfg, "console_show_module", False))
+    set_log_size_budget(getattr(debug_cfg, "log_max_total_mb", LOG_MAX_TOTAL_MB_DEFAULT))
 
     sync_data_files(SRC_DATA_DIR, DATA_DIR)
     sync_default_prompts(DATA_DIR, logger=logger_factory.get_logger("app.prompt"))
