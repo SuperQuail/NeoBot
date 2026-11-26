@@ -78,7 +78,7 @@ qegg init --force --no-input --no-hook --no-add-packages --qegg-version v0.13.0
 
 ### 预发布
 
-- `qegg pre alpha|beta|rc` 写入 `.quailegg/pre-release.lock`，下一次发布生成对应渠道版本（当前为 `alpha`）。
+- `qegg pre alpha|beta|rc` 写入 `.quailegg/pre-release.lock`，下一次发布生成对应渠道版本。
 - 预发布不写 `CHANGELOG.md`、不消费变更记录；`qegg pre exit` 后下一次发布为稳定版。
 - tag 使用 PyPI 规范化拼写，例如 `2.1.0-a1` → `v2.1.0a1`，GitHub Release 标记为 Pre-release。
 
