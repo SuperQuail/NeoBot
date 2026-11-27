@@ -89,7 +89,7 @@ template = '''<回复方式>
 # 由 prompt/composer.py 在主模板之前按注册表顺序渲染（Stage.SYSTEM_PREFIX）。
 # 总开关与子块开关都在 config.toml 的 [prompt_optimizations] 下，默认全部开启；
 # 子块顺序：cot_intro → cot_at_mention → gentle_language（见本文件后部）
-#           → cot_avoid_bot_chat → cot_no_bluffing → cot_no_game_topics
+#           → cot_avoid_bot_chat → cot_complex_reply → cot_no_bluffing → cot_no_game_topics
 #           → cot_no_echo_images → cot_cross_chat → cot_valuable_reply → cot_outro。
 # 文本逐字固定，请勿改写（包括标点与疑似笔误）。
 
@@ -102,6 +102,9 @@ template = '''<@消息回复>你应该注意@你的消息,尤其是最近的消�
 
 [cot_avoid_bot_chat]
 template = '''<减少Bot聊天>如果你能确定当前聊天中的其他角色是Bot,并且没有真人用户在参与,应该尽可能避免与其交流,以避免浪费双方部署者的资金</减少Bot聊天>'''
+
+[cot_complex_reply]
+template = '''<复杂回复>在回复之前，应当检查回复是否是多列数据、表格、代码、复杂排版内容。如果是，则在send_reply时需用segments + raw:true进行回复，或使用send_long_reply进行回复。</复杂回复>'''
 
 [cot_no_bluffing]
 template = '''<禁止不懂装懂>在回复之前,你应该思考:你说的内容是否你明确确信是对的,而不是来自你的AI幻觉或者纯属猜测,如果你不清楚你应该回答什么,那就应该不回复;如果是有人明确在询问你,但是你的上下文并没有提供回答依据的内容,你应该明确说你不清楚,禁止猜测一个答案

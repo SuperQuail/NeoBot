@@ -148,7 +148,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["Stage.SYSTEM_PREFIX｜blocks.py"] --> A1["cot_intro → cot_at_mention → gentle_language<br/>→ cot_avoid_bot_chat → cot_no_bluffing<br/>→ cot_no_game_topics → cot_no_echo_images<br/>→ cot_cross_chat → cot_valuable_reply → cot_outro"]
+    A["Stage.SYSTEM_PREFIX｜blocks.py"] --> A1["cot_intro → cot_at_mention → gentle_language<br/>→ cot_avoid_bot_chat → cot_complex_reply → cot_no_bluffing<br/>→ cot_no_game_topics → cot_no_echo_images<br/>→ cot_cross_chat → cot_valuable_reply → cot_outro"]
     B["Stage.FRAGMENT"] --> B1["qq_chat / qq_chat_examples：不单独注入<br/>渲染成 {块id} 给主模板引用"]
     C["Stage.CATALOG"] --> C1["label_* / bili_*：不经过注入管道<br/>assets.text(id) 按键读取"]
     D["Stage.CONTEXT / RUNTIME_DATA / REMINDER / TIME"] --> D1["user 块按阶段顺序追加<br/>TIME 是 terminal，保证在最后一条"]

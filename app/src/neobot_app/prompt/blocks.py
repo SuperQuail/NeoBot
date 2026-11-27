@@ -281,10 +281,21 @@ BLOCKS: tuple[Block, ...] = (
         note="cot 子块：没有真人参与时避免与 Bot 闲聊（省部署者资金）",
     ),
     Block(
-        "cot_no_bluffing",
+        "cot_complex_reply",
         Stage.SYSTEM_PREFIX,
         CHAT_SCOPES,
         order=50,
+        requires=(
+            config_flag("prompt_optimizations.cot_enabled"),
+            config_flag("prompt_optimizations.complex_reply"),
+        ),
+        note="cot 子块：Bot要发送复杂消息时，应使用特定工具，避免send_reply切分。",
+    ),
+    Block(
+        "cot_no_bluffing",
+        Stage.SYSTEM_PREFIX,
+        CHAT_SCOPES,
+        order=55,
         requires=(
             config_flag("prompt_optimizations.cot_enabled"),
             config_flag("prompt_optimizations.no_bluffing"),
