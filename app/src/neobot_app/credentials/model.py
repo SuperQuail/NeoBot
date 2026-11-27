@@ -48,7 +48,9 @@ class Credential:
     cred_type: str  # one_time / timed
     duration_minutes: int  # timed 有效时长(签发后计时)
     required_level: int  # 签发者最低等级
-    requester_id: int  # 申请者 QQ
+    # 申请者身份：数字 QQ 或官方 openid 字符串（openid 不要求先绑定 QQ）。
+    # 只用于审计展示，不参与授权判定。
+    requester_id: int | str
     status: str = CRED_STATUS_PENDING
     issuer_id: int | None = None  # 签发者 QQ
     created_at: float = field(default_factory=time.time)

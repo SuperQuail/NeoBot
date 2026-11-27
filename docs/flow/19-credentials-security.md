@@ -5,7 +5,7 @@ covers:
   - app/src/neobot_app/panel_auth.py
   - app/src/neobot_app/panel_web.py
 verified_against: fb703fe5
-verified_hash: 216f3c52cdf5
+verified_hash: 48d233bcfaed
 ---
 
 # 19 凭据、面板鉴权与安全边界
